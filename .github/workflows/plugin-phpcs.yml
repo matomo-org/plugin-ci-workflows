@@ -49,7 +49,8 @@ jobs:
         with:
           repository: matomo-org/github-action-tests
           ref: ${{ inputs.scripts-ref }}
-          path: github-action-tests
+          # Unique name so it cannot collide with a directory the caller tracks
+          path: .github-action-tests-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
 
       - name: Resolve PHP version
@@ -57,8 +58,14 @@ jobs:
         shell: bash
         env:
           PHP_VERSION_INPUT: ${{ inputs.php-version }}
+          SCRIPT_CHECKOUT: .github-action-tests-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          RESOLVED_VERSION=$("${{ github.workspace }}/github-action-tests/scripts/bash/resolve_php_version.sh" "$PHP_VERSION_INPUT")
+          RESOLVED_VERSION=$("$SCRIPT_CHECKOUT/scripts/bash/resolve_php_version.sh" "$PHP_VERSION_INPUT")
+
+          # A plugin's phpcs.xml scans `.`, so anything left in the workspace is
+          # linted as if it were the plugin's own code. Remove the checkout now
+          # that the only thing it was needed for is done.
+          rm -rf "$SCRIPT_CHECKOUT"
 
           echo "Resolved php-version '$PHP_VERSION_INPUT' to '$RESOLVED_VERSION'"
           echo "version=$RESOLVED_VERSION" >> "$GITHUB_OUTPUT"
