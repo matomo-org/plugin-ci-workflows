@@ -75,6 +75,18 @@ jobs:
             exit 1
           fi
 
+          # checkout_dependent_plugins.sh does `rm -rf plugins/<derived-name>` before
+          # cloning, so a dependent plugin resolving to the plugin under test would
+          # silently replace it and analyse the wrong code. Refuse instead.
+          for slug in $DEPENDENT_PLUGINS; do
+            name=${slug##*/}
+            name=${name#plugin-}
+            if [[ "$name" == "$PLUGIN_NAME" ]]; then
+              echo "dependent-plugins entry '$slug' resolves to the plugin under test ($PLUGIN_NAME)."
+              exit 1
+            fi
+          done
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           lfs: false
