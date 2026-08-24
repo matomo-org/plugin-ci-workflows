@@ -186,6 +186,8 @@ Tracking `@main` is the default for Matomo plugin repositories, and it is what m
 
 Pin to a tag where a repository needs to hold a check steady — for example while a plugin is mid-migration to a new Matomo major version and cannot yet take an updated check.
 
+Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml` and `plugin-phpstan.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs.
+
 ## Contributing
 
 `main` is protected. Changes land through a pull request with at least one approval, and only the `plugin-reviewers` team can merge.

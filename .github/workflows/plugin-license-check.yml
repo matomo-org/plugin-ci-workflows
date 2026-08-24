@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       script-ref:
-        description: "Ref of matomo-org/plugin-ci-workflows to take the check script from. When pinning the workflow to a SHA, pass the same SHA here."
+        description: "Ref of matomo-org/plugin-ci-workflows to take the check script from. This is this repository, so the workflow SHA is the right value when pinning."
         required: false
         type: string
         default: 'main'
