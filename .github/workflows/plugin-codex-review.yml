@@ -31,11 +31,6 @@ on:
         default: |
           .github/workflows/codex-review.yml
           .github/codex/
-      review-actions-repository:
-        description: "Repository holding the trusted review actions"
-        required: false
-        type: string
-        default: 'innocraft/github-action-tests-private'
       review-actions-ref:
         description: "Ref of the review actions repository to run. When pinning this workflow to a SHA, pin the actions to a SHA too."
         required: false
@@ -105,17 +100,16 @@ jobs:
       - name: Verify review actions token is configured
         env:
           TESTS_ACCESS_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN }}
-          REVIEW_ACTIONS_REPOSITORY: ${{ inputs.review-actions-repository }}
         run: |
           if [ -z "${TESTS_ACCESS_TOKEN}" ]; then
-            echo "::error::TESTS_ACCESS_TOKEN is empty. It must hold a token with read access to ${REVIEW_ACTIONS_REPOSITORY}, because the calling repository's GITHUB_TOKEN cannot read a private repository. Scope the organization secret to the calling repository." >&2
+            echo "::error::TESTS_ACCESS_TOKEN is empty. It must hold a token with read access to innocraft/github-action-tests-private, because the calling repository's GITHUB_TOKEN cannot read a private repository. Scope the organization secret to the calling repository." >&2
             exit 1
           fi
 
       - name: Checkout trusted review actions
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.review-actions-repository }}
+          repository: innocraft/github-action-tests-private
           ref: ${{ inputs.review-actions-ref }}
           token: ${{ secrets.TESTS_ACCESS_TOKEN }}
           path: github-action-tests
@@ -139,7 +133,7 @@ jobs:
       - name: Checkout trusted review actions
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.review-actions-repository }}
+          repository: innocraft/github-action-tests-private
           ref: ${{ inputs.review-actions-ref }}
           token: ${{ secrets.TESTS_ACCESS_TOKEN }}
           path: github-action-tests
@@ -165,14 +159,13 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       actions: read
-      contents: read
       issues: write
       pull-requests: write
     steps:
       - name: Checkout trusted review actions
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.review-actions-repository }}
+          repository: innocraft/github-action-tests-private
           ref: ${{ inputs.review-actions-ref }}
           token: ${{ secrets.TESTS_ACCESS_TOKEN }}
           path: github-action-tests
@@ -190,10 +183,40 @@ jobs:
           reviewed-base-sha: ${{ needs.preflight.outputs.base_sha }}
           reviewed-head-sha: ${{ needs.preflight.outputs.head_sha }}
 
-      # Runs even when posting failed, so a run never leaves the trigger label behind and blocks
-      # the next review of the same pull request.
+  cleanup:
+    needs: [preflight, codex, post-review]
+    if: ${{ always() && github.event.action == 'labeled' && github.event.label.name == inputs.trigger-label }}
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      # Inline and checkout-free on purpose. Every other job needs the trusted-actions checkout, so
+      # a missing or invalid TESTS_ACCESS_TOKEN fails all of them; a cleanup that needed the same
+      # checkout would fail with them and strand the trigger label on the pull request, with no
+      # review and nothing explaining why. Removing a label is not review logic.
       - name: Remove trigger label
-        if: ${{ always() }}
-        uses: ./github-action-tests/review/actions/cleanup
+        uses: actions/github-script@373c709c69115d41ff229c7e5df9f8788daa9553
+        env:
+          TRIGGER_LABEL: ${{ inputs.trigger-label }}
         with:
-          trigger-label: ${{ inputs.trigger-label }}
+          script: |
+            const pr = context.payload.pull_request;
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                name: process.env.TRIGGER_LABEL,
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`${process.env.TRIGGER_LABEL} label was already removed.`);
+                return;
+              }
+              if (error.status === 403) {
+                core.warning(`Could not remove ${process.env.TRIGGER_LABEL} label because this workflow token lacks permission.`);
+                return;
+              }
+              throw error;
+            }

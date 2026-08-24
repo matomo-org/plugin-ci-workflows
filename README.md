@@ -164,8 +164,7 @@ That indirection is not a style choice. GitHub resolves a reusable workflow from
 | `trigger-label` | no | `codex-review` | Label that triggers the review |
 | `allowed-owners` | no | `matomo-org,innocraft` | Comma-separated repository owners allowed to run a review |
 | `automation-paths` | no | the caller's `codex-review.yml` and `.github/codex/` | Paths that must receive human review before Codex runs |
-| `review-actions-repository` | no | `innocraft/github-action-tests-private` | Repository holding the trusted review actions |
-| `review-actions-ref` | no | `main` | Ref of that repository to run. When pinning this workflow to a SHA, pin the actions too. |
+| `review-actions-ref` | no | `main` | Ref of `innocraft/github-action-tests-private` to run. When pinning this workflow to a SHA, pin the actions too. |
 | `matomo-core-repository` | no | `matomo-org/matomo` | Core repository checked out for read-only review context |
 | `matomo-core-ref` | no | derived from the base branch | Core ref checked out for read-only review context. A pull request against `6.x-dev` is reviewed against 6.x core; a base branch that names no core branch falls back to `5.x-dev`. |
 | `matomo-agent-skills-ref` | no | `main` | Ref of `matomo-org/matomo-agent-skills` to install |
