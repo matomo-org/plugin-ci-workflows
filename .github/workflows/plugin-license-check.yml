@@ -1,0 +1,51 @@
+name: License check
+
+on:
+  workflow_call:
+    inputs:
+      fail-on-missing-header:
+        description: "Treat source files without any recognized license header as errors instead of warnings"
+        required: false
+        type: boolean
+        default: false
+      script-ref:
+        description: "Ref of matomo-org/plugin-ci-workflows to take the check script from. When pinning the workflow to a SHA, pass the same SHA here."
+        required: false
+        type: string
+        default: 'main'
+
+# The job only reads the repository; everything else stays at none so any caller
+# with default workflow permissions can use this without granting scopes.
+permissions:
+  contents: read
+
+jobs:
+  license-check:
+    name: License check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          lfs: false
+          persist-credentials: false
+      # No GitHub context identifies the called workflow's own commit (verified
+      # empirically: github.job_workflow_sha evaluates to empty), so pinning the
+      # script is the caller's job via script-ref.
+      - name: Check out the license check script
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.script-ref }}
+          # Unique name so it cannot collide with a directory the caller tracks
+          path: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+      - name: Run license check
+        env:
+          FAIL_ON_MISSING_HEADER: ${{ inputs.fail-on-missing-header }}
+          SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          # Move the script out of the workspace so its own checkout
+          # directory is not scanned as part of the plugin.
+          cp "$SCRIPT_CHECKOUT/scripts/bash/license_check.sh" "$RUNNER_TEMP/"
+          rm -rf "$SCRIPT_CHECKOUT"
+          bash "$RUNNER_TEMP/license_check.sh" .

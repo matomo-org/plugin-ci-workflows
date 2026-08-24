@@ -27,6 +27,7 @@ Nothing has been published yet. The catalogue below fills in as checks move acro
 | --- | --- | --- |
 | [`plugin-phpcs.yml`](#phpcs) | Reusable workflow | Checks the plugin against the Matomo coding standards |
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
+| [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
 
 ### PHPCS
 
@@ -95,6 +96,28 @@ A plugin that guards a newer core API behind `class_exists` can put the resultin
 This workflow checks out two repositories. The shared helpers that Matomo core CI uses as well — `checkout_matomo.sh`, `checkout_dependent_plugins.sh` and `resolve_php_version.sh` — stay in [`github-action-tests`](https://github.com/matomo-org/github-action-tests) and come from `scripts-ref`. The plugin-only pieces, `hooks/pre-push` and `artifacts/bootstrap-phpstan.php`, live here and come from `workflows-ref`.
 
 A reusable workflow does not bring its own repository into the caller's workspace, which is why this repository has to be checked out explicitly even though the workflow is defined in it.
+
+### License check
+
+Checks that the repository ships a `LICENSE` file matching the license declared in `plugin.json`, and that source files (`*.php`, `*.js`, `*.ts`, `*.vue`) carry the matching header: the GPL header for OSS plugins, the InnoCraft EULA header for premium ones.
+
+A file carrying the opposite header fails the check. Files with no recognised header are reported as warnings by default. Glob patterns listed in a `.license-check-ignore` file at the repository root are skipped, which is how bundled third-party files under their own license are excluded.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `fail-on-missing-header` | no | `false` | Treat source files with no recognised header as errors rather than warnings |
+| `script-ref` | no | `main` | Ref of this repository to take `license_check.sh` from. When pinning the workflow to a SHA, pass the same SHA here. |
+
+```yaml
+name: License check
+on: pull_request
+
+jobs:
+  license-check:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-license-check.yml@main
+```
+
+The check script lives at `scripts/bash/license_check.sh` and is covered by `tests/license_check_test.sh`, which runs on every pull request to this repository.
 
 ## Using a reusable workflow
 
