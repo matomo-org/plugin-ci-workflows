@@ -15,3 +15,20 @@ jobs:
           persist-credentials: false
       - name: Run tests
         run: bash tests/license_check_test.sh
+
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Parsing the YAML only proves it is YAML. actionlint checks the Actions
+      # schema and expression syntax, and shellcheck runs over every `run:` block.
+      - name: Run actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          curl -fsSL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar xz actionlint
+          ./actionlint -color
