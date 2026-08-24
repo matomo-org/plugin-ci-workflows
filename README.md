@@ -38,7 +38,8 @@ Runs the plugin's own `phpcs.xml` against the [matomo-coding-standards](https://
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `plugin-name` | yes | — | Name of the plugin, e.g. `LoginLdap` |
-| `php-version` | no | `7.4` | PHP version the job runs on |
+| `php-version` | no | `matomo5_min_php` | A literal version, or one of the shared aliases `matomo5_min_php`, `matomo5_max_php`, `matomo6_min_php`, `matomo6_max_php` |
+| `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the version resolver |
 
 ```yaml
 name: PHPCS check
@@ -53,6 +54,8 @@ jobs:
 
 The plugin repository supplies the ruleset: the job runs `phpcs --standard=phpcs.xml`, so a `phpcs.xml` must exist at the repository root.
 
+Prefer an alias to a literal PHP version wherever a workflow accepts one. The aliases resolve through `resolve_php_version.sh` in `github-action-tests`, so when a Matomo major's floor or ceiling moves, every caller follows without a pull request each.
+
 ### PHPStan
 
 Analyses the plugin with PHPStan against a checked-out Matomo. By default it runs twice, against the oldest Matomo the plugin's `plugin.json` supports and against the newest, which is what catches a plugin calling a core API that does not exist yet on its own floor.
@@ -65,7 +68,7 @@ Analyses the plugin with PHPStan against a checked-out Matomo. By default it run
 | `matomo-targets` | no | min and max | JSON array of `{target, php}` objects, one analysis run each |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the shared helper scripts |
 | `workflows-ref` | no | `main` | Ref of this repository for the pre-push hook and the PHPStan bootstrap |
-| `verify-hook` | no | `true` | Fail when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/` |
+| `verify-hook` | no | `false` | Fail when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/`. Opt in once the plugin's hook has been synced. |
 
 `TESTS_ACCESS_TOKEN` is an optional secret, needed only when `dependent-plugins` names a private repository.
 

@@ -28,10 +28,10 @@ on:
         type: string
         default: 'main'
       verify-hook:
-        description: "Fail when the plugin's .git-hooks-matomo/pre-push differs from the canonical copy in this repository"
+        description: "Fail when the plugin's .git-hooks-matomo/pre-push differs from the canonical copy in this repository. Opt in once the plugin's hook has been synced; most have not been."
         required: false
         type: boolean
-        default: true
+        default: false
       matomo-targets:
         description: >-
           JSON array of {target, php} objects, one per analysis run. Analysing the minimum target
