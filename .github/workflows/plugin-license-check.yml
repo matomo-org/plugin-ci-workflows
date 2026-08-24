@@ -24,7 +24,7 @@ jobs:
     name: License check
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           lfs: false
           persist-credentials: false
@@ -32,7 +32,7 @@ jobs:
       # empirically: github.job_workflow_sha evaluates to empty), so pinning the
       # script is the caller's job via script-ref.
       - name: Check out the license check script
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: matomo-org/plugin-ci-workflows
           ref: ${{ inputs.script-ref }}
