@@ -30,6 +30,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-phpcs.yml`](#phpcs) | Reusable workflow | Checks the plugin against the Matomo coding standards |
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
+| [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
 
 ### PHPCS
 
@@ -123,6 +124,33 @@ jobs:
 ```
 
 The check script lives at `scripts/bash/license_check.sh` and is covered by `tests/license_check_test.sh`, which runs on every pull request to this repository.
+
+### AI checklist
+
+Runs [`github-action-checklist-gate`](https://github.com/matomo-org/github-action-checklist-gate) against the pull request description, which is what enforces the two AI attestation items in the pull request template. No inputs.
+
+The gate reads the pull request description, so the caller has to grant `actions: read` and `pull-requests: read` in its own `permissions` block — a called workflow cannot widen the caller's token.
+
+```yaml
+name: AI Checklist
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  AiChecklist:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ai-checklist.yml@main
+```
+
+The `edited` trigger matters: without it the gate does not re-run when someone fills the checklist in, and the check stays red.
 
 ## Using a reusable workflow
 
