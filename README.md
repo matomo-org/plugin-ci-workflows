@@ -23,9 +23,31 @@ Nothing has been published yet. The catalogue below fills in as checks move acro
 
 ## Catalogue
 
-_Empty — this repository is newly created._
+| Name | Kind | Purpose |
+| --- | --- | --- |
+| [`plugin-phpcs.yml`](#phpcs) | Reusable workflow | Checks the plugin against the Matomo coding standards |
 
-Each entry will document its inputs, its required secrets and the minimum Matomo version it supports.
+### PHPCS
+
+Runs the plugin's own `phpcs.xml` against the [matomo-coding-standards](https://github.com/matomo-org/matomo-coding-standards) ruleset, and annotates the pull request with any violations.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `plugin-name` | yes | — | Name of the plugin, e.g. `LoginLdap` |
+| `php-version` | no | `7.4` | PHP version the job runs on |
+
+```yaml
+name: PHPCS check
+on: pull_request
+
+jobs:
+  phpcs:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-phpcs.yml@main
+    with:
+      plugin-name: MyPlugin
+```
+
+The plugin repository supplies the ruleset: the job runs `phpcs --standard=phpcs.xml`, so a `phpcs.xml` must exist at the repository root.
 
 ## Using a reusable workflow
 
