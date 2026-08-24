@@ -16,6 +16,18 @@ jobs:
       - name: Run tests
         run: bash tests/license_check_test.sh
 
+  codex-review-invariants:
+    name: Codex review invariants
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The review's other half lives in a private repository whose tests cannot see
+      # this workflow, so the controls that live here are asserted here.
+      - name: Check the Codex review workflow's security invariants
+        run: bash tests/codex_review_invariants_test.sh
+
   actionlint:
     name: Workflow lint
     runs-on: ubuntu-24.04
