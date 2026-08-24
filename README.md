@@ -14,12 +14,14 @@ This repository is public for a reason. A reusable workflow stored in a **privat
 
 | Path | Contents |
 | --- | --- |
-| `.github/workflows/` | Reusable workflows, called with `uses:` at job level. Each one defines a complete job. |
+| `.github/workflows/plugin-*.yml` | Reusable workflows, called with `uses:` at job level. Each one defines a complete job. |
+| `.github/workflows/*.yml` | Everything else here is this repository's own CI, not offered to callers. |
 | `actions/` | Composite actions, called with `uses:` at step level. Each one defines steps you drop into a job you have written yourself. |
+| `scripts/`, `hooks/`, `artifacts/` | Files the workflows above check this repository out to use. |
 
 Reach for a reusable workflow when the whole job is the same everywhere, and a composite action when the caller needs its own matrix, permissions or surrounding steps.
 
-Nothing has been published yet. The catalogue below fills in as checks move across.
+The `plugin-` prefix is what marks a workflow as part of the public surface. Anything without it — the checklist gate, the script tests — runs against this repository only, and may change without notice to callers.
 
 ## Catalogue
 
