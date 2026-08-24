@@ -52,10 +52,10 @@ on:
         type: string
         default: 'matomo-org/matomo'
       matomo-core-ref:
-        description: "Matomo core ref checked out for read-only review context"
+        description: "Matomo core ref checked out for read-only review context. The default derives it from the pull request base branch, so a plugin PR against 6.x-dev is reviewed against 6.x core; set a literal ref to override."
         required: false
         type: string
-        default: '5.x-dev'
+        default: 'auto'
       codex-model:
         description: "OpenAI model passed to openai/codex-action. Override only to move off the default."
         required: false

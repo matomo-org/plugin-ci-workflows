@@ -167,7 +167,7 @@ That indirection is not a style choice. GitHub resolves a reusable workflow from
 | `review-actions-repository` | no | `innocraft/github-action-tests-private` | Repository holding the trusted review actions |
 | `review-actions-ref` | no | `main` | Ref of that repository to run. When pinning this workflow to a SHA, pin the actions too. |
 | `matomo-core-repository` | no | `matomo-org/matomo` | Core repository checked out for read-only review context |
-| `matomo-core-ref` | no | `5.x-dev` | Core ref checked out for read-only review context |
+| `matomo-core-ref` | no | derived from the base branch | Core ref checked out for read-only review context. A pull request against `6.x-dev` is reviewed against 6.x core; a base branch that names no core branch falls back to `5.x-dev`. |
 | `matomo-agent-skills-ref` | no | `main` | Ref of `matomo-org/matomo-agent-skills` to install |
 | `codex-model` | no | `gpt-5.6-sol` | Model passed to `openai/codex-action` |
 | `codex-effort` | no | `xhigh` | Reasoning effort passed to `openai/codex-action` |
