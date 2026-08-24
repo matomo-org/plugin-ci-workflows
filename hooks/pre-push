@@ -40,7 +40,7 @@ elif command -v ddev >/dev/null 2>&1; then
   # Use ddev if setup (overridding local setup)
   if [ -d "$MATOMO_DIR/.ddev" ]; then
     cd "$MATOMO_DIR" || exit 1
-    if ddev status 2>&1 > /dev/null; then
+    if ddev status > /dev/null 2>&1; then
       COMMAND="ddev exec phpstan"
     fi
   fi
@@ -54,7 +54,7 @@ fi
 
 
 # Basic setup
-cd "$REPO_DIR"
+cd "$REPO_DIR" || exit 1
 STATUS=0
 # The branch to diff against is the remote's default, not a fixed name: plugins on
 # 6.x-dev would otherwise be compared against 5.x-dev and diff the wrong files.
@@ -102,13 +102,15 @@ check_pushed_commit() {
   fi
 
   echo "Running PHPstan on ${label} files"
-  changed_files=`echo "$changed_files" | sed -e 's/^\(.*\)$/"\1"/' | xargs -I{} echo "${PLUGIN_PATH}{}"`
-  echo "$changed_files" | xargs $COMMAND analyse -c ${PLUGIN_PATH}${config} || return 1
+  changed_files=$(echo "$changed_files" | sed -e 's/^\(.*\)$/"\1"/' | xargs -I{} echo "${PLUGIN_PATH}{}")
+  # shellcheck disable=SC2086 # $COMMAND may be "ddev exec phpstan" and must word-split
+  echo "$changed_files" | xargs $COMMAND analyse -c "${PLUGIN_PATH}${config}" || return 1
 }
 
 # Check the commits actually being pushed, as supplied on stdin: HEAD is wrong
 # when pushing another local branch or several refs at once. The inner commands
 # read /dev/null so they cannot consume the remaining stdin lines.
+# shellcheck disable=SC2034 # remote_ref/remote_oid consume git's 4-field pre-push line
 while read -r local_ref local_oid remote_ref remote_oid; do
   if [[ "$local_oid" == "$ZERO_OID" ]]; then
     continue # deleting the remote ref, nothing is pushed

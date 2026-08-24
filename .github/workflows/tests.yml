@@ -39,3 +39,8 @@ jobs:
           tar xz -f "$ARCHIVE" actionlint
           # ubuntu-24.04 ships shellcheck, so actionlint lints every `run:` block too.
           ./actionlint -color
+
+      # actionlint only reaches shell inside workflows. The hook ships to every plugin
+      # repository and the scripts run in their CI, so lint them directly as well.
+      - name: Run shellcheck over the standalone scripts
+        run: shellcheck --severity=style hooks/pre-push scripts/bash/*.sh tests/*.sh

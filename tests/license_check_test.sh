@@ -63,6 +63,7 @@ check() {
   else
     failures=$((failures + 1))
     echo "FAIL - $desc (exit $actual, expected $expected_exit)"
+    # shellcheck disable=SC2001 # prefixing every line is what sed is for here
     sed 's/^/    /' <<< "$output"
   fi
 }
