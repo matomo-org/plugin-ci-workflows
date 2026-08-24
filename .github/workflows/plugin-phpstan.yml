@@ -62,6 +62,11 @@ jobs:
     env:
       PLUGIN_NAME: ${{ inputs.plugin-name }}
       DEPENDENT_PLUGINS: ${{ inputs.dependent-plugins }}
+      # Unique so they cannot collide with a directory the caller tracks, and
+      # dot-prefixed so checkout_matomo.sh's `cp -R !($PLUGIN_NAME)` leaves them
+      # out of the plugin it assembles: that glob enables extglob, not dotglob.
+      HELPERS_DIR: .github-action-tests-${{ github.run_id }}-${{ github.run_attempt }}
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Validate inputs
         run: |
@@ -84,7 +89,7 @@ jobs:
         with:
           repository: matomo-org/github-action-tests
           ref: ${{ inputs.scripts-ref }}
-          path: github-action-tests
+          path: ${{ env.HELPERS_DIR }}
           persist-credentials: false
 
       # A reusable workflow does not bring its own repository into the caller's
@@ -95,7 +100,7 @@ jobs:
         with:
           repository: matomo-org/plugin-ci-workflows
           ref: ${{ inputs.workflows-ref }}
-          path: plugin-ci-workflows
+          path: ${{ env.WORKFLOWS_DIR }}
           persist-credentials: false
 
       - name: Resolve PHP version
@@ -105,7 +110,7 @@ jobs:
           # per-target when the targets span Matomo majors, else the workflow-wide input
           PHP_VERSION_INPUT: ${{ matrix.php || inputs.php-version }}
         run: |
-          RESOLVED_VERSION=$("${{ github.workspace }}/github-action-tests/scripts/bash/resolve_php_version.sh" "$PHP_VERSION_INPUT")
+          RESOLVED_VERSION=$("$HELPERS_DIR/scripts/bash/resolve_php_version.sh" "$PHP_VERSION_INPUT")
 
           echo "Resolved php-version '$PHP_VERSION_INPUT' to '$RESOLVED_VERSION'"
           echo "version=$RESOLVED_VERSION" >> "$GITHUB_OUTPUT"
@@ -118,26 +123,25 @@ jobs:
       - name: Check the pre-push hook matches the canonical copy
         if: ${{ inputs.verify-hook }}
         shell: bash
-        run: diff -u plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
+        run: diff -u "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push
 
       - name: checkout matomo for plugin builds
         shell: bash
-        run: ${{ github.workspace }}/github-action-tests/scripts/bash/checkout_matomo.sh
+        run: ${{ github.workspace }}/${{ env.HELPERS_DIR }}/scripts/bash/checkout_matomo.sh
         env:
           WORKSPACE: ${{ github.workspace }}
-          ACTION_PATH: ${{ github.workspace }}/github-action-tests
+          ACTION_PATH: ${{ github.workspace }}/${{ env.HELPERS_DIR }}
           MATOMO_TEST_TARGET: ${{ matrix.target }}
 
-      # checkout_matomo.sh copies every workspace entry into the plugin directory,
-      # so both helper checkouts land inside the tree PHPStan is about to analyse.
-      # A plugin whose phpstan.neon scans `.` would report on their files.
-      - name: Remove the helper checkouts copied into the plugin
+      # Belt and braces: the dot prefix already keeps the helper checkouts out of
+      # `cp -R !($PLUGIN_NAME)`, but that depends on dotglob staying off in a script
+      # this repository does not own. The names are run-scoped, so this can only ever
+      # remove our own copies.
+      - name: Remove any helper checkout copied into the plugin
         shell: bash
-        env:
-          PLUGIN_NAME: ${{ inputs.plugin-name }}
         run: |
           cd "${{ github.workspace }}/matomo/plugins/$PLUGIN_NAME"
-          rm -rf github-action-tests plugin-ci-workflows
+          rm -rf "$HELPERS_DIR" "$WORKFLOWS_DIR"
 
       - name: Check the PHP version can bootstrap this Matomo
         shell: bash
@@ -155,6 +159,7 @@ jobs:
             exit 0
           fi
 
+          # shellcheck disable=SC2016 # $argv is PHP's, and must not be expanded by the shell
           if ! php -r 'exit(version_compare(PHP_VERSION, $argv[1], ">=") ? 0 : 1);' "$MATOMO_MIN_PHP"; then
             echo "::error::Matomo target '$MATOMO_TARGET' requires PHP >= $MATOMO_MIN_PHP but this job runs $(php -r 'echo PHP_VERSION;'). Give this target its own PHP in the matomo-targets input, for example {\"target\": \"$MATOMO_TARGET\", \"php\": \"matomo6_min_php\"}."
             exit 1
@@ -174,7 +179,7 @@ jobs:
           # as ../../bootstrap-phpstan.php, so without it PHPStan exits before analysing
           # anything on older targets. It has to be copied into the Matomo root rather than
           # referenced in place: it derives PIWIK_DOCUMENT_ROOT from its own location.
-          cp "${{ github.workspace }}/plugin-ci-workflows/artifacts/bootstrap-phpstan.php" bootstrap-phpstan.php
+          cp "${{ github.workspace }}/$WORKFLOWS_DIR/artifacts/bootstrap-phpstan.php" bootstrap-phpstan.php
           echo "Matomo predates bootstrap-phpstan.php; using the copy from plugin-ci-workflows."
 
       - name: prepare setup
@@ -196,6 +201,8 @@ jobs:
           # bootstrap-phpstan.php in one commit, released in 5.4.0. On an older target there
           # is no analyser at all, so install the same constraint that Matomo declares rather
           # than the newest release, whose own findings would differ from the max leg's.
+          # The range is deliberately not pinned to an exact version: it mirrors what Matomo
+          # itself resolves, and pinning here would drift from the analyser the max leg uses.
           echo "Matomo predates phpstan/phpstan; installing ~1.12 to analyse against it."
           composer require --dev --ignore-platform-reqs --no-interaction "phpstan/phpstan:~1.12"
 
@@ -203,7 +210,7 @@ jobs:
         if: ${{ inputs.dependent-plugins != '' }}
         shell: bash
         working-directory: ${{ github.workspace }}/matomo
-        run: ${{ github.workspace }}/github-action-tests/scripts/bash/checkout_dependent_plugins.sh
+        run: ${{ github.workspace }}/${{ env.HELPERS_DIR }}/scripts/bash/checkout_dependent_plugins.sh
         env:
           GITHUB_USER_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN || github.token }}
           TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
