@@ -38,7 +38,7 @@ Runs the plugin's own `phpcs.xml` against the [matomo-coding-standards](https://
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `plugin-name` | yes | — | Name of the plugin, e.g. `LoginLdap` |
-| `php-version` | no | `matomo5_min_php` | A literal version, or one of the shared aliases `matomo5_min_php`, `matomo5_max_php`, `matomo6_min_php`, `matomo6_max_php` |
+| `php-version` | no | `matomo6_min_php` | A literal version, or one of the shared aliases. PHPCS itself needs at least 7.4, so `matomo5_min_php` is too low to use here. |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the version resolver |
 
 ```yaml

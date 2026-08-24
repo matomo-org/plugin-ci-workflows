@@ -8,10 +8,10 @@ on:
         required: true
         type: string
       php-version:
-        description: "PHP version the job runs on. Accepts a literal version or one of the shared aliases (matomo5_min_php, matomo5_max_php, matomo6_min_php, matomo6_max_php), which track a Matomo major's floor and ceiling centrally."
+        description: "PHP version the job runs on. Accepts a literal version or one of the shared aliases (matomo5_min_php, matomo5_max_php, matomo6_min_php, matomo6_max_php), which track a Matomo major's floor and ceiling centrally. PHPCS needs at least 7.4, so matomo5_min_php is too low to use here."
         required: false
         type: string
-        default: 'matomo5_min_php'
+        default: 'matomo6_min_php'
       scripts-ref:
         description: "Ref of matomo-org/github-action-tests to take the version resolver from. When pinning the workflow to a SHA, pass the same SHA here."
         required: false
