@@ -1,0 +1,240 @@
+name: PHPStan check
+
+on:
+  workflow_call:
+    inputs:
+      plugin-name:
+        description: "Name of the plugin, e.g. LoginLdap"
+        required: true
+        type: string
+      dependent-plugins:
+        description: "Space-separated repository slugs to check out, e.g. 'innocraft/plugin-Funnels'"
+        required: false
+        type: string
+        default: ''
+      php-version:
+        description: "PHP version the job runs on; the analysis level and phpVersion come from the plugin's phpstan.neon. Accepts a literal version or one of the shared aliases (matomo5_min_php, matomo5_max_php, matomo6_min_php, matomo6_max_php), which track a Matomo major's floor and ceiling centrally."
+        required: false
+        type: string
+        default: 'matomo5_min_php'
+      scripts-ref:
+        description: "Ref of matomo-org/github-action-tests to take the helper scripts from. When pinning the workflow to a SHA, pass the same SHA here."
+        required: false
+        type: string
+        default: 'main'
+      workflows-ref:
+        description: "Ref of matomo-org/plugin-ci-workflows to take the pre-push hook and the PHPStan bootstrap from. When pinning the workflow to a SHA, pass the same SHA here."
+        required: false
+        type: string
+        default: 'main'
+      verify-hook:
+        description: "Fail when the plugin's .git-hooks-matomo/pre-push differs from the canonical copy in this repository"
+        required: false
+        type: boolean
+        default: true
+      matomo-targets:
+        description: >-
+          JSON array of {target, php} objects, one per analysis run. Analysing the minimum target
+          is what catches a plugin calling a core API that does not exist yet in the oldest Matomo
+          its plugin.json supports. `php` is optional and falls back to the php-version input; set
+          it per target when the targets span Matomo majors, because a Matomo 6 checkout cannot be
+          bootstrapped by the PHP 7.2 that Matomo 5 allows.
+        required: false
+        type: string
+        default: '[{"target": "minimum_required_matomo"}, {"target": "maximum_supported_matomo"}]'
+    secrets:
+      TESTS_ACCESS_TOKEN:
+        required: false
+
+# The job only reads the two repositories; everything else stays at none so any
+# caller with default workflow permissions can use this without granting scopes.
+permissions:
+  contents: read
+
+jobs:
+  phpstan:
+    name: PHPStan (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matomo-targets) }}
+    env:
+      PLUGIN_NAME: ${{ inputs.plugin-name }}
+      DEPENDENT_PLUGINS: ${{ inputs.dependent-plugins }}
+    steps:
+      - name: Validate inputs
+        run: |
+          if [[ ! "$PLUGIN_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "Invalid plugin-name: $PLUGIN_NAME"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          lfs: false
+          persist-credentials: false
+
+      # No GitHub context identifies the called workflow's own commit (verified
+      # empirically: github.job_workflow_sha evaluates to empty), so pinning the
+      # scripts is the caller's job via scripts-ref. This runs before PHP is set up
+      # because the version aliases are resolved by one of those scripts.
+      - name: Check out github-action-tests repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: matomo-org/github-action-tests
+          ref: ${{ inputs.scripts-ref }}
+          path: github-action-tests
+          persist-credentials: false
+
+      # A reusable workflow does not bring its own repository into the caller's
+      # workspace, so the files this workflow ships alongside it — the canonical
+      # pre-push hook and the PHPStan bootstrap — need checking out explicitly too.
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: plugin-ci-workflows
+          persist-credentials: false
+
+      - name: Resolve PHP version
+        id: resolve-php
+        shell: bash
+        env:
+          # per-target when the targets span Matomo majors, else the workflow-wide input
+          PHP_VERSION_INPUT: ${{ matrix.php || inputs.php-version }}
+        run: |
+          RESOLVED_VERSION=$("${{ github.workspace }}/github-action-tests/scripts/bash/resolve_php_version.sh" "$PHP_VERSION_INPUT")
+
+          echo "Resolved php-version '$PHP_VERSION_INPUT' to '$RESOLVED_VERSION'"
+          echo "version=$RESOLVED_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ steps.resolve-php.outputs.version }}
+
+      - name: Check the pre-push hook matches the canonical copy
+        if: ${{ inputs.verify-hook }}
+        shell: bash
+        run: diff -u plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
+
+      - name: checkout matomo for plugin builds
+        shell: bash
+        run: ${{ github.workspace }}/github-action-tests/scripts/bash/checkout_matomo.sh
+        env:
+          WORKSPACE: ${{ github.workspace }}
+          ACTION_PATH: ${{ github.workspace }}/github-action-tests
+          MATOMO_TEST_TARGET: ${{ matrix.target }}
+
+      - name: Check the PHP version can bootstrap this Matomo
+        shell: bash
+        working-directory: ${{ github.workspace }}/matomo
+        env:
+          MATOMO_TARGET: ${{ matrix.target }}
+        run: |
+          # bootstrap-phpstan.php executes core rather than only parsing it, so analysing a
+          # Matomo 6 checkout under the PHP 7.2 that Matomo 5 allows dies on 8.1 syntax partway
+          # through. Catch it here, where the message can say what to change.
+          MATOMO_MIN_PHP=$(grep -oE "piwik_minimumPHPVersion = '[0-9.]+'" core/testMinimumPhpVersion.php | grep -oE "[0-9]+\.[0-9.]+" | head -1)
+
+          if [ -z "$MATOMO_MIN_PHP" ]; then
+            echo "Could not read piwik_minimumPHPVersion; skipping the compatibility check."
+            exit 0
+          fi
+
+          if ! php -r 'exit(version_compare(PHP_VERSION, $argv[1], ">=") ? 0 : 1);' "$MATOMO_MIN_PHP"; then
+            echo "::error::Matomo target '$MATOMO_TARGET' requires PHP >= $MATOMO_MIN_PHP but this job runs $(php -r 'echo PHP_VERSION;'). Give this target its own PHP in the matomo-targets input, for example {\"target\": \"$MATOMO_TARGET\", \"php\": \"matomo6_min_php\"}."
+            exit 1
+          fi
+
+          echo "PHP $(php -r 'echo PHP_VERSION;') satisfies this Matomo's floor of $MATOMO_MIN_PHP."
+
+      - name: Provide the PHPStan bootstrap when Matomo predates it
+        shell: bash
+        working-directory: ${{ github.workspace }}/matomo
+        run: |
+          if [ -f bootstrap-phpstan.php ]; then
+            echo "Matomo provides bootstrap-phpstan.php."
+            exit 0
+          fi
+          # Matomo only ships this file from 5.4.0, and plugin phpstan.neon files reference it
+          # as ../../bootstrap-phpstan.php, so without it PHPStan exits before analysing
+          # anything on older targets. It has to be copied into the Matomo root rather than
+          # referenced in place: it derives PIWIK_DOCUMENT_ROOT from its own location.
+          cp "${{ github.workspace }}/plugin-ci-workflows/artifacts/bootstrap-phpstan.php" bootstrap-phpstan.php
+          echo "Matomo predates bootstrap-phpstan.php; using the copy from plugin-ci-workflows."
+
+      - name: prepare setup
+        shell: bash
+        run: |
+          cd ${{ github.workspace }}/matomo
+          echo -e "composer install"
+          composer install --ignore-platform-reqs
+
+      - name: Provide PHPStan itself when Matomo predates it
+        shell: bash
+        working-directory: ${{ github.workspace }}/matomo
+        run: |
+          if [ -x vendor/bin/phpstan ]; then
+            echo "Matomo provides PHPStan."
+            exit 0
+          fi
+          # Matomo gained phpstan/phpstan, the composer `phpstan` script and
+          # bootstrap-phpstan.php in one commit, released in 5.4.0. On an older target there
+          # is no analyser at all, so install the same constraint that Matomo declares rather
+          # than the newest release, whose own findings would differ from the max leg's.
+          echo "Matomo predates phpstan/phpstan; installing ~1.12 to analyse against it."
+          composer require --dev --ignore-platform-reqs --no-interaction "phpstan/phpstan:~1.12"
+
+      - name: checkout additional plugins
+        if: ${{ inputs.dependent-plugins != '' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}/matomo
+        run: ${{ github.workspace }}/github-action-tests/scripts/bash/checkout_dependent_plugins.sh
+        env:
+          GITHUB_USER_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN || github.token }}
+          TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
+
+      - name: "Restore result cache"
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: /tmp/phpstan # same as in phpstan.neon
+          # the target is part of the key because the legs analyse different Matomo trees and
+          # both save within one run, which would otherwise collide on a single key
+          key: "phpstan-result-cache-${{ matrix.target }}-${{ github.run_id }}"
+          restore-keys: |
+            phpstan-result-cache-${{ matrix.target }}-
+
+      - name: PHPStan whole repo
+        id: phpstan-all
+        shell: bash
+        working-directory: ${{ github.workspace }}/matomo
+        env:
+          MATOMO_TARGET: ${{ matrix.target }}
+        # not `composer run phpstan`: that script arrived with PHPStan itself in 5.4.0, so it
+        # does not exist on older targets. The binary is equivalent — the script is only
+        # `phpstan analyse -c phpstan.neon`, whose config this command overrides anyway.
+        run: |
+          CONFIG="plugins/${PLUGIN_NAME}/phpstan.neon"
+
+          # A plugin may guard a newer core API behind class_exists and still be analysed
+          # against an older Matomo that lacks it, which PHPStan cannot see through. An
+          # optional phpstan-min-matomo.neon holds those ignores. It applies to this leg only:
+          # on the maximum leg the error does not occur, so the same ignore would be unmatched
+          # and reportUnmatchedIgnoredErrors would fail that leg instead.
+          if [ "$MATOMO_TARGET" = 'minimum_required_matomo' ] \
+            && [ -f "plugins/${PLUGIN_NAME}/phpstan-min-matomo.neon" ]; then
+            CONFIG="plugins/${PLUGIN_NAME}/phpstan-min-matomo.neon"
+            echo "Using the plugin's minimum-target config: $CONFIG"
+          fi
+
+          vendor/bin/phpstan analyse -vvv -c "$CONFIG"
+
+      - name: "Save result cache"
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: ${{ !cancelled() }}
+        with:
+          path: /tmp/phpstan # same as in phpstan.neon
+          key: "phpstan-result-cache-${{ matrix.target }}-${{ github.run_id }}"

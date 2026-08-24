@@ -26,6 +26,7 @@ Nothing has been published yet. The catalogue below fills in as checks move acro
 | Name | Kind | Purpose |
 | --- | --- | --- |
 | [`plugin-phpcs.yml`](#phpcs) | Reusable workflow | Checks the plugin against the Matomo coding standards |
+| [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
 
 ### PHPCS
 
@@ -48,6 +49,52 @@ jobs:
 ```
 
 The plugin repository supplies the ruleset: the job runs `phpcs --standard=phpcs.xml`, so a `phpcs.xml` must exist at the repository root.
+
+### PHPStan
+
+Analyses the plugin with PHPStan against a checked-out Matomo. By default it runs twice, against the oldest Matomo the plugin's `plugin.json` supports and against the newest, which is what catches a plugin calling a core API that does not exist yet on its own floor.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `plugin-name` | yes | — | Name of the plugin, e.g. `LoginLdap` |
+| `dependent-plugins` | no | `''` | Space-separated repository slugs to check out, e.g. `innocraft/plugin-Funnels` |
+| `php-version` | no | `matomo5_min_php` | A literal version, or one of the shared aliases `matomo5_min_php`, `matomo5_max_php`, `matomo6_min_php`, `matomo6_max_php` |
+| `matomo-targets` | no | min and max | JSON array of `{target, php}` objects, one analysis run each |
+| `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the shared helper scripts |
+| `workflows-ref` | no | `main` | Ref of this repository for the pre-push hook and the PHPStan bootstrap |
+| `verify-hook` | no | `true` | Fail when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/` |
+
+`TESTS_ACCESS_TOKEN` is an optional secret, needed only when `dependent-plugins` names a private repository.
+
+```yaml
+name: PHPStan check
+on: pull_request
+
+jobs:
+  phpstan:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-phpstan.yml@main
+    with:
+      plugin-name: MyPlugin
+    secrets: inherit
+```
+
+Set `php-version` per target when the targets span Matomo majors — a Matomo 6 checkout cannot be bootstrapped by the PHP 7.2 that Matomo 5 still allows:
+
+```yaml
+    with:
+      plugin-name: MyPlugin
+      matomo-targets: >-
+        [{"target": "minimum_required_matomo", "php": "matomo5_min_php"},
+         {"target": "maximum_supported_matomo", "php": "matomo6_min_php"}]
+```
+
+A plugin that guards a newer core API behind `class_exists` can put the resulting ignores in `phpstan-min-matomo.neon`; the minimum leg uses that config in place of `phpstan.neon` when it exists.
+
+#### Where the pieces live
+
+This workflow checks out two repositories. The shared helpers that Matomo core CI uses as well — `checkout_matomo.sh`, `checkout_dependent_plugins.sh` and `resolve_php_version.sh` — stay in [`github-action-tests`](https://github.com/matomo-org/github-action-tests) and come from `scripts-ref`. The plugin-only pieces, `hooks/pre-push` and `artifacts/bootstrap-phpstan.php`, live here and come from `workflows-ref`.
+
+A reusable workflow does not bring its own repository into the caller's workspace, which is why this repository has to be checked out explicitly even though the workflow is defined in it.
 
 ## Using a reusable workflow
 
