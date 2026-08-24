@@ -31,22 +31,22 @@ MATOMO_DIR=$(echo "$REPO_DIR" | sed -E 's|/plugins/.*$||')
 
 ### Figure out how to run PHPStan - ddev or not. ###
 
-COMMAND=""
+COMMAND=()
 # Use local PHP if setup
 if command -v php >/dev/null 2>&1 && [ -f "${MATOMO_DIR}/vendor/bin/phpstan" ]; then
-    COMMAND="${MATOMO_DIR}/vendor/bin/phpstan"
+    COMMAND=("${MATOMO_DIR}/vendor/bin/phpstan")
     PLUGIN_PATH=''
 elif command -v ddev >/dev/null 2>&1; then
   # Use ddev if setup (overridding local setup)
   if [ -d "$MATOMO_DIR/.ddev" ]; then
     cd "$MATOMO_DIR" || exit 1
     if ddev status > /dev/null 2>&1; then
-      COMMAND="ddev exec phpstan"
+      COMMAND=(ddev exec phpstan)
     fi
   fi
 fi
 # If no command, exit
-if [[ -z "$COMMAND" ]]; then
+if [[ ${#COMMAND[@]} -eq 0 ]]; then
   echo "No way to run phpstan found."
   exit 1
 fi
@@ -103,8 +103,7 @@ check_pushed_commit() {
 
   echo "Running PHPstan on ${label} files"
   changed_files=$(echo "$changed_files" | sed -e 's/^\(.*\)$/"\1"/' | xargs -I{} echo "${PLUGIN_PATH}{}")
-  # shellcheck disable=SC2086 # $COMMAND may be "ddev exec phpstan" and must word-split
-  echo "$changed_files" | xargs $COMMAND analyse -c "${PLUGIN_PATH}${config}" || return 1
+  echo "$changed_files" | xargs "${COMMAND[@]}" analyse -c "${PLUGIN_PATH}${config}" || return 1
 }
 
 # Check the commits actually being pushed, as supplied on stdin: HEAD is wrong
