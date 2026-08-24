@@ -15,7 +15,7 @@ on:
         type: string
         default: ''
       trigger-label:
-        description: "Pull request label that triggers the review"
+        description: "Pull request label that triggers the review. The caller gates on this label in its own `if:` condition, so both have to change together."
         required: false
         type: string
         default: 'codex-review'
