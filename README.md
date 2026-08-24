@@ -189,6 +189,10 @@ permissions:
 
 jobs:
   codex-review:
+    # Keep this condition. Every job below gates on the label too, but this workflow's
+    # cancel-in-progress concurrency group is claimed as soon as it is instantiated, so without it
+    # an unrelated label cancels a review already running on the same pull request.
+    if: ${{ github.event.label.name == 'codex-review' }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-codex-review.yml@main
     permissions:
       actions: read
