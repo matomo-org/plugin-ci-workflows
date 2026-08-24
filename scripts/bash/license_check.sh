@@ -123,7 +123,7 @@ is_ignored() {
     return 1
   fi
   for pattern in "${ignore_patterns[@]}"; do
-    # shellcheck disable=SC2254 -- the patterns are globs by design
+    # shellcheck disable=SC2254 # the patterns are globs by design
     case "$path" in
       $pattern) return 0 ;;
     esac
