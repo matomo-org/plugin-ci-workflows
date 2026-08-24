@@ -56,7 +56,15 @@ fi
 # Basic setup
 cd "$REPO_DIR"
 STATUS=0
-MAIN_BRANCH='5.x-dev'
+# The branch to diff against is the remote's default, not a fixed name: plugins on
+# 6.x-dev would otherwise be compared against 5.x-dev and diff the wrong files.
+# origin/HEAD is only set if the clone recorded it, so fall back to asking the remote,
+# then to 5.x-dev for a clone that can reach neither.
+MAIN_BRANCH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+if [[ -z "$MAIN_BRANCH" ]]; then
+  MAIN_BRANCH=$(git remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p')
+fi
+MAIN_BRANCH=${MAIN_BRANCH:-5.x-dev}
 ZERO_OID='0000000000000000000000000000000000000000'
 PHPSTAN_CREATED_CONFIG=phpstan/phpstan.created.neon
 PHPSTAN_MODIFIED_CONFIG=phpstan/phpstan.modified.neon
