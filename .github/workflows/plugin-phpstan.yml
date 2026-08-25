@@ -164,7 +164,9 @@ jobs:
           # bootstrap-phpstan.php executes core rather than only parsing it, so analysing a
           # Matomo 6 checkout under the PHP 7.2 that Matomo 5 allows dies on 8.1 syntax partway
           # through. Catch it here, where the message can say what to change.
-          MATOMO_MIN_PHP=$(grep -oE "piwik_minimumPHPVersion = '[0-9.]+'" core/testMinimumPhpVersion.php | grep -oE "[0-9]+\.[0-9.]+" | head -1)
+          # `|| true`: GitHub runs `run:` with `-e -o pipefail`, so without it a non-matching
+          # grep exits the step and the guard below is unreachable dead code.
+          MATOMO_MIN_PHP=$(grep -oE "piwik_minimumPHPVersion = '[0-9.]+'" core/testMinimumPhpVersion.php 2>/dev/null | grep -oE "[0-9]+\.[0-9.]+" | head -1 || true)
 
           if [ -z "$MATOMO_MIN_PHP" ]; then
             echo "Could not read piwik_minimumPHPVersion; skipping the compatibility check."
@@ -298,9 +300,11 @@ jobs:
 
           vendor/bin/phpstan analyse -vvv -c "$CONFIG"
 
+      # Only a clean run's cache is worth keeping: the plugin's own phpstan.neon executes in this
+      # job, so a cache written by a failed analysis is both useless and attacker-influenced.
       - name: "Save result cache"
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
-        if: ${{ !cancelled() }}
+        if: ${{ success() }}
         with:
           path: /tmp/phpstan # same as in phpstan.neon
           key: "phpstan-result-cache-${{ matrix.target }}-${{ github.run_id }}"

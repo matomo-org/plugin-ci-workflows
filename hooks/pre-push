@@ -116,7 +116,8 @@ while read -r local_ref local_oid remote_ref remote_oid; do
   fi
   echo "Checking ${local_ref} (${local_oid})"
   check_pushed_commit "$local_oid" A "$PHPSTAN_CREATED_CONFIG" "created" < /dev/null || STATUS=1
-  check_pushed_commit "$local_oid" CM "$PHPSTAN_MODIFIED_CONFIG" "modified" < /dev/null || STATUS=1
+  # CMR, not CM: a renamed-and-modified PHP file has status R and would otherwise skip the check.
+  check_pushed_commit "$local_oid" CMR "$PHPSTAN_MODIFIED_CONFIG" "modified" < /dev/null || STATUS=1
 done
 
 # Don't bother running the full check, as we check changes files already, and

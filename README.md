@@ -65,7 +65,7 @@ Analyses the plugin with PHPStan against a checked-out Matomo. By default it run
 | --- | --- | --- | --- |
 | `plugin-name` | yes | — | Name of the plugin, e.g. `LoginLdap` |
 | `dependent-plugins` | no | `''` | Space-separated repository slugs to check out, e.g. `innocraft/plugin-Funnels` |
-| `php-version` | no | `matomo5_min_php` | A literal version, or one of the shared aliases `matomo5_min_php`, `matomo5_max_php`, `matomo6_min_php`, `matomo6_max_php` |
+| `php-version` | no | `matomo6_min_php` | A literal version, or one of the shared aliases `matomo5_min_php`, `matomo5_max_php`, `matomo6_min_php`, `matomo6_max_php`. The default clears Matomo 6's floor of 8.1: a plugin declaring `>=6.0.0-b1` resolves both legs to `6.x-dev` until 6.0.0 is tagged, and 7.2 cannot bootstrap it. |
 | `matomo-targets` | no | min and max | JSON array of `{target, php}` objects, one analysis run each |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the shared helper scripts |
 | `workflows-ref` | no | `main` | Ref of this repository for the pre-push hook and the PHPStan bootstrap |
