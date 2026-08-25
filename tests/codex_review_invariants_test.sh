@@ -124,6 +124,22 @@ for name, job in doc['jobs'].items():
 
 # The review must see the commit preflight resolved, not whatever the branch points at
 # by the time the job starts.
+# allowed-owners restricts which repositories may run a review at all, and automation-paths is
+# what stops a pull request that edits the reviewer's own configuration from being reviewed by it.
+# Both are enforced inside preflight, so dropping either from the call silently removes a control
+# while every other invariant here still passes.
+check "preflight receives the owner allowlist and the automation-path guard" \
+  query "
+step = [
+    s for s in doc['jobs']['preflight']['steps']
+    if 'review/actions/preflight' in str(s.get('uses', ''))
+][0]
+with_ = step.get('with') or {}
+for key in ('allowed-owners', 'automation-paths'):
+    if 'inputs.' + key not in str(with_.get(key, '')):
+        sys.exit(1)
+"
+
 check "codex reviews the SHAs preflight froze" \
   query "
 step = [s for s in doc['jobs']['codex']['steps'] if 'review/actions/codex' in str(s.get('uses', ''))][0]
