@@ -75,18 +75,27 @@ jobs:
         with:
           php-version: ${{ steps.resolve-php.outputs.version }}
           tools: cs2pr
-      - name: Install dependencies
+      # Installed outside the plugin on purpose. `composer init` in the workspace overwrites a
+      # plugin's own composer.json -- verified: a file with real requires came back as
+      # "require": {} -- and `composer install` would leave a vendor/ tree inside the very
+      # directory the ruleset scans.
+      - name: Install the coding standard
         env:
-          PLUGIN_NAME: ${{ inputs.plugin-name }}
-        run:
-          composer init --name="matomo/$(echo "$PLUGIN_NAME" | tr '[:upper:]' '[:lower:]')" --quiet;
-          composer --no-plugins config allow-plugins.dealerdirect/phpcodesniffer-composer-installer true -n;
-          composer config repositories.matomo-coding-standards vcs https://github.com/matomo-org/matomo-coding-standards -n;
-          composer require matomo-org/matomo-coding-standards:dev-master;
-          composer install --prefer-dist --no-progress
+          TOOLS: ${{ runner.temp }}/phpcs-tools
+        run: |
+          mkdir -p "$TOOLS"
+          cd "$TOOLS"
+          composer init --name=matomo/phpcs-tools --quiet
+          composer --no-plugins config allow-plugins.dealerdirect/phpcodesniffer-composer-installer true -n
+          composer config repositories.matomo-coding-standards vcs https://github.com/matomo-org/matomo-coding-standards -n
+          composer require --no-interaction --no-progress matomo-org/matomo-coding-standards:dev-master
+
       - name: Check PHP code styles
         id: phpcs
-        run: ./vendor/bin/phpcs --report-full --standard=phpcs.xml --report-checkstyle=./phpcs-report.xml
+        env:
+          TOOLS: ${{ runner.temp }}/phpcs-tools
+        run: |
+          "$TOOLS/vendor/bin/phpcs" --report-full --standard=phpcs.xml --report-checkstyle=./phpcs-report.xml
       - name: Show PHPCS results in PR
         if: ${{ always() && steps.phpcs.outcome == 'failure' }}
         run: cs2pr ./phpcs-report.xml --prepend-filename

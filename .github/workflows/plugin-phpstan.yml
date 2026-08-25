@@ -13,10 +13,10 @@ on:
         type: string
         default: ''
       php-version:
-        description: "PHP version the job runs on; the analysis level and phpVersion come from the plugin's phpstan.neon. Accepts a literal version or one of the shared aliases (matomo5_min_php, matomo5_max_php, matomo6_min_php, matomo6_max_php), which track a Matomo major's floor and ceiling centrally."
+        description: "PHP version the job runs on; the analysis level and phpVersion come from the plugin's phpstan.neon. Accepts a literal version or one of the shared aliases (matomo5_min_php, matomo5_max_php, matomo6_min_php, matomo6_max_php), which track a Matomo major's floor and ceiling centrally. The default clears Matomo 6's floor of 8.1: a plugin declaring >=6.0.0-b1 resolves both legs to 6.x-dev until 6.0.0 is tagged, and matomo5_min_php (7.2) cannot bootstrap it."
         required: false
         type: string
-        default: 'matomo5_min_php'
+        default: 'matomo6_min_php'
       scripts-ref:
         description: "Ref of matomo-org/github-action-tests to take the helper scripts from. Pinning the workflow does not pin these: pass a SHA from that repository, which is a different repository with different SHAs."
         required: false
@@ -54,7 +54,7 @@ permissions:
 jobs:
   phpstan:
     name: PHPStan (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -226,6 +226,27 @@ jobs:
         env:
           GITHUB_USER_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN || github.token }}
           TARGET_BRANCH: ${{ github.base_ref || github.ref_name }}
+
+      # checkout_dependent_plugins.sh prints "Failed to checkout ... Skipping." and still exits 0,
+      # so a caller that forgets `secrets: inherit`, or a repository without TESTS_ACCESS_TOKEN,
+      # falls back to github.token, cannot clone innocraft/*, and PHPStan then analyses a tree
+      # missing a dependency -- reported as a wall of unrelated errors rather than a setup fault.
+      - name: Check every dependent plugin was actually checked out
+        if: ${{ inputs.dependent-plugins != '' }}
+        shell: bash
+        working-directory: ${{ github.workspace }}/matomo
+        run: |
+          MISSING=""
+          for slug in $DEPENDENT_PLUGINS; do
+            name=${slug##*/}
+            name=${name#plugin-}
+            [ -d "plugins/$name" ] || MISSING="$MISSING $slug"
+          done
+
+          if [ -n "$MISSING" ]; then
+            echo "::error::These dependent plugins were not checked out:$MISSING. The most likely cause is a missing or unscoped TESTS_ACCESS_TOKEN, which makes the clone fall back to a token that cannot read private repositories."
+            exit 1
+          fi
 
       # The helper clones over https://$TOKEN:@github.com/..., and git keeps that URL
       # in .git/config. PHPStan then runs the plugin's own phpstan.neon, which can

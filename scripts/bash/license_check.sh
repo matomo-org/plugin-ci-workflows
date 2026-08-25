@@ -163,7 +163,8 @@ while IFS= read -r -d '' file; do
     report_missing_header "$rel" "File has no recognized license header; expected $expected_header"
   fi
 done < <(find . \
-  \( -name .git -o -name vendor -o -name node_modules -o -name libs -o -path ./tests/resources \) -prune \
+  \( -name .git -o -name vendor -o -name node_modules -o -name libs -o -path ./tests/resources \
+     -o -path ./vue/dist \) -prune \
   -o -type f \( -name '*.php' -o -name '*.js' -o -name '*.ts' -o -name '*.vue' \) -print0)
 
 echo "Checked $scanned files: $errors error(s), $warnings warning(s)"
