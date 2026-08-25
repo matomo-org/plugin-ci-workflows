@@ -21,6 +21,8 @@ This repository is public for a reason. A reusable workflow stored in a **privat
 
 Reach for a reusable workflow when the whole job is the same everywhere, and a composite action when the caller needs its own matrix, permissions or surrounding steps.
 
+The examples below use `secrets: inherit` for brevity. [Codex review](#codex-review) is the exception and names its two secrets explicitly, because `inherit` hands every secret the calling repository can see to a workflow defined in another repository.
+
 The `plugin-` prefix is what marks a workflow as part of the public surface. Anything without it — the checklist gate, the script tests — runs against this repository only, and may change without notice to callers.
 
 ## Catalogue
@@ -177,6 +179,9 @@ That indirection is not a style choice. GitHub resolves a reusable workflow from
 | `TESTS_ACCESS_TOKEN` | yes | Read access to the review actions repository. A caller's `GITHUB_TOKEN` cannot read a private repository. |
 
 ```yaml
+# Save as .github/workflows/codex-review.yml. The automation-paths default names that exact
+# path as a file that must get human review before Codex runs; a wrapper saved under another
+# name silently loses that guard.
 name: Codex Review
 
 on:

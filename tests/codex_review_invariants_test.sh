@@ -22,6 +22,13 @@ check() {
   fi
 }
 
+require_pyyaml() {
+  if ! python3 -c 'import yaml' 2>/dev/null; then
+    echo "not ok - PyYAML is not installed, so no invariant below can be checked"
+    exit 1
+  fi
+}
+
 query() {
   python3 -c "
 import sys, yaml
@@ -30,8 +37,10 @@ with open('$WORKFLOW') as handle:
 # PyYAML resolves the bare 'on' key to the boolean True.
 doc['on'] = doc.pop(True, doc.get('on'))
 $1
-" 2>/dev/null
+"
 }
+
+require_pyyaml
 
 # Every job must gate on the label, or an unrelated label starts privileged work.
 check "every job is gated on the trigger label or on preflight" \
@@ -93,6 +102,16 @@ for name, job in doc['jobs'].items():
             sys.exit(1)
 "
 
+check "no run: step clones or checks out pull request code" \
+  query "
+import re
+BAD = re.compile(r'git\\s+clone|gh\\s+pr\\s+checkout|git\\s+fetch[^\\n]*pull/')
+for name, job in doc['jobs'].items():
+    for step in job.get('steps') or []:
+        if BAD.search(str(step.get('run', ''))):
+            sys.exit(1)
+"
+
 check "checkouts do not persist credentials" \
   query "
 for name, job in doc['jobs'].items():
@@ -126,6 +145,14 @@ for name, job in doc['jobs'].items():
         if not re.fullmatch(r'[0-9a-f]{40}', ref):
             sys.exit(1)
 "
+
+check "every pinned action carries its version in a trailing comment" \
+  bash -c '
+    grep -nE "^[[:space:]]*-?[[:space:]]*uses:" "'"$WORKFLOW"'" \
+      | grep -v "uses:[[:space:]]*\./" \
+      | grep -qv "#" && exit 1
+    exit 0
+  '
 
 echo
 if [ "$FAILURES" -ne 0 ]; then
