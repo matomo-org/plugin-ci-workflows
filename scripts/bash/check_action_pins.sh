@@ -57,8 +57,12 @@ def collect(node):
         return
     if PINNED.match(uses):
         pinned.append(uses)
-    else:
-        unpinned.append(uses)
+        return
+    # A reusable workflow is not an action, and first-party ones track `main` deliberately -- see
+    # the pinning section in the README. Only actions are required to be pinned here.
+    if '/.github/workflows/' in uses:
+        return
+    unpinned.append(uses)
 
 paths = sorted(set(glob.glob('.github/workflows/*.y*ml') + glob.glob('**/action.y*ml', recursive=True)))
 for path in paths:
