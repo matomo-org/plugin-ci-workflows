@@ -74,7 +74,8 @@ PHPSTAN_MODIFIED_CONFIG=phpstan/phpstan.modified.neon
 ### Run PHPStan on the files a pushed commit adds or changes. ###
 
 # $1 -- the pushed commit
-# $2 -- git diff filter (A for created files, CM for modified files)
+# $2 -- git diff filter (A for created files, CMR for modified files; R matters because a
+#       renamed-and-modified file has status R and would otherwise skip the check)
 # $3 -- the phpstan config to use
 # $4 -- log label for the file kind
 check_pushed_commit() {
