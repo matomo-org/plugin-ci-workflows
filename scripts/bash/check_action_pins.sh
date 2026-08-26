@@ -42,7 +42,7 @@ resolve() {
 EXTRACT=$(mktemp)
 trap 'rm -f "$EXTRACT"' EXIT
 python3 - > "$EXTRACT" <<'PYEOF'
-import glob, json, re, yaml
+import glob, json, os, re, yaml
 
 PINNED = re.compile(r'^[^@\s]+@[0-9a-f]{40}$')
 pinned, unpinned = [], []
@@ -64,7 +64,15 @@ def collect(node):
         return
     unpinned.append(uses)
 
-paths = sorted(set(glob.glob('.github/workflows/*.y*ml') + glob.glob('**/action.y*ml', recursive=True)))
+# os.walk, not glob: Python's `**` does not descend into dot-directories, so composite actions
+# in .github/actions/ -- GitHub's own documented home for them -- were invisible to this parser.
+paths = set(glob.glob('.github/workflows/*.y*ml'))
+for root, dirs, files in os.walk('.'):
+    dirs[:] = [d for d in dirs if d not in ('.git', 'node_modules', 'vendor')]
+    for name in files:
+        if re.fullmatch(r'action\.ya?ml', name):
+            paths.add(os.path.join(root, name))
+paths = sorted(paths)
 for path in paths:
     try:
         doc = yaml.safe_load(open(path))
