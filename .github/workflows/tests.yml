@@ -49,6 +49,11 @@ jobs:
       # in this stack named no commit at all and still linted clean. The Codex review cannot catch
       # it either -- it runs read-only with no network by design -- so it is checked here, in
       # ordinary pull request CI where a token is available and no privileged trigger is involved.
+      # bootstrap-phpstan.php is copied into a Matomo root and executed on every pre-5.4.0
+      # PHPStan leg, so a syntax error there breaks the analysis rather than this repository.
+      - name: Lint the shipped PHP
+        run: php -l artifacts/bootstrap-phpstan.php
+
       - name: Check every pinned action resolves
         env:
           GITHUB_TOKEN: ${{ github.token }}

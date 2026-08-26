@@ -111,7 +111,11 @@ fi
 
 ignore_patterns=()
 if [ -f .license-check-ignore ]; then
-  while IFS= read -r pattern; do
+  # `|| [ -n "$pattern" ]`: read returns non-zero on a final line with no newline, so the last
+  # entry would be dropped -- silently, and the resulting failure blames the source file rather
+  # than the ignore file. The \r strip does the same for a file saved with CRLF endings.
+  while IFS= read -r pattern || [ -n "$pattern" ]; do
+    pattern=${pattern%$'\r'}
     case "$pattern" in ''|'#'*) continue ;; esac
     ignore_patterns+=("$pattern")
   done < .license-check-ignore

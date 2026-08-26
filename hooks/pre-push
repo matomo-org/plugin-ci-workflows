@@ -37,7 +37,8 @@ if command -v php >/dev/null 2>&1 && [ -f "${MATOMO_DIR}/vendor/bin/phpstan" ]; 
     COMMAND=("${MATOMO_DIR}/vendor/bin/phpstan")
     PLUGIN_PATH=''
 elif command -v ddev >/dev/null 2>&1; then
-  # Use ddev if setup (overridding local setup)
+  # Fall back to ddev when there is no local PHPStan. Local takes priority: it is faster,
+  # and it is what the elif above actually encodes.
   if [ -d "$MATOMO_DIR/.ddev" ]; then
     cd "$MATOMO_DIR" || exit 1
     # `ddev status` exits 0 for a stopped project, so its exit code says nothing about whether

@@ -168,6 +168,19 @@ mkdir -p "$dir/libs"
 printf '<?php\n' > "$dir/libs/only.php"
 check 'scanning zero source files fails' 1 'No source files were scanned' "$dir"
 
+# The last entry of an ignore file with no trailing newline, and entries in a file saved with CRLF
+# endings, were both silently dropped -- and the resulting failure blamed the source file, giving
+# no hint that the ignore file was the problem.
+dir=$(new_premium_repo ignore_no_trailing_newline)
+printf '%s' "$OSS_HEADER" > "$dir/Third.php"
+printf 'Third.php' > "$dir/.license-check-ignore"
+check 'ignore entry without a trailing newline still applies' 0 '0 error(s)' "$dir"
+
+dir=$(new_premium_repo ignore_crlf)
+printf '%s' "$OSS_HEADER" > "$dir/Third.php"
+printf 'Third.php\r\n' > "$dir/.license-check-ignore"
+check 'ignore entry with CRLF line endings still applies' 0 '0 error(s)' "$dir"
+
 echo
 echo "$tests tests, $failures failure(s)"
 exit "$((failures > 0))"
