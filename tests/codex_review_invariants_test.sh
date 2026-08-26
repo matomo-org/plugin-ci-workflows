@@ -89,26 +89,52 @@ for name, job in doc['jobs'].items():
 "
 
 # TESTS_ACCESS_TOKEN is named in this file's header as one of the three things that make this
-# workflow dangerous, but nothing pinned where it may appear. It reads a private repository and
-# the codex job runs a model over attacker-authored diff content.
-check "the access token is only ever a checkout token" \
+# workflow dangerous. It reads a private repository, so it may reach exactly two places: the
+# `token:` of a trusted checkout, and the one step that checks it is set at all. "Any step with a
+# run: and the token in env" is not good enough -- that also describes piping it to curl.
+check "the access token is only ever a checkout token or the configured-check" \
   query "
 import json
+VERIFIER = 'Verify review actions token is configured'
 if 'TESTS_ACCESS_TOKEN' in json.dumps(doc.get('env') or {}):
     sys.exit(1)
 for name, job in doc['jobs'].items():
     if 'TESTS_ACCESS_TOKEN' in json.dumps(job.get('env') or {}):
         sys.exit(1)
     for step in job.get('steps') or []:
-        body = json.dumps(step)
-        if 'TESTS_ACCESS_TOKEN' not in body:
+        if 'TESTS_ACCESS_TOKEN' not in json.dumps(step):
             continue
         uses = str(step.get('uses', ''))
         token = str((step.get('with') or {}).get('token', ''))
-        env = json.dumps(step.get('env') or {})
-        verifies = 'TESTS_ACCESS_TOKEN' in env and 'run' in step
-        if not (uses.startswith('actions/checkout') and 'TESTS_ACCESS_TOKEN' in token) and not verifies:
-            print('  ' + name + ': ' + str(step.get('name')), file=sys.stderr)
+        if uses.startswith('actions/checkout') and 'TESTS_ACCESS_TOKEN' in token:
+            continue
+        if step.get('name') == VERIFIER:
+            continue
+        print('  ' + name + ': ' + str(step.get('name')), file=sys.stderr)
+        sys.exit(1)
+"
+
+# The action allowlist says nothing about shell. This workflow has exactly one run: step, and a
+# second one could use the write-capable token in post-review or cleanup, or exfiltrate a secret,
+# without touching a single `uses:`.
+# Pinned by content, not just by name. An allowlist keyed on the step name still lets the body of
+# the allowed step be rewritten -- and this is the one place shell runs in a workflow holding a
+# write token and two secrets. Changing it should require changing this hash on purpose.
+check "the only shell step is the token check, with the reviewed body" \
+  query "
+import hashlib
+ALLOWED = {
+    ('preflight', 'Verify review actions token is configured'):
+        '77f6e1e92d37344c8f937f3b4ba0a24d70671328b9ef9bf9c7cb5453772c0a72',
+}
+for name, job in doc['jobs'].items():
+    for step in job.get('steps') or []:
+        if 'run' not in step:
+            continue
+        expected = ALLOWED.get((name, step.get('name')))
+        digest = hashlib.sha256(' '.join(str(step['run']).split()).encode()).hexdigest()
+        if expected is None or digest != expected:
+            print('  ' + name + ': ' + str(step.get('name')) + ' ' + digest, file=sys.stderr)
             sys.exit(1)
 "
 
