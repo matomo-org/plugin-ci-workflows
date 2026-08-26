@@ -21,6 +21,8 @@ This repository is public for a reason. A reusable workflow stored in a **privat
 
 Reach for a reusable workflow when the whole job is the same everywhere, and a composite action when the caller needs its own matrix, permissions or surrounding steps.
 
+The examples below use `secrets: inherit` for brevity. [Codex review](#codex-review) is the exception and names its two secrets explicitly, because `inherit` hands every secret the calling repository can see to a workflow defined in another repository.
+
 The `plugin-` prefix is what marks a workflow as part of the public surface. Anything without it — the checklist gate, the script tests — runs against this repository only, and may change without notice to callers.
 
 ## Catalogue
@@ -31,6 +33,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
+| [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 
 ### PHPCS
 
@@ -151,6 +154,73 @@ jobs:
 ```
 
 The `edited` trigger matters: without it the gate does not re-run when someone fills the checklist in, and the check stays red.
+### Codex review
+
+Runs an AI review over a pull request when someone applies the `codex-review` label, and posts the result as a pull request review. The review itself — preflight checks, prompt, output schema and posting — lives in composite actions in `innocraft/github-action-tests-private`, which this workflow checks out with `TESTS_ACCESS_TOKEN`.
+
+That indirection is not a style choice. GitHub resolves a reusable workflow from the callee repository's Actions access policy at workflow-parse time, before any job or secret exists, and that policy cannot grant a **public** caller access to a workflow in a private repository — the run fails with "workflow was not found" and no jobs. Composite actions have no such restriction once a token has checked them out. This workflow exists so that the job structure a plugin repository cannot import lives somewhere it can.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `plugin-name` | no | read from `plugin.json` | Name of the plugin, e.g. `LoginLdap`. Passing it keeps the name out of the untrusted pull request. |
+| `trigger-label` | no | `codex-review` | Label that triggers the review. The caller's own `if:` condition names the label too, so change both together or the caller never invokes this workflow. |
+| `allowed-owners` | no | `matomo-org,innocraft` | Comma-separated repository owners allowed to run a review |
+| `automation-paths` | no | the caller's `codex-review.yml` and `.github/codex/` | Paths that must receive human review before Codex runs |
+| `review-actions-ref` | no | `main` | Ref of `innocraft/github-action-tests-private` to run. When pinning this workflow to a SHA, pin the actions too. |
+| `matomo-core-repository` | no | `matomo-org/matomo` | Core repository checked out for read-only review context |
+| `matomo-core-ref` | no | derived from the base branch | Core ref checked out for read-only review context. A pull request against `6.x-dev` is reviewed against 6.x core; a base branch that names no core branch falls back to `5.x-dev`. |
+| `matomo-agent-skills-ref` | no | `main` | Ref of `matomo-org/matomo-agent-skills` to install |
+| `codex-model` | no | `gpt-5.6-sol` | Model passed to `openai/codex-action` |
+| `codex-effort` | no | `xhigh` | Reasoning effort passed to `openai/codex-action` |
+
+| Secret | Required | Description |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | yes | Supplied by the calling repository or organization; this repository ships no key |
+| `TESTS_ACCESS_TOKEN` | yes | Read access to the review actions repository. A caller's `GITHUB_TOKEN` cannot read a private repository. |
+
+```yaml
+# Save as .github/workflows/codex-review.yml. The automation-paths default names that exact
+# path as a file that must get human review before Codex runs; a wrapper saved under another
+# name silently loses that guard.
+name: Codex Review
+
+on:
+  # nosec — label-gated; this wrapper runs no pull request code
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: none
+
+jobs:
+  codex-review:
+    # Keep this condition. Every job below gates on the label too, but this workflow's
+    # cancel-in-progress concurrency group is claimed as soon as it is instantiated, so without it
+    # an unrelated label cancels a review already running on the same pull request.
+    # This label must match `trigger-label` below, which defaults to codex-review.
+    if: ${{ github.event.label.name == 'codex-review' }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-codex-review.yml@main
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+    with:
+      plugin-name: MyPlugin
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      TESTS_ACCESS_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN }}
+```
+
+Name the two secrets rather than using `secrets: inherit` here: `inherit` would hand every secret the plugin repository can see to a workflow defined in another repository, and this one only needs those two.
+
+Two things differ from the other workflows in this catalogue. It is the only one triggered by `pull_request_target`, so the caller must keep that wrapper free of any step that checks out or runs pull request code. And it is the only one that runs with write permissions on the calling repository, which is why `main` here is protected — anyone who can change this file changes what runs with `issues: write` and `pull-requests: write` on every plugin pull request.
+
+Who can start a review: the label is a trigger, not an authorisation check. Anyone with triage access or above on the calling repository can apply it, and the workflow does not test the labeller's permission. What it does enforce is `allowed-owners`, and the preflight step refuses pull requests from forks — failing closed when it cannot identify the repository — because this workflow never checks out fork code. A review therefore costs OpenAI credits at the discretion of anyone already trusted with triage on the repository.
+
+Refs into our own organisations — the review actions and the agent skills — track `main` on purpose, as they do elsewhere in this repository. Third-party actions are pinned to a full commit SHA. The distinction matters more here than in the other workflows, because these jobs hold `OPENAI_API_KEY`, `TESTS_ACCESS_TOKEN` and write permission on the calling repository, so a change to either of those repositories takes effect on the next review with those credentials in scope. Pin `review-actions-ref` and `matomo-agent-skills-ref` to SHAs for a caller that needs that fixed.
+
+The security model, the trust boundaries and the review prompt are documented in `review/README.md` in the review actions repository.
 
 ## Using a reusable workflow
 

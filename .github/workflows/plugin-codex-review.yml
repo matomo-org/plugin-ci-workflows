@@ -1,0 +1,225 @@
+name: Codex Review
+
+# The review logic — preflight, prompt, schema and posting — lives in composite actions in
+# innocraft/github-action-tests-private and is checked out here with TESTS_ACCESS_TOKEN. It cannot
+# be called as a reusable workflow instead: GitHub resolves those from the callee repository's
+# Actions access policy at parse time, which cannot grant a public caller access to a private
+# repository. This workflow is the job structure that policy will not let a plugin repository
+# import, so that a plugin repository only has to name itself.
+on:
+  workflow_call:
+    inputs:
+      plugin-name:
+        description: "Name of the plugin, e.g. LoginLdap. Passing it from the caller keeps the name out of the untrusted pull request; when empty the review reads it from plugin.json instead."
+        required: false
+        type: string
+        default: ''
+      trigger-label:
+        description: "Pull request label that triggers the review. The caller gates on this label in its own `if:` condition, so both have to change together."
+        required: false
+        type: string
+        default: 'codex-review'
+      allowed-owners:
+        description: "Comma-separated repository owners allowed to run a review"
+        required: false
+        type: string
+        default: 'matomo-org,innocraft'
+      automation-paths:
+        description: "Newline- or comma-separated caller-repository paths that must receive human review before Codex runs. Entries ending in / match by prefix."
+        required: false
+        type: string
+        default: |
+          .github/workflows/codex-review.yml
+          .github/codex/
+      review-actions-ref:
+        description: "Ref of the review actions repository to run. When pinning this workflow to a SHA, pin the actions to a SHA too."
+        required: false
+        type: string
+        default: 'main'
+      matomo-agent-skills-ref:
+        description: "Ref of matomo-org/matomo-agent-skills to install before running Codex"
+        required: false
+        type: string
+        default: 'main'
+      matomo-core-repository:
+        description: "Matomo core repository checked out for read-only review context"
+        required: false
+        type: string
+        default: 'matomo-org/matomo'
+      matomo-core-ref:
+        description: "Matomo core ref checked out for read-only review context. The default derives it from the pull request base branch, so a plugin PR against 6.x-dev is reviewed against 6.x core; set a literal ref to override."
+        required: false
+        type: string
+        default: 'auto'
+      codex-model:
+        description: "OpenAI model passed to openai/codex-action. Override only to move off the default."
+        required: false
+        type: string
+        default: 'gpt-5.6-sol'
+      codex-effort:
+        description: "Reasoning effort passed to openai/codex-action: minimal, low, medium, high, or xhigh"
+        required: false
+        type: string
+        default: 'xhigh'
+    secrets:
+      OPENAI_API_KEY:
+        description: "OpenAI API key used by openai/codex-action"
+        required: true
+      TESTS_ACCESS_TOKEN:
+        description: "Token with read access to the review actions repository. A caller's GITHUB_TOKEN cannot read a private repository."
+        required: true
+
+permissions:
+  contents: none
+
+# In a reusable workflow ${{ github.workflow }} resolves to the CALLER's workflow name, so a group
+# built from it collides with a caller group of the same name and GitHub cancels the run with
+# "a deadlock was detected for concurrency group ...". Use a static prefix unique to this workflow.
+concurrency:
+  group: codex-review-shared-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    if: ${{ github.event.action == 'labeled' && github.event.label.name == inputs.trigger-label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should_run: ${{ steps.preflight.outputs.should_run }}
+      safety_failure: ${{ steps.preflight.outputs.safety_failure }}
+      safety_message: ${{ steps.preflight.outputs.safety_message }}
+      skip_reason: ${{ steps.preflight.outputs.skip_reason }}
+      skip_message: ${{ steps.preflight.outputs.skip_message }}
+      changed_files: ${{ steps.preflight.outputs.changed_files }}
+      automation_files: ${{ steps.preflight.outputs.automation_files }}
+      base_sha: ${{ steps.preflight.outputs.base_sha }}
+      head_sha: ${{ steps.preflight.outputs.head_sha }}
+    steps:
+      - name: Verify review actions token is configured
+        env:
+          TESTS_ACCESS_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN }}
+        run: |
+          if [ -z "${TESTS_ACCESS_TOKEN}" ]; then
+            echo "::error::TESTS_ACCESS_TOKEN is empty. It must hold a token with read access to innocraft/github-action-tests-private, because the calling repository's GITHUB_TOKEN cannot read a private repository. Scope the organization secret to the calling repository." >&2
+            exit 1
+          fi
+
+      - name: Checkout trusted review actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: innocraft/github-action-tests-private
+          ref: ${{ inputs.review-actions-ref }}
+          token: ${{ secrets.TESTS_ACCESS_TOKEN }}
+          path: github-action-tests
+          persist-credentials: false
+
+      - name: Preflight
+        id: preflight
+        uses: ./github-action-tests/review/actions/preflight
+        with:
+          allowed-owners: ${{ inputs.allowed-owners }}
+          automation-paths: ${{ inputs.automation-paths }}
+
+  codex:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.should_run == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout trusted review actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: innocraft/github-action-tests-private
+          ref: ${{ inputs.review-actions-ref }}
+          token: ${{ secrets.TESTS_ACCESS_TOKEN }}
+          path: github-action-tests
+          persist-credentials: false
+
+      - name: Run Codex review
+        uses: ./github-action-tests/review/actions/codex
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          base-sha: ${{ needs.preflight.outputs.base_sha }}
+          head-sha: ${{ needs.preflight.outputs.head_sha }}
+          changed-files: ${{ needs.preflight.outputs.changed_files }}
+          matomo-agent-skills-ref: ${{ inputs.matomo-agent-skills-ref }}
+          matomo-core-repository: ${{ inputs.matomo-core-repository }}
+          matomo-core-ref: ${{ inputs.matomo-core-ref }}
+          plugin-name: ${{ inputs.plugin-name }}
+          codex-model: ${{ inputs.codex-model }}
+          codex-effort: ${{ inputs.codex-effort }}
+
+  post-review:
+    needs: [preflight, codex]
+    if: ${{ !cancelled() && github.event.action == 'labeled' && github.event.label.name == inputs.trigger-label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout trusted review actions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: innocraft/github-action-tests-private
+          ref: ${{ inputs.review-actions-ref }}
+          token: ${{ secrets.TESTS_ACCESS_TOKEN }}
+          path: github-action-tests
+          persist-credentials: false
+
+      - name: Post review result
+        uses: ./github-action-tests/review/actions/post-review
+        with:
+          codex-result: ${{ needs.codex.result }}
+          preflight-result: ${{ needs.preflight.result }}
+          safety-failure: ${{ needs.preflight.outputs.safety_failure }}
+          safety-message: ${{ needs.preflight.outputs.safety_message }}
+          skip-reason: ${{ needs.preflight.outputs.skip_reason }}
+          skip-message: ${{ needs.preflight.outputs.skip_message }}
+          reviewed-base-sha: ${{ needs.preflight.outputs.base_sha }}
+          reviewed-head-sha: ${{ needs.preflight.outputs.head_sha }}
+
+  cleanup:
+    needs: [preflight, codex, post-review]
+    if: ${{ !cancelled() && github.event.action == 'labeled' && github.event.label.name == inputs.trigger-label }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      # Inline and checkout-free on purpose. Every other job needs the trusted-actions checkout, so
+      # a missing or invalid TESTS_ACCESS_TOKEN fails all of them; a cleanup that needed the same
+      # checkout would fail with them and strand the trigger label on the pull request, with no
+      # review and nothing explaining why. Removing a label is not review logic.
+      - name: Remove trigger label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TRIGGER_LABEL: ${{ inputs.trigger-label }}
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pr.number,
+                name: process.env.TRIGGER_LABEL,
+              });
+            } catch (error) {
+              if (error.status === 404) {
+                core.info(`${process.env.TRIGGER_LABEL} label was already removed.`);
+                return;
+              }
+              if (error.status === 403) {
+                core.warning(`Could not remove ${process.env.TRIGGER_LABEL} label because this workflow token lacks permission.`);
+                return;
+              }
+              throw error;
+            }
