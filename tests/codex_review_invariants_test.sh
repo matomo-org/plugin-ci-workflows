@@ -122,18 +122,26 @@ for name, job in doc['jobs'].items():
 # joining `echo ...` and `exit 1` onto one line keeps the hash and turns the exit into an argument
 # to echo, silently disabling the fail-closed check. Whitespace is significant in shell, so the
 # hash is over the exact string. Editing this step means updating this hash deliberately.
-check "the only shell step is the token check, byte for byte" \
+#
+# `with.script` counts as a body too. github-script runs arbitrary JavaScript with whatever the job
+# grants it, and cleanup holds issues: write and pull-requests: write -- enough to approve a pull
+# request, comment, or close an issue. Covering only `run:` left that body pinned by nothing but
+# the no-interpolation check, so a rewrite of it passed every invariant.
+check "every executable step body is pinned, byte for byte" \
   query "
 import hashlib
 ALLOWED = {
     ('preflight', 'Verify review actions token is configured'): '013d1ad152ee5c0e96bd7cfe865ed3fa81caa83101fbf8d21e1f9ceb6777acde',
+    ('cleanup', 'Remove trigger label'): 'f06a83c68cd8f036a9089e02291a4066d961c253147a3c55d56350ac338c8036',
 }
 for name, job in doc['jobs'].items():
     for step in job.get('steps') or []:
-        if 'run' not in step:
+        # Not \`or\`: an empty run: is a body that exists and must still be accounted for.
+        body = step['run'] if 'run' in step else (step.get('with') or {}).get('script')
+        if body is None:
             continue
         expected = ALLOWED.get((name, step.get('name')))
-        digest = hashlib.sha256(str(step['run']).encode()).hexdigest()
+        digest = hashlib.sha256(str(body).encode()).hexdigest()
         if expected is None or digest != expected:
             print('  ' + name + ': ' + str(step.get('name')) + ' ' + digest, file=sys.stderr)
             sys.exit(1)
