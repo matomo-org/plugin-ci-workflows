@@ -54,9 +54,23 @@ done < <(grep -rhoE "uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{
            --include='*.yml' --include='*.yaml' . \
          | sed -E 's/uses:[[:space:]]+//' | sort -u)
 
+# Counting from a second, deliberately looser pattern. The narrow one above once required
+# owner/repo@sha and so skipped `actions/cache/restore@...` entirely: three of five pins were
+# checked, every one of them passed, and the report said "all resolve". A guard that fires
+# correctly on what it happens to see is not the same as a guard that sees everything, and the
+# "nothing found" tripwire below cannot notice a partial miss.
+PINNED=$(grep -rhoE "uses:[[:space:]]+[^[:space:]]+@[0-9a-f]{40}" \
+           --include='*.yml' --include='*.yaml' . \
+         | sed -E 's/uses:[[:space:]]+//' | sort -u | wc -l)
+
 echo
 if [ "$CHECKED" -eq 0 ]; then
   echo "no pinned actions found - the extraction pattern is probably wrong"
+  exit 1
+fi
+if [ "$CHECKED" -ne "$PINNED" ]; then
+  echo "checked $CHECKED pin(s) but found $PINNED SHA-pinned uses: line(s)"
+  echo "the extraction pattern is missing a pin shape - every pin must be resolved, not most"
   exit 1
 fi
 if [ "$FAILURES" -ne 0 ]; then
