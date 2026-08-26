@@ -42,11 +42,19 @@ elif command -v ddev >/dev/null 2>&1; then
     cd "$MATOMO_DIR" || exit 1
     if ddev status > /dev/null 2>&1; then
       COMMAND=(ddev exec phpstan)
+    else
+      DDEV_STOPPED=1
     fi
   fi
 fi
 # If no command, exit
 if [[ ${#COMMAND[@]} -eq 0 ]]; then
+  if [[ "${DDEV_STOPPED:-0}" -eq 1 ]]; then
+    # The tooling exists and simply is not started. Blocking the push here teaches people to
+    # reach for --no-verify, which is worse than skipping one check.
+    echo "ddev is not running, so PHPStan was skipped. Run 'ddev start' to check before pushing."
+    exit 0
+  fi
   echo "No way to run phpstan found."
   exit 1
 fi
@@ -95,16 +103,21 @@ check_pushed_commit() {
     return 1
   fi
 
-  local changed_files
-  changed_files=$(git diff --name-only "$diff_base" "$commit" --diff-filter="$filter" | grep '\.php$' || true)
-  if [ -z "$changed_files" ]; then
+  # Read NUL-delimited so a path containing a space stays one argument. Quoting the paths and
+  # piping through xargs does not: xargs strips the quotes it was given, then splits on the space.
+  local changed_files=()
+  local file
+  while IFS= read -r -d '' file; do
+    [[ "$file" == *.php ]] && changed_files+=("${PLUGIN_PATH}${file}")
+  done < <(git diff --name-only -z "$diff_base" "$commit" --diff-filter="$filter")
+
+  if [[ ${#changed_files[@]} -eq 0 ]]; then
     echo "No ${label} PHP files"
     return 0
   fi
 
   echo "Running PHPstan on ${label} files"
-  changed_files=$(echo "$changed_files" | sed -e 's/^\(.*\)$/"\1"/' | xargs -I{} echo "${PLUGIN_PATH}{}")
-  echo "$changed_files" | xargs "${COMMAND[@]}" analyse -c "${PLUGIN_PATH}${config}" || return 1
+  "${COMMAND[@]}" analyse -c "${PLUGIN_PATH}${config}" "${changed_files[@]}" || return 1
 }
 
 # Check the commits actually being pushed, as supplied on stdin: HEAD is wrong

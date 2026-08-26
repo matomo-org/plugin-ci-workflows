@@ -37,8 +37,11 @@ resolve() {
 }
 
 while IFS= read -r ref; do
-  repo="${ref%@*}"
+  action="${ref%@*}"
   sha="${ref#*@}"
+  # actions/cache/restore is pinned as a subpath of actions/cache, and the commit belongs to
+  # the repository, not the path: ask for repos/actions/cache/commits/<sha>.
+  repo="$(cut -d/ -f1,2 <<< "$action")"
   CHECKED=$((CHECKED + 1))
 
   resolve "$repo" "$sha"
@@ -47,7 +50,7 @@ while IFS= read -r ref; do
     1) echo "not ok - $ref does not exist"; FAILURES=$((FAILURES + 1)) ;;
     *) echo "not ok - $ref could not be resolved"; FAILURES=$((FAILURES + 1)) ;;
   esac
-done < <(grep -rhoE "uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}" \
+done < <(grep -rhoE "uses:[[:space:]]+[A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+@[0-9a-f]{40}" \
            --include='*.yml' --include='*.yaml' . \
          | sed -E 's/uses:[[:space:]]+//' | sort -u)
 
