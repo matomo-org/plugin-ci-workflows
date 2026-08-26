@@ -42,13 +42,23 @@ $1
 
 require_pyyaml
 
-# Every job must gate on the label, or an unrelated label starts privileged work.
-check "every job is gated on the trigger label or on preflight" \
+# Every job must gate on the label, or an unrelated label starts privileged work. Assert the whole
+# condition, not a substring: `trigger-label` appearing somewhere is satisfied by
+# `if: inputs.trigger-label != ''`, which gates on nothing at all.
+#
+# The `action == 'labeled'` half matters independently. On an `unlabeled` event
+# github.event.label.name is still the trigger label, so a caller subscribed to
+# `types: [labeled, unlabeled]` would start a privileged run every time the label is removed --
+# including by this workflow's own cleanup job.
+check "every job gates on a labeled event with the trigger label, or on preflight" \
   query "
-jobs = doc['jobs']
-for name, job in jobs.items():
-    condition = str(job.get('if', ''))
-    if 'trigger-label' not in condition and 'needs.preflight' not in condition:
+LABEL_GATE = \"github.event.action == 'labeled'\"
+NAME_GATE = 'github.event.label.name == inputs.trigger-label'
+for name, job in doc['jobs'].items():
+    condition = ' '.join(str(job.get('if', '')).split())
+    if 'needs.preflight' in condition:
+        continue
+    if LABEL_GATE not in condition or NAME_GATE not in condition:
         sys.exit(1)
 "
 
@@ -77,6 +87,41 @@ if sorted(perms.items()) != [('contents', 'read')]:
     sys.exit(1)
 "
 
+# The stated property is "the job holding the OpenAI key can never write". Asserting that the
+# codex job is read-only only checks one direction: it says nothing about the key turning up in a
+# job that *can* write, or in a workflow-level env visible to all of them.
+check "the OpenAI key is confined to the read-only codex job" \
+  query "
+import json
+WRITEABLE = {
+    name for name, job in doc['jobs'].items()
+    if 'write' in json.dumps(job.get('permissions') or {})
+}
+if json.dumps(doc.get('env') or {}).find('OPENAI_API_KEY') != -1:
+    sys.exit(1)
+for name, job in doc['jobs'].items():
+    body = json.dumps(job)
+    if 'OPENAI_API_KEY' not in body:
+        continue
+    if name != 'codex' or name in WRITEABLE:
+        sys.exit(1)
+"
+
+# `permissions: contents: none` at workflow level is the floor. Without it a job that declares no
+# permissions block inherits the caller's grant, which the README example sets to issues: write
+# and pull-requests: write -- and the per-job check below only inspects declared blocks.
+check "a workflow-level permission floor exists and grants no write" \
+  query "
+import json
+top = doc.get('permissions')
+if top is None:
+    for name, job in doc['jobs'].items():
+        if job.get('permissions') is None:
+            sys.exit(1)
+elif 'write' in json.dumps(top):
+    sys.exit(1)
+"
+
 check "only post-review and cleanup may write" \
   query "
 for name, job in doc['jobs'].items():
@@ -100,6 +145,31 @@ for name, job in doc['jobs'].items():
             sys.exit(1)
         if 'ref' in with_ and 'review-actions-ref' not in str(with_['ref']):
             sys.exit(1)
+"
+
+# For a pull_request_target workflow, an inline ${{ }} inside a run: or script: body is the
+# classic injection route -- pull request title, branch name and body are all attacker-controlled.
+# Every value here goes through env:, and this keeps it that way.
+check "no run: or script: body interpolates a workflow expression" \
+  query "
+for name, job in doc['jobs'].items():
+    for step in job.get('steps') or []:
+        for key in ('run',):
+            if '\${{' in str(step.get(key, '')):
+                sys.exit(1)
+        script = ((step.get('with') or {}).get('script'))
+        if script and '\${{' in str(script):
+            sys.exit(1)
+"
+
+# Every steps-based assertion above skips a job that is itself a reusable-workflow call, because
+# such a job has no steps. Without this, an unpinned third-party job-level `uses:` handed both
+# secrets passes the entire suite.
+check "no job is a bare reusable-workflow call" \
+  query "
+for name, job in doc['jobs'].items():
+    if 'uses' in job:
+        sys.exit(1)
 "
 
 check "no run: step clones or checks out pull request code" \

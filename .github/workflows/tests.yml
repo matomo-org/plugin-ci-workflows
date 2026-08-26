@@ -27,8 +27,10 @@ jobs:
       # ubuntu-24.04 today, but a check that guards security controls should not depend on
       # what a runner image ships: it fails closed without it, and a job that reliably
       # fails is no better than one that silently skips.
+      # apt, not pip: `pip install` into system Python on ubuntu-24.04 can refuse with PEP 668
+      # externally-managed-environment, and the distro package is a pinned, signed artifact.
       - name: Install the YAML parser the invariants need
-        run: python3 -m pip install --quiet --disable-pip-version-check pyyaml
+        run: sudo apt-get install -y --no-install-recommends python3-yaml
 
       # The review's other half lives in a private repository whose tests cannot see
       # this workflow, so the controls that live here are asserted here.
