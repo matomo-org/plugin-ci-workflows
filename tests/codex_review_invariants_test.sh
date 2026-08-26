@@ -117,25 +117,47 @@ for name, job in doc['jobs'].items():
 # The action allowlist says nothing about shell. This workflow has exactly one run: step, and a
 # second one could use the write-capable token in post-review or cleanup, or exfiltrate a secret,
 # without touching a single `uses:`.
-# Pinned by content, not just by name. An allowlist keyed on the step name still lets the body of
-# the allowed step be rewritten -- and this is the one place shell runs in a workflow holding a
-# write token and two secrets. Changing it should require changing this hash on purpose.
-check "the only shell step is the token check, with the reviewed body" \
+# Pinned by exact content, not by name and not normalised. An allowlist keyed on the step name
+# lets the body be rewritten; a whitespace-normalised hash lets the *semantics* be rewritten --
+# joining `echo ...` and `exit 1` onto one line keeps the hash and turns the exit into an argument
+# to echo, silently disabling the fail-closed check. Whitespace is significant in shell, so the
+# hash is over the exact string. Editing this step means updating this hash deliberately.
+check "the only shell step is the token check, byte for byte" \
   query "
 import hashlib
 ALLOWED = {
-    ('preflight', 'Verify review actions token is configured'):
-        '77f6e1e92d37344c8f937f3b4ba0a24d70671328b9ef9bf9c7cb5453772c0a72',
+    ('preflight', 'Verify review actions token is configured'): '013d1ad152ee5c0e96bd7cfe865ed3fa81caa83101fbf8d21e1f9ceb6777acde',
 }
 for name, job in doc['jobs'].items():
     for step in job.get('steps') or []:
         if 'run' not in step:
             continue
         expected = ALLOWED.get((name, step.get('name')))
-        digest = hashlib.sha256(' '.join(str(step['run']).split()).encode()).hexdigest()
+        digest = hashlib.sha256(str(step['run']).encode()).hexdigest()
         if expected is None or digest != expected:
             print('  ' + name + ': ' + str(step.get('name')) + ' ' + digest, file=sys.stderr)
             sys.exit(1)
+"
+
+# The gate is only a gate if it carries preflight's actual verdict. `should_run: 'true'` satisfies
+# a check that merely looks for the output name in the condition.
+check "the preflight verdict is wired from the preflight step" \
+  query "
+outputs = (doc['jobs']['preflight'].get('outputs') or {})
+if outputs.get('should_run') != '\${{ steps.preflight.outputs.should_run }}':
+    print('  should_run is ' + str(outputs.get('should_run')), file=sys.stderr)
+    sys.exit(1)
+"
+
+# An assertion that the key is not in the wrong place says nothing about it being in the right one.
+check "the codex action receives the OpenAI key" \
+  query "
+step = [
+    s for s in doc['jobs']['codex']['steps']
+    if 'review/actions/codex' in str(s.get('uses', ''))
+][0]
+if (step.get('with') or {}).get('openai-api-key') != '\${{ secrets.OPENAI_API_KEY }}':
+    sys.exit(1)
 "
 
 check "codex and post-review both wait for preflight" \
