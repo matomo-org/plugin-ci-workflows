@@ -1,0 +1,101 @@
+name: PHPCS check
+
+on:
+  workflow_call:
+    inputs:
+      plugin-name:
+        description: "Name of the plugin, e.g. LoginLdap"
+        required: true
+        type: string
+      php-version:
+        description: "PHP version the job runs on. Accepts a literal version or one of the shared aliases (matomo5_min_php, matomo5_max_php, matomo6_min_php, matomo6_max_php), which track a Matomo major's floor and ceiling centrally. PHPCS needs at least 7.4, so matomo5_min_php is too low to use here."
+        required: false
+        type: string
+        default: 'matomo6_min_php'
+      scripts-ref:
+        description: "Ref of matomo-org/github-action-tests to take the version resolver from. Pinning the workflow does not pin this: pass a SHA from that repository, which is a different repository with different SHAs."
+        required: false
+        type: string
+        default: 'main'
+
+# The job only reads the repository; everything else stays at none so any caller
+# with default workflow permissions can use this without granting scopes.
+permissions:
+  contents: read
+
+jobs:
+  phpcs:
+    name: PHPCS
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate inputs
+        env:
+          PLUGIN_NAME: ${{ inputs.plugin-name }}
+        run: |
+          if [[ ! "$PLUGIN_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "Invalid plugin-name: $PLUGIN_NAME"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          persist-credentials: false
+      # No GitHub context identifies the called workflow's own commit (verified
+      # empirically: github.job_workflow_sha evaluates to empty), so pinning the
+      # resolver is the caller's job via scripts-ref.
+      - name: Check out github-action-tests repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/github-action-tests
+          ref: ${{ inputs.scripts-ref }}
+          # Unique name so it cannot collide with a directory the caller tracks
+          path: .github-action-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+
+      - name: Resolve PHP version
+        id: resolve-php
+        shell: bash
+        env:
+          PHP_VERSION_INPUT: ${{ inputs.php-version }}
+          SCRIPT_CHECKOUT: .github-action-tests-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          RESOLVED_VERSION=$("$SCRIPT_CHECKOUT/scripts/bash/resolve_php_version.sh" "$PHP_VERSION_INPUT")
+
+          # A plugin's phpcs.xml scans `.`, so anything left in the workspace is
+          # linted as if it were the plugin's own code. Remove the checkout now
+          # that the only thing it was needed for is done.
+          rm -rf "$SCRIPT_CHECKOUT"
+
+          echo "Resolved php-version '$PHP_VERSION_INPUT' to '$RESOLVED_VERSION'"
+          echo "version=$RESOLVED_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ steps.resolve-php.outputs.version }}
+          tools: cs2pr
+      # Installed outside the plugin on purpose. `composer init` in the workspace overwrites a
+      # plugin's own composer.json -- verified: a file with real requires came back as
+      # "require": {} -- and `composer install` would leave a vendor/ tree inside the very
+      # directory the ruleset scans.
+      - name: Install the coding standard
+        env:
+          TOOLS: ${{ runner.temp }}/phpcs-tools
+        run: |
+          mkdir -p "$TOOLS"
+          cd "$TOOLS"
+          composer init --name=matomo/phpcs-tools --quiet
+          composer --no-plugins config allow-plugins.dealerdirect/phpcodesniffer-composer-installer true -n
+          composer config repositories.matomo-coding-standards vcs https://github.com/matomo-org/matomo-coding-standards -n
+          composer require --no-interaction --no-progress matomo-org/matomo-coding-standards:dev-master
+
+      - name: Check PHP code styles
+        id: phpcs
+        env:
+          TOOLS: ${{ runner.temp }}/phpcs-tools
+        run: |
+          "$TOOLS/vendor/bin/phpcs" --report-full --standard=phpcs.xml --report-checkstyle=./phpcs-report.xml
+      - name: Show PHPCS results in PR
+        if: ${{ always() && steps.phpcs.outcome == 'failure' }}
+        run: cs2pr ./phpcs-report.xml --prepend-filename

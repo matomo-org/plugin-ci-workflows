@@ -1,0 +1,60 @@
+name: Tests
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  license-check-script:
+    name: License check script tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run tests
+        run: bash tests/license_check_test.sh
+
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Parsing the YAML only proves it is YAML. actionlint checks the Actions
+      # schema and expression syntax, and shellcheck runs over every `run:` block.
+      - name: Run actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          # sha256 of actionlint_1.7.12_linux_amd64.tar.gz, from the release's
+          # checksums.txt. Bump both together when moving version.
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          ARCHIVE="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$ARCHIVE" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${ARCHIVE}"
+          echo "${ACTIONLINT_SHA256}  ${ARCHIVE}" | sha256sum --check --strict
+          tar xz -f "$ARCHIVE" actionlint
+          # ubuntu-24.04 ships shellcheck, so actionlint lints every `run:` block too.
+          ./actionlint -color
+
+      # actionlint only reaches shell inside workflows. The hook ships to every plugin
+      # repository and the scripts run in their CI, so lint them directly as well.
+      - name: Run shellcheck over the standalone scripts
+        run: shellcheck --severity=style hooks/pre-push scripts/bash/*.sh tests/*.sh
+
+      # actionlint checks that a pin is *shaped* like a SHA, not that the commit exists. One pin
+      # in this stack named no commit at all and still linted clean. The Codex review cannot catch
+      # it either -- it runs read-only with no network by design -- so it is checked here, in
+      # ordinary pull request CI where a token is available and no privileged trigger is involved.
+      # bootstrap-phpstan.php is copied into a Matomo root and executed on every pre-5.4.0
+      # PHPStan leg, so a syntax error there breaks the analysis rather than this repository.
+      - name: Lint the shipped PHP
+        run: php -l artifacts/bootstrap-phpstan.php
+
+      - name: Check every pinned action resolves
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/bash/check_action_pins.sh
