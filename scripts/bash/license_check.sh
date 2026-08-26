@@ -168,6 +168,14 @@ done < <(find . \
   -o -type f \( -name '*.php' -o -name '*.js' -o -name '*.ts' -o -name '*.vue' \) -print0)
 
 echo "Checked $scanned files: $errors error(s), $warnings warning(s)"
+
+# Scanning nothing is not a pass. A prune-list edit or an unexpected layout would otherwise turn
+# this whole check into a green no-op, which is the failure mode a license check can least afford.
+if [ "$scanned" -eq 0 ]; then
+  echo "::error::No source files were scanned. Every plugin has some, so the prune list or the repository layout is wrong rather than this being a clean result."
+  exit 1
+fi
+
 if [ "$errors" -gt 0 ]; then
   exit 1
 fi

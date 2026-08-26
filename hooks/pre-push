@@ -40,7 +40,9 @@ elif command -v ddev >/dev/null 2>&1; then
   # Use ddev if setup (overridding local setup)
   if [ -d "$MATOMO_DIR/.ddev" ]; then
     cd "$MATOMO_DIR" || exit 1
-    if ddev status > /dev/null 2>&1; then
+    # `ddev status` exits 0 for a stopped project, so its exit code says nothing about whether
+    # the containers are up. `ddev describe -j` reports the real state.
+    if [[ "$(ddev describe -j 2>/dev/null | sed -n 's/.*"status":"\([a-z]*\)".*/\1/p' | head -1)" == "running" ]]; then
       COMMAND=(ddev exec phpstan)
     else
       DDEV_STOPPED=1

@@ -160,6 +160,14 @@ dir="$WORK/no-plugin-json"
 mkdir -p "$dir"
 check 'repository without plugin.json fails' 1 'No plugin.json found' "$dir"
 
+# Scanning nothing must not read as a clean pass: a prune-list edit would otherwise turn the whole
+# check into a green no-op, which is the one failure a license check cannot afford.
+dir=$(new_oss_repo zero_files)
+rm -f "$dir"/*.php
+mkdir -p "$dir/libs"
+printf '<?php\n' > "$dir/libs/only.php"
+check 'scanning zero source files fails' 1 'No source files were scanned' "$dir"
+
 echo
 echo "$tests tests, $failures failure(s)"
 exit "$((failures > 0))"
