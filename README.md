@@ -186,7 +186,7 @@ Tracking `@main` is the default for Matomo plugin repositories, and it is what m
 
 Pin to a tag where a repository needs to hold a check steady — for example while a plugin is mid-migration to a new Matomo major version and cannot yet take an updated check.
 
-Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml` and `plugin-phpstan.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs.
+Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml` and `plugin-phpstan.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
 
 ## Contributing
 
