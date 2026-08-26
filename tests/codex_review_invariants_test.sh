@@ -42,27 +42,76 @@ $1
 
 require_pyyaml
 
-# Every job must gate on the label, or an unrelated label starts privileged work. Assert the whole
-# condition, not a substring: `trigger-label` appearing somewhere is satisfied by
-# `if: inputs.trigger-label != ''`, which gates on nothing at all.
+# Every job must gate on the label, or an unrelated label starts privileged work.
 #
-# The `action == 'labeled'` half matters independently. On an `unlabeled` event
-# github.event.label.name is still the trigger label, so a caller subscribed to
-# `types: [labeled, unlabeled]` would start a privileged run every time the label is removed --
-# including by this workflow's own cleanup job.
-check "every job gates on a labeled event with the trigger label, or on preflight" \
+# Equality, not containment. A substring check is satisfied by a condition that has been weakened
+# rather than removed: appending `|| true`, or `|| github.event_name == \'workflow_dispatch\'`,
+# keeps every substring intact while the gate stops gating.
+check "every job gates on exactly the labeled-with-trigger-label condition, or on preflight" \
   query "
-LABEL_GATE = \"github.event.action == 'labeled'\"
-NAME_GATE = 'github.event.label.name == inputs.trigger-label'
+GATE = \"github.event.action == 'labeled' && github.event.label.name == inputs.trigger-label\"
+ALLOWED = {GATE, '!cancelled() && ' + GATE}
+PREFLIGHT = \"needs.preflight.outputs.should_run == 'true'\"
+import re
 for name, job in doc['jobs'].items():
     condition = ' '.join(str(job.get('if', '')).split())
-    if 'needs.preflight' in condition:
+    # GitHub accepts a job condition with or without the \${{ }} wrapper; compare the expression.
+    condition = re.sub(r'^\\\${{\\s*|\\s*}}$', '', condition).strip()
+    if condition == PREFLIGHT:
         continue
-    if LABEL_GATE not in condition or NAME_GATE not in condition:
+    if condition not in ALLOWED:
+        print('  ' + name + ': ' + condition, file=sys.stderr)
         sys.exit(1)
 "
 
-# preflight decides whether the review may run at all; nothing may run before it.
+# Only the trusted review actions and two pinned first-party actions may execute. Pinning proves a
+# SHA exists, not that the action is one we chose -- a real third-party action has a real SHA, and
+# without this it can be dropped into the job holding issues: write and pull-requests: write.
+check "every step runs a trusted action" \
+  query "
+LOCAL = {
+    './github-action-tests/review/actions/preflight',
+    './github-action-tests/review/actions/codex',
+    './github-action-tests/review/actions/post-review',
+}
+PINNED = {
+    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+    'actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3',
+}
+for name, job in doc['jobs'].items():
+    for step in job.get('steps') or []:
+        uses = str(step.get('uses', '')).split('#')[0].strip()
+        if not uses:
+            continue
+        if uses not in LOCAL and uses not in PINNED:
+            print('  ' + name + ': ' + uses, file=sys.stderr)
+            sys.exit(1)
+"
+
+# TESTS_ACCESS_TOKEN is named in this file's header as one of the three things that make this
+# workflow dangerous, but nothing pinned where it may appear. It reads a private repository and
+# the codex job runs a model over attacker-authored diff content.
+check "the access token is only ever a checkout token" \
+  query "
+import json
+if 'TESTS_ACCESS_TOKEN' in json.dumps(doc.get('env') or {}):
+    sys.exit(1)
+for name, job in doc['jobs'].items():
+    if 'TESTS_ACCESS_TOKEN' in json.dumps(job.get('env') or {}):
+        sys.exit(1)
+    for step in job.get('steps') or []:
+        body = json.dumps(step)
+        if 'TESTS_ACCESS_TOKEN' not in body:
+            continue
+        uses = str(step.get('uses', ''))
+        token = str((step.get('with') or {}).get('token', ''))
+        env = json.dumps(step.get('env') or {})
+        verifies = 'TESTS_ACCESS_TOKEN' in env and 'run' in step
+        if not (uses.startswith('actions/checkout') and 'TESTS_ACCESS_TOKEN' in token) and not verifies:
+            print('  ' + name + ': ' + str(step.get('name')), file=sys.stderr)
+            sys.exit(1)
+"
+
 check "codex and post-review both wait for preflight" \
   query "
 jobs = doc['jobs']
@@ -131,9 +180,11 @@ for name, job in doc['jobs'].items():
         sys.exit(1)
 "
 
-# A checkout of pull request head code under this trigger would be the classic
-# pull_request_target compromise. Only the trusted actions repository may be checked out.
-check "no job checks out the calling repository or pull request code" \
+# Scope: this asserts what *this file* checks out, not what the whole review does. The trusted
+# composite actions do check out the pull request head -- preflight into pr-preflight, codex into
+# pr -- deliberately and under their own fork refusal. What must never happen is this workflow
+# checking out caller or PR code itself, where none of that protection applies.
+check "no checkout in this file targets anything but the trusted actions repository" \
   query "
 for name, job in doc['jobs'].items():
     for step in job.get('steps') or []:
