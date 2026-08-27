@@ -94,9 +94,31 @@ PYEOF
 mapfile -t OCCURRENCES < <(python3 -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))['pinned']))" "$EXTRACT")
 mapfile -t UNPINNED < <(python3 -c "import json,sys; print('\n'.join(json.load(open(sys.argv[1]))['unpinned']))" "$EXTRACT")
 
-# A second count, arrived at completely differently: any @<40 hex> token anywhere in the YAML.
-# If the parser missed a shape, these disagree and the run fails rather than verifying a subset.
-SHA_TOKENS=$(grep -rhoE "@[0-9a-f]{40}" --include='*.yml' --include='*.yaml' . | wc -l)
+# `'\n'.join([])` is the empty string, and mapfile turns that into a one-element array holding it --
+# so an empty result counts as 1 and the "extraction is probably broken" guard below could never
+# fire. Drop that phantom element so the counts mean what they say.
+[ "${#OCCURRENCES[@]}" -eq 1 ] && [ -z "${OCCURRENCES[0]}" ] && OCCURRENCES=()
+[ "${#UNPINNED[@]}" -eq 1 ] && [ -z "${UNPINNED[0]}" ] && UNPINNED=()
+
+# A second count, arrived at independently: any @<40 hex> token in the same corpus. If the parser
+# missed a pin *shape*, these disagree and the run fails rather than verifying a subset.
+#
+# The corpus has to be the same, or the check answers a different question. Grepping every *.yml in
+# the tree counted pins in files the parser never reads -- anything under node_modules or vendor, a
+# fixture, a .ddev config -- so an unrelated YAML anywhere failed the build with "the extraction is
+# missing a pin shape". The scope rules are restated here in shell rather than taken from the
+# parser, so this stays an independent count of the same files.
+mapfile -t SCANNED < <(
+  {
+    ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null
+    find . \( -name .git -o -name node_modules -o -name vendor \) -prune \
+      -o -type f \( -name 'action.yml' -o -name 'action.yaml' \) -print
+  } | sort -u
+)
+SHA_TOKENS=0
+if [ "${#SCANNED[@]}" -gt 0 ]; then
+  SHA_TOKENS=$(grep -hoE "@[0-9a-f]{40}" "${SCANNED[@]}" 2>/dev/null | wc -l)
+fi
 CHECKED=${#OCCURRENCES[@]}
 
 for ref in $(printf '%s\n' "${OCCURRENCES[@]}" | sort -u); do
