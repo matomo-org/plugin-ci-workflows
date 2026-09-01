@@ -249,6 +249,18 @@ Then set `verify-hook: true` in that plugin's PHPStan caller, which fails the bu
 
 The hook works out for itself which plugin it is in, from the repository root git reports, so the same file works unmodified in every plugin. Where it cannot find a `plugins/` directory above it — any repository that is not a Matomo plugin — it prints a line saying so and exits 0.
 
+### Finding plugins where the hook never runs
+
+Shipping the file is not the same as running it: a plugin whose `core.hooksPath` is unset has the hook and no way to reach it, and because nothing runs, nothing says so. On a push that succeeds, the hook looks at its sibling plugins and names any that ship a copy without the setting, at most once a day:
+
+```
+NOTE: 3 plugin(s) ship a pre-push hook that never runs, because
+      core.hooksPath is not set in them: AbTesting ActivityLog Cohorts
+      Activate with add-git-hooks-to-plugins.sh from matomo-developer-tools.
+```
+
+It only reads, never writes. A plugin that ships no hook is left out of the report entirely, because there is nothing there to activate and setting `core.hooksPath` to a directory that does not exist is worse than leaving it alone: git then runs no hook at all — including anything the repository keeps in `.git/hooks` — and reports nothing when it does so.
+
 ## Using a reusable workflow
 
 ```yaml

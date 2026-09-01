@@ -168,6 +168,35 @@ OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 assert_equals "a closer candidate clears an earlier tie" "1" "$(grep -c 'against origin/6.x-dev' <<< "$OUT")"
 assert_equals "the warning still fires after a cleared tie" "1" "$(grep -c 'WARNING: analysing against Matomo 5.x' <<< "$OUT")"
 
+# The sibling audit reports plugins that ship a hook nothing runs, and must never touch their
+# configuration: pointing core.hooksPath at a directory that does not exist silently disables a
+# repository's own .git/hooks as well, so a plugin with no hook directory is left alone entirely.
+PLUGIN=$(new_fixture sibling-audit)
+MATOMO="$PLUGIN/../.."
+git -C "$PLUGIN" update-ref refs/remotes/origin/6.x-dev HEAD
+git -C "$PLUGIN" config core.hooksPath .git-hooks-matomo
+
+# A sibling that ships a hook but has no core.hooksPath -- the case worth reporting.
+mkdir -p "$MATOMO/plugins/Dormant/.git-hooks-matomo"
+cp "$HOOK" "$MATOMO/plugins/Dormant/.git-hooks-matomo/pre-push"
+git -C "$MATOMO/plugins/Dormant" init -q
+# A sibling with no hook at all -- nothing to activate, so it must not be named.
+mkdir -p "$MATOMO/plugins/NoHook"
+git -C "$MATOMO/plugins/NoHook" init -q
+
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // touched' >> "$PLUGIN/Shared.php"
+git -C "$PLUGIN" commit -qam 'touch shared'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+assert_equals "names a sibling whose hook never runs" "1" "$(grep -c 'Dormant' <<< "$OUT")"
+assert_equals "does not name a sibling with no hook to activate" "0" "$(grep -c 'NoHook' <<< "$OUT")"
+assert_equals "leaves the dormant sibling's config untouched" "" "$(git -C "$MATOMO/plugins/Dormant" config --get core.hooksPath || true)"
+assert_equals "leaves the hookless sibling's config untouched" "" "$(git -C "$MATOMO/plugins/NoHook" config --get core.hooksPath || true)"
+
+# Once a day, not once a push.
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+assert_equals "stays quiet on the next push the same day" "0" "$(grep -c 'Dormant' <<< "$OUT")"
+
 
 echo
 echo "${tests} tests, ${failures} failures"
