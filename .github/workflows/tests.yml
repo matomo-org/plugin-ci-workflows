@@ -16,6 +16,18 @@ jobs:
       - name: Run tests
         run: bash tests/license_check_test.sh
 
+  pre-push-hook:
+    name: Pre-push hook tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The fixtures drive hooks/pre-push against throwaway repositories with a stub analyser, so
+      # the job needs neither PHP nor a Matomo checkout.
+      - name: Run tests
+        run: bash tests/pre_push_base_branch_test.sh
+
   codex-review-invariants:
     name: Codex review invariants
     runs-on: ubuntu-24.04
