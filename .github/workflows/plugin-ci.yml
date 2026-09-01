@@ -1,0 +1,162 @@
+name: Plugin CI
+
+# The whole pull request check set behind one caller, so a plugin's own workflow carries its name
+# and nothing else, and a check added here reaches every plugin without a pull request against any
+# of them. Codex review is deliberately not part of this -- see the note at the bottom of the file.
+#
+# Checks are opt *out*. A new check added here runs everywhere by default, which is the point; an
+# opt-in switch would leave a new check running nowhere until every caller adds a line.
+
+on:
+  workflow_call:
+    inputs:
+      plugin-name:
+        description: "Name of the plugin, e.g. LoginLdap"
+        required: true
+        type: string
+
+      # --- opt-outs ---
+      skip-phpcs:
+        description: "Do not run the PHPCS check"
+        required: false
+        type: boolean
+        default: false
+      skip-phpstan:
+        description: "Do not run the PHPStan analysis"
+        required: false
+        type: boolean
+        default: false
+      skip-license-check:
+        description: "Do not run the license check"
+        required: false
+        type: boolean
+        default: false
+      skip-ai-checklist:
+        description: "Do not run the AI checklist gate"
+        required: false
+        type: boolean
+        default: false
+
+      # --- pass-through, named per check because two of them take a php-version ---
+      phpcs-php-version:
+        description: "PHP version for the PHPCS run. PHPCS needs at least 7.4, so matomo5_min_php is too low."
+        required: false
+        type: string
+        default: 'matomo6_min_php'
+      phpstan-php-version:
+        description: "PHP version for the PHPStan runs"
+        required: false
+        type: string
+        default: 'matomo6_min_php'
+      dependent-plugins:
+        description: "Space-separated repository slugs PHPStan needs checked out, e.g. 'innocraft/plugin-Funnels'"
+        required: false
+        type: string
+        default: ''
+      matomo-targets:
+        description: "JSON array of {target, php} objects, one PHPStan run each"
+        required: false
+        type: string
+        default: '[{"target": "minimum_required_matomo"}, {"target": "maximum_supported_matomo"}]'
+      verify-hook:
+        description: "Fail when the plugin ships a .git-hooks-matomo/pre-push that differs from the canonical copy. Only for repositories that still ship their own; prefer pointing core.hooksPath at this repository instead."
+        required: false
+        type: boolean
+        default: false
+      fail-on-missing-header:
+        description: "Treat source files without any recognized license header as license-check errors"
+        required: false
+        type: boolean
+        default: false
+
+      # --- refs ---
+      scripts-ref:
+        description: "Ref of matomo-org/github-action-tests for the shared helper scripts"
+        required: false
+        type: string
+        default: 'main'
+      workflows-ref:
+        description: "Ref of this repository for the pre-push hook and the PHPStan bootstrap"
+        required: false
+        type: string
+        default: 'main'
+      script-ref:
+        description: "Ref of this repository for the license check script"
+        required: false
+        type: string
+        default: 'main'
+
+    secrets:
+      TESTS_ACCESS_TOKEN:
+        description: "Needed only when dependent-plugins names a private repository"
+        required: false
+
+# The union of what the checks below need, which is the cost of one caller: a plugin that only
+# wanted PHPCS previously needed no scopes at all, and now grants the checklist gate's two.
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+# The caller subscribes to `edited` so the checklist gate re-runs when a description is fixed.
+# Consuming that event is opt *in*, per job: a check that does not name `edited` in its `if:`
+# ignores it, so a check added here later re-analyses nothing on a description edit unless someone
+# decides it should. tests/plugin_ci_invariants_test.sh holds the line, because the safe behaviour
+# here is the one you get by writing nothing, and a convention nobody checks is not a default.
+#
+# Opting in today: ai-checklist, which reads the description and nothing else.
+jobs:
+  ai-checklist:
+    if: ${{ !inputs.skip-ai-checklist }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ai-checklist.yml@main
+    permissions:
+      actions: read
+      pull-requests: read
+
+  phpcs:
+    if: ${{ !inputs.skip-phpcs && github.event.action != 'edited' }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-phpcs.yml@main
+    permissions:
+      contents: read
+    with:
+      plugin-name: ${{ inputs.plugin-name }}
+      php-version: ${{ inputs.phpcs-php-version }}
+      scripts-ref: ${{ inputs.scripts-ref }}
+
+  phpstan:
+    if: ${{ !inputs.skip-phpstan && github.event.action != 'edited' }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-phpstan.yml@main
+    permissions:
+      contents: read
+    with:
+      plugin-name: ${{ inputs.plugin-name }}
+      dependent-plugins: ${{ inputs.dependent-plugins }}
+      php-version: ${{ inputs.phpstan-php-version }}
+      matomo-targets: ${{ inputs.matomo-targets }}
+      verify-hook: ${{ inputs.verify-hook }}
+      scripts-ref: ${{ inputs.scripts-ref }}
+      workflows-ref: ${{ inputs.workflows-ref }}
+    secrets:
+      TESTS_ACCESS_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN }}
+
+  license-check:
+    if: ${{ !inputs.skip-license-check && github.event.action != 'edited' }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-license-check.yml@main
+    permissions:
+      contents: read
+    with:
+      fail-on-missing-header: ${{ inputs.fail-on-missing-header }}
+      script-ref: ${{ inputs.script-ref }}
+
+# Codex review is not called from here, and should not be. It runs on `pull_request_target` with
+# secrets available, gated on a label; every check above runs on `pull_request`. Putting both in
+# one caller means one workflow file declaring both events, and the code checks then need an
+# `if:` excluding pull_request_target or they execute pull request code in a context that can
+# read secrets. A single missing condition there is a credential leak, not a red build.
+#
+# Its own `automation-paths` guard also names .github/workflows/codex-review.yml as a file that
+# must get human review before a review runs, so moving it into a differently named wrapper
+# removes that control.
+#
+# Its wrapper is a stable file that rarely changes; the logic it calls lives here, so the
+# per-plugin cost is paid once rather than on every change to how the review works.

@@ -33,8 +33,45 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
+| [`plugin-ci.yml`](#plugin-ci) | Reusable workflow | The whole pull request check set behind one caller |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
+
+### Plugin CI
+
+Runs PHPCS, PHPStan, the license check and the AI checklist gate from a single caller, so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
+
+```yaml
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  ci:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ci.yml@main
+    with:
+      plugin-name: LoginLdap
+    secrets: inherit
+```
+
+Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check` and `skip-ai-checklist`. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the two that take a PHP version are named `phpcs-php-version` and `phpstan-php-version`.
+
+The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description. Consuming that action is opt **in** per job, so the code checks ignore it rather than re-analysing an unchanged tree, and a check added later ignores it too unless its author decides otherwise. `tests/plugin_ci_invariants_test.sh` enforces both defaults.
+
+The permissions above are the union of what the four checks need. That is the cost of one caller: a plugin that only wants PHPCS previously needed no scopes at all.
+
+#### What it does not cover
+
+[Codex review](#codex-review) stays a separate workflow in each plugin, deliberately. It runs on `pull_request_target` with secrets available and gated on a label, while every check above runs on `pull_request`. One file declaring both events means the code checks need an `if:` excluding `pull_request_target`, or they execute pull request code in a context that can read secrets — a missing condition there is a credential leak rather than a red build. Its `automation-paths` guard also names `.github/workflows/codex-review.yml` as a file requiring human review before a review runs, and a differently named wrapper drops that control. Its wrapper is a stable file, so the per-plugin cost is paid once while the review logic keeps living here.
+
+**Pinning does not reach through this workflow.** GitHub does not accept an expression in a `uses:` reference, so the calls below are fixed at `@main`: a caller that pins `plugin-ci.yml` to a tag still runs `main` versions of the checks themselves. A repository that needs to hold a check steady — a plugin mid-migration to a new Matomo major, say — should call the individual workflows directly and pin those, rather than use this one.
 
 ### PHPCS
 
