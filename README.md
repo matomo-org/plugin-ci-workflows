@@ -34,6 +34,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
+| [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
 ### PHPCS
 
@@ -72,7 +73,7 @@ Analyses the plugin with PHPStan against a checked-out Matomo. By default it run
 | `matomo-targets` | no | min and max | JSON array of `{target, php}` objects, one analysis run each |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the shared helper scripts |
 | `workflows-ref` | no | `main` | Ref of this repository for the pre-push hook and the PHPStan bootstrap |
-| `verify-hook` | no | `false` | Fail when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/`. Opt in once the plugin's hook has been synced. |
+| `verify-hook` | no | `false` | Fail when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/`. Turn it on once that copy has been synced — see [The pre-push hook](#the-pre-push-hook). |
 
 `TESTS_ACCESS_TOKEN` is an optional secret, needed only when `dependent-plugins` names a private repository.
 
@@ -221,6 +222,44 @@ Who can start a review: the label is a trigger, not an authorisation check. Anyo
 Refs into our own organisations — the review actions and the agent skills — track `main` on purpose, as they do elsewhere in this repository. Third-party actions are pinned to a full commit SHA. The distinction matters more here than in the other workflows, because these jobs hold `OPENAI_API_KEY`, `TESTS_ACCESS_TOKEN` and write permission on the calling repository, so a change to either of those repositories takes effect on the next review with those credentials in scope. Pin `review-actions-ref` and `matomo-agent-skills-ref` to SHAs for a caller that needs that fixed.
 
 The security model, the trust boundaries and the review prompt are documented in `review/README.md` in the review actions repository.
+
+## The pre-push hook
+
+`hooks/pre-push` runs PHPStan over the files a push actually changes, before the push leaves the machine. It is a developer convenience, not a gate: CI analyses the whole repository regardless, and never executes this hook.
+
+This file is the canonical copy. Each plugin ships its own under `.git-hooks-matomo/`, and git runs it because `core.hooksPath` in that clone names the directory:
+
+```bash
+git config core.hooksPath .git-hooks-matomo
+```
+
+`add-git-hooks-to-plugins.sh` in [`matomo-developer-tools`](https://github.com/innocraft/matomo-developer-tools) does that across a checkout, and the standard DDEV environment script already calls it, so a developer who set the environment up that way has the hooks running already.
+
+The path stays repository-relative on purpose. An absolute path pointing outside the repository breaks the moment that directory is moved or renamed — and it breaks silently, because git runs no hook and reports nothing when `core.hooksPath` names somewhere that does not exist. A push then succeeds with no checks and no warning, which is worse than running a hook that is out of date. Keeping the copy in the repository also means someone who clones a single plugin gets the hook with it, without cloning this repository as well.
+
+### Keeping a plugin's copy in sync
+
+The cost of a copy per repository is drift, and those copies currently sit at several different vintages. Sync one by taking this file:
+
+```bash
+cp path/to/plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
+```
+
+Then set `verify-hook: true` in that plugin's PHPStan caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning.
+
+The hook works out for itself which plugin it is in, from the repository root git reports, so the same file works unmodified in every plugin. Where it cannot find a `plugins/` directory above it — any repository that is not a Matomo plugin — it prints a line saying so and exits 0.
+
+### Finding plugins where the hook never runs
+
+Shipping the file is not the same as running it: a plugin whose `core.hooksPath` is unset has the hook and no way to reach it, and because nothing runs, nothing says so. On a push that succeeds, the hook looks at its sibling plugins and names any that ship a copy without the setting, at most once a day:
+
+```
+NOTE: 3 plugin(s) ship a pre-push hook that never runs, because
+      core.hooksPath is not set in them: AbTesting ActivityLog Cohorts
+      Activate with add-git-hooks-to-plugins.sh from matomo-developer-tools.
+```
+
+It only reads, never writes. A plugin that ships no hook is left out of the report entirely, because there is nothing there to activate and setting `core.hooksPath` to a directory that does not exist is worse than leaving it alone: git then runs no hook at all — including anything the repository keeps in `.git/hooks` — and reports nothing when it does so.
 
 ## Using a reusable workflow
 
