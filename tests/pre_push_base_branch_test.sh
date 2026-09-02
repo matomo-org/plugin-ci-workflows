@@ -198,6 +198,39 @@ OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 assert_equals "stays quiet on the next push the same day" "0" "$(grep -c 'Dormant' <<< "$OUT")"
 
 
+# PHPStan exits non-zero when its config excludes every file it was handed, which a commit whose
+# only new file is a test reaches against a config that excludes tests/. Nothing is wrong with the
+# push, so it must not be blocked.
+PLUGIN=$(new_fixture all-files-excluded)
+cat > "$PLUGIN/../../vendor/bin/phpstan" <<'STUB'
+#!/bin/bash
+echo ' [ERROR] No files found to analyse.'
+exit 1
+STUB
+chmod 0755 "$PLUGIN/../../vendor/bin/phpstan"
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // excluded' > "$PLUGIN/ExcludedOnly.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'excluded only'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "an entirely excluded file list does not block the push" "0" "$STATUS"
+assert_equals "and reports why nothing was analysed" "1" "$(grep -c 'nothing to analyse' <<< "$OUT")"
+
+# That tolerance has to stay narrow, or the hook stops gating anything.
+PLUGIN=$(new_fixture real-failure)
+cat > "$PLUGIN/../../vendor/bin/phpstan" <<'STUB'
+#!/bin/bash
+echo ' [ERROR] Found 1 error'
+exit 1
+STUB
+chmod 0755 "$PLUGIN/../../vendor/bin/phpstan"
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // broken' > "$PLUGIN/Broken.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'broken'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a real analysis failure still blocks the push" "1" "$STATUS"
+
 echo
 echo "${tests} tests, ${failures} failures"
 [[ "$failures" -eq 0 ]]

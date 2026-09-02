@@ -198,7 +198,23 @@ check_pushed_commit() {
   fi
 
   echo "Running PHPstan on ${label} files"
-  "${COMMAND[@]}" analyse -c "${PLUGIN_PATH}${config}" "${changed_files[@]}" || return 1
+
+  # PHPStan exits non-zero when the config excludes every path it was handed, which a commit
+  # reaches whenever its only files of this kind are excluded - a test-only addition against a
+  # config that excludes tests/, say. No exit code or --error-format separates that from a real
+  # failure, so the message is the only signal available.
+  local out_file status
+  out_file=$(mktemp)
+  "${COMMAND[@]}" analyse -c "${PLUGIN_PATH}${config}" "${changed_files[@]}" 2>&1 | tee "$out_file"
+  status=${PIPESTATUS[0]}
+
+  if [[ "$status" -ne 0 ]] && grep -qF 'No files found to analyse' "$out_file"; then
+    echo "Every ${label} file is excluded by ${config}, so there is nothing to analyse"
+    status=0
+  fi
+
+  rm -f "$out_file"
+  return "$status"
 }
 
 # Check the commits actually being pushed, as supplied on stdin: HEAD is wrong
