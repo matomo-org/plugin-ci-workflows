@@ -18,18 +18,38 @@ ZERO_OID='0000000000000000000000000000000000000000'
 # A Matomo checkout holding one plugin, with a stub analyser that appends the arguments it was
 # given to $MATOMO/analyser-args so a test can assert on them.
 #
+# Point a fixture's stub analyser at a canned result. It always records the arguments it was given,
+# so analysed_files() keeps working whatever the result is. The streams and exit code are read from
+# sidecar files: a canned message containing quotes then needs no escaping.
+#
+# $1 -- plugin dir, $2 -- exit code, $3 -- stdout text, $4 -- stderr text
+stub_analyser() {
+  local plugin="$1" matomo
+  matomo=$(cd "$plugin/../.." && pwd)
+
+  printf '%s' "$3" > "$matomo/stub-stdout"
+  printf '%s' "$4" > "$matomo/stub-stderr"
+  printf '%s' "$2" > "$matomo/stub-exit"
+
+  cat > "$matomo/vendor/bin/phpstan" <<'STUB'
+#!/bin/bash
+matomo=$(cd "$(dirname "$0")/../.." && pwd)
+printf '%s\n' "$@" >> "$matomo/analyser-args"
+[[ -s "$matomo/stub-stdout" ]] && cat "$matomo/stub-stdout"
+[[ -s "$matomo/stub-stderr" ]] && cat "$matomo/stub-stderr" >&2
+exit "$(cat "$matomo/stub-exit")"
+STUB
+  chmod 0755 "$matomo/vendor/bin/phpstan"
+}
+
 # $1 -- fixture name
 new_fixture() {
   local matomo="$WORK/$1/matomo" plugin
   plugin="$matomo/plugins/TestPlugin"
   mkdir -p "$plugin/phpstan" "$matomo/vendor/bin"
 
-  cat > "$matomo/vendor/bin/phpstan" <<'STUB'
-#!/bin/bash
-printf '%s\n' "$@" >> "$(cd "$(dirname "$0")/../.." && pwd)/analyser-args"
-STUB
-  chmod 0755 "$matomo/vendor/bin/phpstan"
   : > "$matomo/analyser-args"
+  stub_analyser "$plugin" 0 '' ''
   echo 'parameters:' > "$plugin/phpstan/phpstan.created.neon"
   echo 'parameters:' > "$plugin/phpstan/phpstan.modified.neon"
 
@@ -200,36 +220,64 @@ assert_equals "stays quiet on the next push the same day" "0" "$(grep -c 'Dorman
 
 # PHPStan exits non-zero when its config excludes every file it was handed, which a commit whose
 # only new file is a test reaches against a config that excludes tests/. Nothing is wrong with the
-# push, so it must not be blocked.
+# push, so it must not be blocked. The diagnostic goes to stderr and leaves stdout empty.
 PLUGIN=$(new_fixture all-files-excluded)
-cat > "$PLUGIN/../../vendor/bin/phpstan" <<'STUB'
-#!/bin/bash
-echo ' [ERROR] No files found to analyse.'
-exit 1
-STUB
-chmod 0755 "$PLUGIN/../../vendor/bin/phpstan"
+stub_analyser "$PLUGIN" 1 '' ' [ERROR] No files found to analyse.'
 git -C "$PLUGIN" checkout -q -b topic
 echo '<?php // excluded' > "$PLUGIN/ExcludedOnly.php"
 git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'excluded only'
 OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 STATUS=$?
 assert_equals "an entirely excluded file list does not block the push" "0" "$STATUS"
-assert_equals "and reports why nothing was analysed" "1" "$(grep -c 'nothing to analyse' <<< "$OUT")"
+# Naming the files is what stops an excludePaths that matches everything retiring the hook in
+# silence, so the message has to carry them rather than just say nothing was analysed.
+assert_equals "and names the files it skipped" "1" "$(grep -c 'nothing to analyse: ExcludedOnly.php' <<< "$OUT")"
 
-# That tolerance has to stay narrow, or the hook stops gating anything.
+# A failure that reports no diagnostic of its own still blocks.
 PLUGIN=$(new_fixture real-failure)
-cat > "$PLUGIN/../../vendor/bin/phpstan" <<'STUB'
-#!/bin/bash
-echo ' [ERROR] Found 1 error'
-exit 1
-STUB
-chmod 0755 "$PLUGIN/../../vendor/bin/phpstan"
+stub_analyser "$PLUGIN" 1 ' [ERROR] Found 1 error' ''
 git -C "$PLUGIN" checkout -q -b topic
 echo '<?php // broken' > "$PLUGIN/Broken.php"
 git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'broken'
 OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 STATUS=$?
 assert_equals "a real analysis failure still blocks the push" "1" "$STATUS"
+
+# The phrase inside a real diagnostic must not buy an exemption: a custom rule can put any text in
+# a message, and quoting a file's contents is enough. Analysis output goes to stdout, so a run that
+# produced any is never exempt however its text reads.
+PLUGIN=$(new_fixture phrase-inside-a-real-error)
+stub_analyser "$PLUGIN" 1 "  3      Parameter #1 \$x expects int, 'No files found to analyse' given.
+ [ERROR] Found 1 error" ''
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // quotes the phrase' > "$PLUGIN/Quoting.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'quoting'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "the phrase inside a real diagnostic does not exempt the push" "1" "$STATUS"
+
+# And the exemption is the whole stderr line, not a substring of one: a diagnostic that merely
+# mentions the phrase is still a failure.
+PLUGIN=$(new_fixture phrase-within-a-longer-line)
+stub_analyser "$PLUGIN" 1 '' ' [ERROR] Rule crashed: No files found to analyse in bundle X'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // mentions the phrase' > "$PLUGIN/Mentions.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'mentions'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "the phrase inside a longer stderr line does not exempt the push" "1" "$STATUS"
+
+# Analysis output on stdout means files were analysed, so the stderr diagnostic cannot be taken at
+# face value however exactly it matches. Both halves of the guard are load-bearing: this is the
+# case that fails if the stdout check is dropped and only the message is consulted.
+PLUGIN=$(new_fixture excluded-alongside-real-errors)
+stub_analyser "$PLUGIN" 1 ' [ERROR] Found 1 error' ' [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // both' > "$PLUGIN/Both.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'both'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a real diagnostic alongside the phrase does not exempt the push" "1" "$STATUS"
 
 echo
 echo "${tests} tests, ${failures} failures"

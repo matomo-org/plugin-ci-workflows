@@ -199,21 +199,31 @@ check_pushed_commit() {
 
   echo "Running PHPstan on ${label} files"
 
-  # PHPStan exits non-zero when the config excludes every path it was handed, which a commit
-  # reaches whenever its only files of this kind are excluded - a test-only addition against a
-  # config that excludes tests/, say. No exit code or --error-format separates that from a real
-  # failure, so the message is the only signal available.
-  local out_file status
-  out_file=$(mktemp)
-  "${COMMAND[@]}" analyse -c "${PLUGIN_PATH}${config}" "${changed_files[@]}" 2>&1 | tee "$out_file"
-  status=${PIPESTATUS[0]}
+  local out_file err_file status
+  out_file=$(mktemp) || return 1
+  err_file=$(mktemp) || { rm -f "$out_file"; return 1; }
 
-  if [[ "$status" -ne 0 ]] && grep -qF 'No files found to analyse' "$out_file"; then
-    echo "Every ${label} file is excluded by ${config}, so there is nothing to analyse"
-    status=0
+  "${COMMAND[@]}" analyse -c "${PLUGIN_PATH}${config}" "${changed_files[@]}" > "$out_file" 2> "$err_file"
+  status=$?
+
+  # PHPStan reports "nothing to analyse" on stderr and leaves stdout empty, while a run that
+  # analysed anything writes its result table to stdout. That pair is the only signal it offers:
+  # the exit code is 1 either way, and --error-format=json still emits this one as plain text
+  # (checked on 2.2.9). Matching stderr alone would accept a real failure whose own message
+  # happened to contain the phrase, which a custom rule is free to produce.
+  if [[ "$status" -ne 0 ]] && [[ ! -s "$out_file" ]] \
+    && grep -qE '^[[:space:]]*(\[ERROR\][[:space:]]+)?No files found to analyse\.?[[:space:]]*$' "$err_file"
+  then
+    # Name the files: an excludePaths that accidentally matches everything otherwise retires the
+    # hook silently, which is the failure audit_sibling_plugins exists to catch.
+    echo "Every ${label} file is excluded by ${config}, so there is nothing to analyse: ${changed_files[*]}"
+    rm -f "$out_file" "$err_file"
+    return 0
   fi
 
-  rm -f "$out_file"
+  cat "$err_file" >&2
+  cat "$out_file"
+  rm -f "$out_file" "$err_file"
   return "$status"
 }
 
