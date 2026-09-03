@@ -203,7 +203,12 @@ check_pushed_commit() {
   out_file=$(mktemp) || return 1
   err_file=$(mktemp) || { rm -f "$out_file"; return 1; }
 
-  "${COMMAND[@]}" analyse -c "${PLUGIN_PATH}${config}" "${changed_files[@]}" > "$out_file" 2> "$err_file"
+  # --no-ansi because the exemption below reads a line of stderr. PHPStan's console decorates its
+  # output whenever MSYSTEM and TERM=xterm are set -- Git Bash on Windows sets both -- and it does
+  # so even when stderr is a file, wrapping the line in colour codes the anchored match cannot see.
+  # Verified on 2.2.9: decorated, the guard blocks the push it exists to let through.
+  "${COMMAND[@]}" analyse --no-ansi -c "${PLUGIN_PATH}${config}" "${changed_files[@]}" \
+    > "$out_file" 2> "$err_file"
   status=$?
 
   # PHPStan reports "nothing to analyse" on stderr and leaves stdout empty, while a run that
@@ -211,9 +216,23 @@ check_pushed_commit() {
   # the exit code is 1 either way, and --error-format=json still emits this one as plain text
   # (checked on 2.2.9). Matching stderr alone would accept a real failure whose own message
   # happened to contain the phrase, which a custom rule is free to produce.
+  #
+  # A second PHPStan diagnostic on stderr withdraws the exemption too. That test is keyed to the
+  # [ERROR] block shape rather than to stderr being otherwise empty, because Xdebug notices and
+  # PHP's own log_errors output land on stderr in ordinary dev environments -- treating those as
+  # failures would re-block precisely the pushes this exemption exists to let through.
+  local no_files_re='^[[:space:]]*(\[ERROR\][[:space:]]+)?No files found to analyse\.?[[:space:]]*$'
+  local other_diagnostics
+  other_diagnostics=$(grep -E '^[[:space:]]*\[ERROR\]' "$err_file" | grep -vE "$no_files_re")
+
   if [[ "$status" -ne 0 ]] && [[ ! -s "$out_file" ]] \
-    && grep -qE '^[[:space:]]*(\[ERROR\][[:space:]]+)?No files found to analyse\.?[[:space:]]*$' "$err_file"
+    && grep -qE "$no_files_re" "$err_file" \
+    && [[ -z "$other_diagnostics" ]]
   then
+    # Everything the run said survives except the one line the message below already puts in plain
+    # English. Dropping only that line keeps the push from reporting an [ERROR] it is going ahead
+    # with anyway, which is how a hook teaches people to stop reading its output.
+    grep -vE "$no_files_re" "$err_file" >&2
     # Name the files: an excludePaths that accidentally matches everything otherwise retires the
     # hook silently, which is the failure audit_sibling_plugins exists to catch.
     echo "Every ${label} file is excluded by ${config}, so there is nothing to analyse: ${changed_files[*]}"

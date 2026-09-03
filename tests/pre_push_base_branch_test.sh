@@ -15,9 +15,6 @@ failures=0
 
 ZERO_OID='0000000000000000000000000000000000000000'
 
-# A Matomo checkout holding one plugin, with a stub analyser that appends the arguments it was
-# given to $MATOMO/analyser-args so a test can assert on them.
-#
 # Point a fixture's stub analyser at a canned result. It always records the arguments it was given,
 # so analysed_files() keeps working whatever the result is. The streams and exit code are read from
 # sidecar files: a canned message containing quotes then needs no escaping.
@@ -42,6 +39,9 @@ STUB
   chmod 0755 "$matomo/vendor/bin/phpstan"
 }
 
+# A Matomo checkout holding one plugin, with a stub analyser that appends the arguments it was
+# given to $MATOMO/analyser-args so a test can assert on them.
+#
 # $1 -- fixture name
 new_fixture() {
   local matomo="$WORK/$1/matomo" plugin
@@ -229,19 +229,45 @@ git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'excluded only'
 OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 STATUS=$?
 assert_equals "an entirely excluded file list does not block the push" "0" "$STATUS"
+# The exemption reads a line of stderr, so the analyser must not be allowed to decorate it. Git
+# Bash sets the environment that makes PHPStan colour output even into a file, and the escape
+# codes defeat the anchored match -- blocking precisely the push this exemption is for.
+assert_equals "and asks the analyser not to decorate its output" "1" \
+  "$(grep -cx -- '--no-ansi' "$PLUGIN/../../analyser-args")"
 # Naming the files is what stops an excludePaths that matches everything retiring the hook in
 # silence, so the message has to carry them rather than just say nothing was analysed.
 assert_equals "and names the files it skipped" "1" "$(grep -c 'nothing to analyse: ExcludedOnly.php' <<< "$OUT")"
+# ...without also reporting the [ERROR] it is deliberately going ahead with. The message above
+# says the same thing in plain English, and it is the only line the exempt path drops.
+assert_equals "and does not report the error it is overriding" "0" \
+  "$(grep -c 'No files found to analyse' <<< "$OUT")"
 
 # A failure that reports no diagnostic of its own still blocks.
 PLUGIN=$(new_fixture real-failure)
-stub_analyser "$PLUGIN" 1 ' [ERROR] Found 1 error' ''
+stub_analyser "$PLUGIN" 1 ' [ERROR] Found 1 error' 'Note: analysed 1 file'
 git -C "$PLUGIN" checkout -q -b topic
 echo '<?php // broken' > "$PLUGIN/Broken.php"
 git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'broken'
 OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 STATUS=$?
 assert_equals "a real analysis failure still blocks the push" "1" "$STATUS"
+# Capturing both streams is what makes the exemption decidable, but it also buffers what used to
+# go straight to the terminal: a blocked push that reports nothing is worse than the bug this
+# replaced, so both streams have to survive the round trip.
+assert_equals "and reports what the analyser found" "1" "$(grep -c 'Found 1 error' <<< "$OUT")"
+assert_equals "and its stderr along with it" "1" "$(grep -c 'Note: analysed 1 file' <<< "$OUT")"
+
+# A failure carrying no diagnostic block at all -- a missing file, an unknown config key, a memory
+# limit that cannot be set. Stdout is empty and nothing is [ERROR]-prefixed, so every other
+# condition is satisfied and the phrase itself is all that stands between these and an exemption.
+PLUGIN=$(new_fixture undiagnosed-failure)
+stub_analyser "$PLUGIN" 1 '' 'Path /nonexistent/Missing.php does not exist'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // undiagnosed' > "$PLUGIN/Undiagnosed.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'undiagnosed'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a failure with no diagnostic block still blocks the push" "1" "$STATUS"
 
 # The phrase inside a real diagnostic must not buy an exemption: a custom rule can put any text in
 # a message, and quoting a file's contents is enough. Analysis output goes to stdout, so a run that
@@ -278,6 +304,37 @@ git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'both'
 OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 STATUS=$?
 assert_equals "a real diagnostic alongside the phrase does not exempt the push" "1" "$STATUS"
+
+# The same case on one stream: a second PHPStan diagnostic on stderr withdraws the exemption, so a
+# run that failed for its own reasons is not waved through merely because it also reported having
+# nothing to analyse.
+PLUGIN=$(new_fixture real-error-on-stderr)
+stub_analyser "$PLUGIN" 1 '' ' [ERROR] Rule crashed while collecting files
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // second diagnostic' > "$PLUGIN/SecondDiagnostic.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'second diagnostic'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a second stderr diagnostic does not exempt the push" "1" "$STATUS"
+
+# Environment noise on stderr is not a diagnostic, and this case is pinned deliberately: PHP writes
+# log_errors output to stderr when error_log is unset, and Xdebug announces itself there, so
+# tightening the guard to "stderr holds nothing else" would re-block the pushes the exemption is
+# for. Keying it to the [ERROR]/[FATAL] shape instead is what this test holds in place.
+PLUGIN=$(new_fixture noise-on-stderr)
+stub_analyser "$PLUGIN" 1 '' 'PHP Deprecated:  Implicit conversion from float 1.5 to int loses precision in /x.php on line 3
+Xdebug: [Step Debug] Could not connect to debugging client.
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // noisy environment' > "$PLUGIN/NoisyEnvironment.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'noisy environment'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "environment noise on stderr still exempts the push" "0" "$STATUS"
+# The exemption turns on one stderr line, so the rest of what the analyser said has to survive it.
+assert_equals "and the analyser's own output is not swallowed" "1" \
+  "$(grep -c 'Could not connect to debugging client' <<< "$OUT")"
 
 echo
 echo "${tests} tests, ${failures} failures"
