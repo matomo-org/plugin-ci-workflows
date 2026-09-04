@@ -318,10 +318,33 @@ OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 STATUS=$?
 assert_equals "a second stderr diagnostic does not exempt the push" "1" "$STATUS"
 
+# A process that died is never a clean "nothing to analyse", whatever else it managed to print on
+# the way out. PHPStan has not been seen to emit either of these alongside the no-files line, but a
+# fatal is never benign noise, so withdrawing the exemption for one cannot cost a legitimate push.
+PLUGIN=$(new_fixture php-fatal)
+stub_analyser "$PLUGIN" 255 '' 'PHP Fatal error:  Allowed memory size of 134217728 bytes exhausted in /x.php on line 9
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // fatal' > "$PLUGIN/Fatal.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'fatal'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a PHP fatal does not exempt the push" "1" "$STATUS"
+
+PLUGIN=$(new_fixture fatal-block)
+stub_analyser "$PLUGIN" 1 '' ' [FATAL] Child process died
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // fatal block' > "$PLUGIN/FatalBlock.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'fatal block'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a [FATAL] block does not exempt the push" "1" "$STATUS"
+
 # Environment noise on stderr is not a diagnostic, and this case is pinned deliberately: PHP writes
 # log_errors output to stderr when error_log is unset, and Xdebug announces itself there, so
 # tightening the guard to "stderr holds nothing else" would re-block the pushes the exemption is
-# for. Keying it to the [ERROR]/[FATAL] shape instead is what this test holds in place.
+# for. Keying it to the shapes a real failure takes is what this test holds in place.
 PLUGIN=$(new_fixture noise-on-stderr)
 stub_analyser "$PLUGIN" 1 '' 'PHP Deprecated:  Implicit conversion from float 1.5 to int loses precision in /x.php on line 3
 Xdebug: [Step Debug] Could not connect to debugging client.

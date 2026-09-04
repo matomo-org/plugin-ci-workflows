@@ -217,13 +217,18 @@ check_pushed_commit() {
   # (checked on 2.2.9). Matching stderr alone would accept a real failure whose own message
   # happened to contain the phrase, which a custom rule is free to produce.
   #
-  # A second PHPStan diagnostic on stderr withdraws the exemption too. That test is keyed to the
-  # [ERROR] block shape rather than to stderr being otherwise empty, because Xdebug notices and
-  # PHP's own log_errors output land on stderr in ordinary dev environments -- treating those as
-  # failures would re-block precisely the pushes this exemption exists to let through.
+  # Any other sign of failure on stderr withdraws the exemption too. That test is keyed to the
+  # shapes below rather than to stderr being otherwise empty, because Xdebug notices and PHP's own
+  # deprecation output land on stderr in ordinary dev environments -- treating those as failures
+  # would re-block precisely the pushes this exemption exists to let through.
+  #
+  # [ERROR] is the block PHPStan actually emits. [FATAL] and PHP's own fatals have not been seen
+  # alongside the no-files line, but a process that died is never a clean "nothing to analyse", and
+  # a fatal -- unlike a deprecation -- is never benign, so matching them cannot cost a false block.
   local no_files_re='^[[:space:]]*(\[ERROR\][[:space:]]+)?No files found to analyse\.?[[:space:]]*$'
+  local failure_re='^[[:space:]]*(\[(ERROR|FATAL)\]|PHP (Fatal|Parse) error:)'
   local other_diagnostics
-  other_diagnostics=$(grep -E '^[[:space:]]*\[ERROR\]' "$err_file" | grep -vE "$no_files_re")
+  other_diagnostics=$(grep -E "$failure_re" "$err_file" | grep -vE "$no_files_re")
 
   if [[ "$status" -ne 0 ]] && [[ ! -s "$out_file" ]] \
     && grep -qE "$no_files_re" "$err_file" \
