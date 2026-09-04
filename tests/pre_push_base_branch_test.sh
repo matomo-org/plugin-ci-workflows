@@ -15,6 +15,31 @@ failures=0
 
 ZERO_OID='0000000000000000000000000000000000000000'
 
+# Point a fixture's stub analyser at a canned result. It always records the arguments it was given,
+# so analysed_files() keeps working whatever the result is. The streams and exit code are read from
+# sidecar files: a canned message containing quotes then needs no escaping.
+#
+# $1 -- plugin dir, $2 -- exit code, $3 -- stdout text, $4 -- stderr text
+stub_analyser() {
+  local plugin="$1" matomo
+  matomo=$(cd "$plugin/../.." && pwd)
+
+  printf '%s' "$3" > "$matomo/stub-stdout"
+  printf '%s' "$4" > "$matomo/stub-stderr"
+  printf '%s' "$2" > "$matomo/stub-exit"
+
+  cat > "$matomo/vendor/bin/phpstan" <<'STUB'
+#!/bin/bash
+matomo=$(cd "$(dirname "$0")/../.." && pwd)
+printf '%s\n' "$@" >> "$matomo/analyser-args"
+printf 'COLUMNS=%s\n' "${COLUMNS-}" >> "$matomo/analyser-env"
+[[ -s "$matomo/stub-stdout" ]] && cat "$matomo/stub-stdout"
+[[ -s "$matomo/stub-stderr" ]] && cat "$matomo/stub-stderr" >&2
+exit "$(cat "$matomo/stub-exit")"
+STUB
+  chmod 0755 "$matomo/vendor/bin/phpstan"
+}
+
 # A Matomo checkout holding one plugin, with a stub analyser that appends the arguments it was
 # given to $MATOMO/analyser-args so a test can assert on them.
 #
@@ -24,12 +49,9 @@ new_fixture() {
   plugin="$matomo/plugins/TestPlugin"
   mkdir -p "$plugin/phpstan" "$matomo/vendor/bin"
 
-  cat > "$matomo/vendor/bin/phpstan" <<'STUB'
-#!/bin/bash
-printf '%s\n' "$@" >> "$(cd "$(dirname "$0")/../.." && pwd)/analyser-args"
-STUB
-  chmod 0755 "$matomo/vendor/bin/phpstan"
   : > "$matomo/analyser-args"
+  : > "$matomo/analyser-env"
+  stub_analyser "$plugin" 0 '' ''
   echo 'parameters:' > "$plugin/phpstan/phpstan.created.neon"
   echo 'parameters:' > "$plugin/phpstan/phpstan.modified.neon"
 
@@ -197,6 +219,176 @@ assert_equals "leaves the hookless sibling's config untouched" "" "$(git -C "$MA
 OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 assert_equals "stays quiet on the next push the same day" "0" "$(grep -c 'Dormant' <<< "$OUT")"
 
+
+# PHPStan exits non-zero when its config excludes every file it was handed, which a commit whose
+# only new file is a test reaches against a config that excludes tests/. Nothing is wrong with the
+# push, so it must not be blocked. The diagnostic goes to stderr and leaves stdout empty.
+PLUGIN=$(new_fixture all-files-excluded)
+stub_analyser "$PLUGIN" 1 '' '
+ [ERROR] No files found to analyse.
+'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // excluded' > "$PLUGIN/ExcludedOnly.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'excluded only'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "an entirely excluded file list does not block the push" "0" "$STATUS"
+# The exemption reads a line of stderr, so the analyser must not be allowed to decorate it. Git
+# Bash sets the environment that makes PHPStan colour output even into a file, and the escape
+# codes defeat the anchored match -- blocking precisely the push this exemption is for.
+assert_equals "and asks the analyser not to decorate its output" "1" \
+  "$(grep -cx -- '--no-ansi' "$PLUGIN/../../analyser-args")"
+# Symfony wraps the block to the terminal width, so a narrow exported COLUMNS splits the line the
+# exemption matches. Pinning the width is what stops an inherited one reaching the analyser.
+assert_equals "and fixes the width the block wraps to" "1" \
+  "$(grep -cx -- 'COLUMNS=120' "$PLUGIN/../../analyser-env")"
+# Both streams are captured, so a progress bar can never render live and only arrives as debris.
+assert_equals "and turns the progress bar off" "1" \
+  "$(grep -cx -- '--no-progress' "$PLUGIN/../../analyser-args")"
+# Naming the files is what stops an excludePaths that matches everything retiring the hook in
+# silence, so the message has to carry them rather than just say nothing was analysed.
+assert_equals "and names the files it skipped" "1" "$(grep -c 'nothing to analyse: ExcludedOnly.php' <<< "$OUT")"
+# ...without also reporting the [ERROR] it is deliberately going ahead with. The message above
+# says the same thing in plain English, and it is the only line the exempt path drops.
+assert_equals "and does not report the error it is overriding" "0" \
+  "$(grep -c 'No files found to analyse' <<< "$OUT")"
+# Nor the blank lines Symfony pads that block with, which are all that would otherwise survive it.
+assert_equals "and leaves no blank padding behind" "0" "$(grep -c '^[[:space:]]*$' <<< "$OUT")"
+
+# A failure that reports no diagnostic of its own still blocks.
+PLUGIN=$(new_fixture real-failure)
+stub_analyser "$PLUGIN" 1 ' [ERROR] Found 1 error' 'Note: analysed 1 file'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // broken' > "$PLUGIN/Broken.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'broken'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a real analysis failure still blocks the push" "1" "$STATUS"
+# Capturing both streams is what makes the exemption decidable, but it also buffers what used to
+# go straight to the terminal: a blocked push that reports nothing is worse than the bug this
+# replaced, so both streams have to survive the round trip.
+assert_equals "and reports what the analyser found" "1" "$(grep -c 'Found 1 error' <<< "$OUT")"
+assert_equals "and its stderr along with it" "1" "$(grep -c 'Note: analysed 1 file' <<< "$OUT")"
+
+# A failure carrying no diagnostic block at all -- a missing file, an unknown config key, a memory
+# limit that cannot be set. Stdout is empty and nothing is [ERROR]-prefixed, so every other
+# condition is satisfied and the phrase itself is all that stands between these and an exemption.
+PLUGIN=$(new_fixture undiagnosed-failure)
+stub_analyser "$PLUGIN" 1 '' 'Path /nonexistent/Missing.php does not exist'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // undiagnosed' > "$PLUGIN/Undiagnosed.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'undiagnosed'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a failure with no diagnostic block still blocks the push" "1" "$STATUS"
+
+# The phrase inside a real diagnostic must not buy an exemption: a custom rule can put any text in
+# a message, and quoting a file's contents is enough. Analysis output goes to stdout, so a run that
+# produced any is never exempt however its text reads.
+PLUGIN=$(new_fixture phrase-inside-a-real-error)
+stub_analyser "$PLUGIN" 1 "  3      Parameter #1 \$x expects int, 'No files found to analyse' given.
+ [ERROR] Found 1 error" ''
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // quotes the phrase' > "$PLUGIN/Quoting.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'quoting'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "the phrase inside a real diagnostic does not exempt the push" "1" "$STATUS"
+
+# And the exemption is the whole stderr line, not a substring of one: a diagnostic that merely
+# mentions the phrase is still a failure.
+PLUGIN=$(new_fixture phrase-within-a-longer-line)
+stub_analyser "$PLUGIN" 1 '' ' [ERROR] Rule crashed: No files found to analyse in bundle X'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // mentions the phrase' > "$PLUGIN/Mentions.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'mentions'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "the phrase inside a longer stderr line does not exempt the push" "1" "$STATUS"
+
+# Analysis output on stdout means files were analysed, so the stderr diagnostic cannot be taken at
+# face value however exactly it matches. Both halves of the guard are load-bearing: this is the
+# case that fails if the stdout check is dropped and only the message is consulted.
+PLUGIN=$(new_fixture excluded-alongside-real-errors)
+stub_analyser "$PLUGIN" 1 ' [ERROR] Found 1 error' ' [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // both' > "$PLUGIN/Both.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'both'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a real diagnostic alongside the phrase does not exempt the push" "1" "$STATUS"
+
+# The same case on one stream: a second PHPStan diagnostic on stderr withdraws the exemption, so a
+# run that failed for its own reasons is not waved through merely because it also reported having
+# nothing to analyse.
+PLUGIN=$(new_fixture real-error-on-stderr)
+stub_analyser "$PLUGIN" 1 '' ' [ERROR] Rule crashed while collecting files
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // second diagnostic' > "$PLUGIN/SecondDiagnostic.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'second diagnostic'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a second stderr diagnostic does not exempt the push" "1" "$STATUS"
+
+# A process that died is never a clean "nothing to analyse", whatever else it managed to print on
+# the way out. PHPStan has not been seen to emit either of these alongside the no-files line, but a
+# fatal is never benign noise, so withdrawing the exemption for one cannot cost a legitimate push.
+PLUGIN=$(new_fixture php-fatal)
+stub_analyser "$PLUGIN" 255 '' 'PHP Fatal error:  Allowed memory size of 134217728 bytes exhausted in /x.php on line 9
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // fatal' > "$PLUGIN/Fatal.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'fatal'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a PHP fatal does not exempt the push" "1" "$STATUS"
+
+# The same fatal without PHP's log prefix: PHPStan forces display_errors=stderr, so an environment
+# with log_errors off gets the bare display form instead.
+PLUGIN=$(new_fixture bare-fatal)
+stub_analyser "$PLUGIN" 255 '' 'Fatal error: Uncaught Error: Call to undefined method in /x.php:9
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // bare fatal' > "$PLUGIN/BareFatal.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'bare fatal'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "an unprefixed PHP fatal does not exempt the push" "1" "$STATUS"
+
+PLUGIN=$(new_fixture fatal-block)
+stub_analyser "$PLUGIN" 1 '' ' [FATAL] Child process died
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // fatal block' > "$PLUGIN/FatalBlock.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'fatal block'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a [FATAL] block does not exempt the push" "1" "$STATUS"
+
+# Environment noise on stderr is not a diagnostic, and this case is pinned deliberately: PHP writes
+# log_errors output to stderr when error_log is unset, and Xdebug announces itself there, so
+# tightening the guard to "stderr holds nothing else" would re-block the pushes the exemption is
+# for. Keying it to the shapes a real failure takes is what this test holds in place.
+#
+# The PHP Warning line below is verbatim from a real run: one stale extension entry in php.ini is
+# enough to produce it, on a machine where the analysis itself is perfectly healthy. Classifying
+# warnings as failures has been proposed twice in review and is wrong for exactly that reason --
+# a warning is startup noise, a fatal is a dead process. This case is what says so.
+PLUGIN=$(new_fixture noise-on-stderr)
+stub_analyser "$PLUGIN" 1 '' 'PHP Warning:  PHP Startup: Unable to load dynamic library '"'"'xdebug.so'"'"' in Unknown on line 0
+PHP Deprecated:  Implicit conversion from float 1.5 to int loses precision in /x.php on line 3
+Xdebug: [Step Debug] Could not connect to debugging client.
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // noisy environment' > "$PLUGIN/NoisyEnvironment.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'noisy environment'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "environment noise on stderr still exempts the push" "0" "$STATUS"
+# The exemption turns on one stderr line, so the rest of what the analyser said has to survive it.
+assert_equals "and the analyser's own output is not swallowed" "1" \
+  "$(grep -c 'Could not connect to debugging client' <<< "$OUT")"
 
 echo
 echo "${tests} tests, ${failures} failures"
