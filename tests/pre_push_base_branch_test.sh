@@ -255,6 +255,19 @@ assert_equals "and does not report the error it is overriding" "0" \
 # Nor the blank lines Symfony pads that block with, which are all that would otherwise survive it.
 assert_equals "and leaves no blank padding behind" "0" "$(grep -c '^[[:space:]]*$' <<< "$OUT")"
 
+# The same run through ddev, which appends its own coloured wrapper around PHPStan's exit code.
+PLUGIN=$(new_fixture ddev-wrapper)
+stub_analyser "$PLUGIN" 1 '' ' [ERROR] No files found to analyse.
+'"$(printf '\033')"'[31mFailed to execute command phpstan analyse: exit status 1'"$(printf '\033')"'[0m'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // ddev' > "$PLUGIN/DdevExcluded.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'ddev excluded'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "a ddev-wrapped excluded run does not block the push" "0" "$STATUS"
+assert_equals "and does not report ddev's failure line" "0" \
+  "$(grep -c 'Failed to execute command' <<< "$OUT")"
+
 # A failure that reports no diagnostic of its own still blocks.
 PLUGIN=$(new_fixture real-failure)
 stub_analyser "$PLUGIN" 1 ' [ERROR] Found 1 error' 'Note: analysed 1 file'

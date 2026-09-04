@@ -244,7 +244,16 @@ check_pushed_commit() {
     # reading its output, so the one line the message below restates in plain English is dropped --
     # along with the blank lines Symfony pads its block with, which would otherwise be all that
     # survives on a quiet run.
-    grep -vE "$no_files_re" "$err_file" | grep -v '^[[:space:]]*$' >&2
+    # ddev wraps a non-zero exit in its own red "Failed to execute command ...: exit status 1",
+    # which --no-ansi cannot reach because it is ddev's line, not PHPStan's. On an exempt run that
+    # is the failure being deliberately overridden, and printing it above a message saying the push
+    # is fine is how people learn to distrust both. The escape is built with printf because BSD sed
+    # does not understand \x1b.
+    local esc; esc=$(printf '\033')
+    sed "s/${esc}\\[[0-9;]*m//g" "$err_file" \
+      | grep -vE "$no_files_re" \
+      | grep -vE '^Failed to execute command .*: exit status [0-9]+$' \
+      | grep -v '^[[:space:]]*$' >&2
     # Name the files: an excludePaths that accidentally matches everything otherwise retires the
     # hook as silently as the unset core.hooksPath the sibling audit reports.
     echo "Every ${label} file is excluded by ${config}, so there is nothing to analyse: ${changed_files[*]}"
