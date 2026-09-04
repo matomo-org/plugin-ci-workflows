@@ -249,7 +249,7 @@ assert_equals "and turns the progress bar off" "1" \
 # silence, so the message has to carry them rather than just say nothing was analysed.
 assert_equals "and names the files it skipped" "1" "$(grep -c 'nothing to analyse: ExcludedOnly.php' <<< "$OUT")"
 # ...without also reporting the [ERROR] it is deliberately going ahead with. The message above
-# says the same thing in plain English, and it is the only line the exempt path drops.
+# says the same thing in plain English; ddev's own failure line is dropped alongside it.
 assert_equals "and does not report the error it is overriding" "0" \
   "$(grep -c 'No files found to analyse' <<< "$OUT")"
 # Nor the blank lines Symfony pads that block with, which are all that would otherwise survive it.
@@ -257,8 +257,13 @@ assert_equals "and leaves no blank padding behind" "0" "$(grep -c '^[[:space:]]*
 
 # The same run through ddev, which appends its own coloured wrapper around PHPStan's exit code.
 PLUGIN=$(new_fixture ddev-wrapper)
+# Verbatim ddev 1.25.3 output: the backticks are part of its message, and the yellow line is one of
+# its warnings, which reach stderr coloured by the same route. SC2016 is exactly what is wanted here
+# -- the backticks and escapes must stay literal.
+# shellcheck disable=SC2016
 stub_analyser "$PLUGIN" 1 '' ' [ERROR] No files found to analyse.
-'"$(printf '\033')"'[31mFailed to execute command phpstan analyse: exit status 1'"$(printf '\033')"'[0m'
+'$'\033''[33mA ddev warning worth reading'$'\033''[0m
+'$'\033''[31mFailed to execute command `phpstan analyse`: exit status 1'$'\033''[0m'
 git -C "$PLUGIN" checkout -q -b topic
 echo '<?php // ddev' > "$PLUGIN/DdevExcluded.php"
 git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'ddev excluded'
@@ -267,6 +272,12 @@ STATUS=$?
 assert_equals "a ddev-wrapped excluded run does not block the push" "0" "$STATUS"
 assert_equals "and does not report ddev's failure line" "0" \
   "$(grep -c 'Failed to execute command' <<< "$OUT")"
+# Stripping the colour is not the same as dropping every coloured line: ddev's warnings arrive
+# coloured by the same route as its failure line, and swallowing those would undo the passthrough
+# guarantee. This is the assertion a `grep -v <ESC>` shortcut fails.
+assert_equals "and keeps ddev's other output, uncoloured" "1" \
+  "$(grep -c 'A ddev warning worth reading' <<< "$OUT")"
+assert_equals "and leaves no escape codes behind" "0" "$(grep -c $'\033' <<< "$OUT")"
 
 # A failure that reports no diagnostic of its own still blocks.
 PLUGIN=$(new_fixture real-failure)

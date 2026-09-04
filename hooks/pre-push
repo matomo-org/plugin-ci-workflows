@@ -244,13 +244,15 @@ check_pushed_commit() {
     # reading its output, so the one line the message below restates in plain English is dropped --
     # along with the blank lines Symfony pads its block with, which would otherwise be all that
     # survives on a quiet run.
-    # ddev wraps a non-zero exit in its own red "Failed to execute command ...: exit status 1",
-    # which --no-ansi cannot reach because it is ddev's line, not PHPStan's. On an exempt run that
-    # is the failure being deliberately overridden, and printing it above a message saying the push
-    # is fine is how people learn to distrust both. The escape is built with printf because BSD sed
-    # does not understand \x1b.
-    local esc; esc=$(printf '\033')
-    sed "s/${esc}\\[[0-9;]*m//g" "$err_file" \
+    # ddev wraps a non-zero exit in its own coloured "Failed to execute command ...: exit status 1",
+    # which --no-ansi cannot reach because it is ddev's line rather than PHPStan's. On an exempt run
+    # that is the failure being deliberately overridden.
+    #
+    # The escape is a shell literal rather than \x1b inside the sed script, because BSD and busybox
+    # sed leave \x1b unexpanded and Linux CI cannot catch that regression. LC_ALL=C keeps the
+    # substitution byte-oriented, so stderr carrying a non-UTF-8 path byte cannot abort it.
+    local esc=$'\033'
+    LC_ALL=C sed "s/${esc}\\[[0-9;]*m//g" "$err_file" \
       | grep -vE "$no_files_re" \
       | grep -vE '^Failed to execute command .*: exit status [0-9]+$' \
       | grep -v '^[[:space:]]*$' >&2
