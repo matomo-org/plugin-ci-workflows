@@ -32,6 +32,7 @@ stub_analyser() {
 #!/bin/bash
 matomo=$(cd "$(dirname "$0")/../.." && pwd)
 printf '%s\n' "$@" >> "$matomo/analyser-args"
+printf 'COLUMNS=%s\n' "${COLUMNS-}" >> "$matomo/analyser-env"
 [[ -s "$matomo/stub-stdout" ]] && cat "$matomo/stub-stdout"
 [[ -s "$matomo/stub-stderr" ]] && cat "$matomo/stub-stderr" >&2
 exit "$(cat "$matomo/stub-exit")"
@@ -49,6 +50,7 @@ new_fixture() {
   mkdir -p "$plugin/phpstan" "$matomo/vendor/bin"
 
   : > "$matomo/analyser-args"
+  : > "$matomo/analyser-env"
   stub_analyser "$plugin" 0 '' ''
   echo 'parameters:' > "$plugin/phpstan/phpstan.created.neon"
   echo 'parameters:' > "$plugin/phpstan/phpstan.modified.neon"
@@ -222,7 +224,9 @@ assert_equals "stays quiet on the next push the same day" "0" "$(grep -c 'Dorman
 # only new file is a test reaches against a config that excludes tests/. Nothing is wrong with the
 # push, so it must not be blocked. The diagnostic goes to stderr and leaves stdout empty.
 PLUGIN=$(new_fixture all-files-excluded)
-stub_analyser "$PLUGIN" 1 '' ' [ERROR] No files found to analyse.'
+stub_analyser "$PLUGIN" 1 '' '
+ [ERROR] No files found to analyse.
+'
 git -C "$PLUGIN" checkout -q -b topic
 echo '<?php // excluded' > "$PLUGIN/ExcludedOnly.php"
 git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'excluded only'
@@ -234,6 +238,13 @@ assert_equals "an entirely excluded file list does not block the push" "0" "$STA
 # codes defeat the anchored match -- blocking precisely the push this exemption is for.
 assert_equals "and asks the analyser not to decorate its output" "1" \
   "$(grep -cx -- '--no-ansi' "$PLUGIN/../../analyser-args")"
+# Symfony wraps the block to the terminal width, so a narrow exported COLUMNS splits the line the
+# exemption matches. Pinning the width is what stops an inherited one reaching the analyser.
+assert_equals "and fixes the width the block wraps to" "1" \
+  "$(grep -cx -- 'COLUMNS=120' "$PLUGIN/../../analyser-env")"
+# Both streams are captured, so a progress bar can never render live and only arrives as debris.
+assert_equals "and turns the progress bar off" "1" \
+  "$(grep -cx -- '--no-progress' "$PLUGIN/../../analyser-args")"
 # Naming the files is what stops an excludePaths that matches everything retiring the hook in
 # silence, so the message has to carry them rather than just say nothing was analysed.
 assert_equals "and names the files it skipped" "1" "$(grep -c 'nothing to analyse: ExcludedOnly.php' <<< "$OUT")"
@@ -241,6 +252,8 @@ assert_equals "and names the files it skipped" "1" "$(grep -c 'nothing to analys
 # says the same thing in plain English, and it is the only line the exempt path drops.
 assert_equals "and does not report the error it is overriding" "0" \
   "$(grep -c 'No files found to analyse' <<< "$OUT")"
+# Nor the blank lines Symfony pads that block with, which are all that would otherwise survive it.
+assert_equals "and leaves no blank padding behind" "0" "$(grep -c '^[[:space:]]*$' <<< "$OUT")"
 
 # A failure that reports no diagnostic of its own still blocks.
 PLUGIN=$(new_fixture real-failure)
@@ -331,6 +344,18 @@ OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
 STATUS=$?
 assert_equals "a PHP fatal does not exempt the push" "1" "$STATUS"
 
+# The same fatal without PHP's log prefix: PHPStan forces display_errors=stderr, so an environment
+# with log_errors off gets the bare display form instead.
+PLUGIN=$(new_fixture bare-fatal)
+stub_analyser "$PLUGIN" 255 '' 'Fatal error: Uncaught Error: Call to undefined method in /x.php:9
+ [ERROR] No files found to analyse.'
+git -C "$PLUGIN" checkout -q -b topic
+echo '<?php // bare fatal' > "$PLUGIN/BareFatal.php"
+git -C "$PLUGIN" add -A && git -C "$PLUGIN" commit -qm 'bare fatal'
+OUT=$(run_hook "$PLUGIN" "$(git -C "$PLUGIN" rev-parse HEAD)")
+STATUS=$?
+assert_equals "an unprefixed PHP fatal does not exempt the push" "1" "$STATUS"
+
 PLUGIN=$(new_fixture fatal-block)
 stub_analyser "$PLUGIN" 1 '' ' [FATAL] Child process died
  [ERROR] No files found to analyse.'
@@ -345,8 +370,14 @@ assert_equals "a [FATAL] block does not exempt the push" "1" "$STATUS"
 # log_errors output to stderr when error_log is unset, and Xdebug announces itself there, so
 # tightening the guard to "stderr holds nothing else" would re-block the pushes the exemption is
 # for. Keying it to the shapes a real failure takes is what this test holds in place.
+#
+# The PHP Warning line below is verbatim from a real run: one stale extension entry in php.ini is
+# enough to produce it, on a machine where the analysis itself is perfectly healthy. Classifying
+# warnings as failures has been proposed twice in review and is wrong for exactly that reason --
+# a warning is startup noise, a fatal is a dead process. This case is what says so.
 PLUGIN=$(new_fixture noise-on-stderr)
-stub_analyser "$PLUGIN" 1 '' 'PHP Deprecated:  Implicit conversion from float 1.5 to int loses precision in /x.php on line 3
+stub_analyser "$PLUGIN" 1 '' 'PHP Warning:  PHP Startup: Unable to load dynamic library '"'"'xdebug.so'"'"' in Unknown on line 0
+PHP Deprecated:  Implicit conversion from float 1.5 to int loses precision in /x.php on line 3
 Xdebug: [Step Debug] Could not connect to debugging client.
  [ERROR] No files found to analyse.'
 git -C "$PLUGIN" checkout -q -b topic

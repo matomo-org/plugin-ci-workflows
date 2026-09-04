@@ -200,15 +200,21 @@ check_pushed_commit() {
   echo "Running PHPstan on ${label} files"
 
   local out_file err_file status
-  out_file=$(mktemp) || return 1
-  err_file=$(mktemp) || { rm -f "$out_file"; return 1; }
+  out_file=$(mktemp) || { echo "Could not create a temporary file to capture the analysis" >&2; return 1; }
+  err_file=$(mktemp) || { rm -f "$out_file"; echo "Could not create a temporary file to capture the analysis" >&2; return 1; }
 
-  # --no-ansi because the exemption below reads a line of stderr. PHPStan's console decorates its
-  # output whenever MSYSTEM and TERM=xterm are set -- Git Bash on Windows sets both -- and it does
-  # so even when stderr is a file, wrapping the line in colour codes the anchored match cannot see.
-  # Verified on 2.2.9: decorated, the guard blocks the push it exists to let through.
-  "${COMMAND[@]}" analyse --no-ansi -c "${PLUGIN_PATH}${config}" "${changed_files[@]}" \
-    > "$out_file" 2> "$err_file"
+  # The exemption below matches a line of stderr, so the analyser must not be allowed to reshape it.
+  # All three of these were verified against 2.2.9 to break the match and block the push this exists
+  # to let through:
+  #   --no-ansi     PHPStan decorates its output whenever MSYSTEM and TERM=xterm are set (Git Bash
+  #                 sets both), even into a file, wrapping the line in colour codes.
+  #   COLUMNS=120   Symfony wraps its error block to the terminal width, and an exported COLUMNS
+  #                 below ~36 splits the line in two. Only the local-PHP path inherits this, which
+  #                 is also the only path that can inherit a small COLUMNS in the first place.
+  #   --no-progress both streams are captured, so the bar can never render live; without this the
+  #                 run ends by dumping a dead progress bar into the output.
+  COLUMNS=120 "${COMMAND[@]}" analyse --no-ansi --no-progress -c "${PLUGIN_PATH}${config}" \
+    "${changed_files[@]}" > "$out_file" 2> "$err_file"
   status=$?
 
   # PHPStan reports "nothing to analyse" on stderr and leaves stdout empty, while a run that
@@ -226,7 +232,7 @@ check_pushed_commit() {
   # alongside the no-files line, but a process that died is never a clean "nothing to analyse", and
   # a fatal -- unlike a deprecation -- is never benign, so matching them cannot cost a false block.
   local no_files_re='^[[:space:]]*(\[ERROR\][[:space:]]+)?No files found to analyse\.?[[:space:]]*$'
-  local failure_re='^[[:space:]]*(\[(ERROR|FATAL)\]|PHP (Fatal|Parse) error:)'
+  local failure_re='^[[:space:]]*(\[(ERROR|FATAL)\]|(PHP )?(Fatal|Parse) error:)'
   local other_diagnostics
   other_diagnostics=$(grep -E "$failure_re" "$err_file" | grep -vE "$no_files_re")
 
@@ -234,12 +240,13 @@ check_pushed_commit() {
     && grep -qE "$no_files_re" "$err_file" \
     && [[ -z "$other_diagnostics" ]]
   then
-    # Everything the run said survives except the one line the message below already puts in plain
-    # English. Dropping only that line keeps the push from reporting an [ERROR] it is going ahead
-    # with anyway, which is how a hook teaches people to stop reading its output.
-    grep -vE "$no_files_re" "$err_file" >&2
+    # Reporting an [ERROR] on a push being allowed through is how a hook teaches people to stop
+    # reading its output, so the one line the message below restates in plain English is dropped --
+    # along with the blank lines Symfony pads its block with, which would otherwise be all that
+    # survives on a quiet run.
+    grep -vE "$no_files_re" "$err_file" | grep -v '^[[:space:]]*$' >&2
     # Name the files: an excludePaths that accidentally matches everything otherwise retires the
-    # hook silently, which is the failure audit_sibling_plugins exists to catch.
+    # hook as silently as the unset core.hooksPath the sibling audit reports.
     echo "Every ${label} file is excluded by ${config}, so there is nothing to analyse: ${changed_files[*]}"
     rm -f "$out_file" "$err_file"
     return 0
