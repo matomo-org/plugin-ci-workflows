@@ -54,6 +54,22 @@ def check(description, condition):
 check("the umbrella is a reusable workflow", 'workflow_call' in triggers)
 check("it declares at least one job", bool(jobs))
 
+# An `edited` run skips every code check, so sharing one concurrency group with a push's run means
+# it cancels analysis and puts nothing in its place. The group has to discriminate on the action.
+concurrency = doc.get('concurrency') or {}
+group = str(concurrency.get('group', ''))
+check("the umbrella declares a concurrency group", bool(group))
+check(
+    "the concurrency group separates edited runs from code runs",
+    "github.event.action == 'edited'" in group,
+)
+# github.workflow resolves to the caller's workflow name here, so a group built from it matches a
+# caller's own group and GitHub kills the run for a concurrency deadlock rather than running it.
+check(
+    "the concurrency group uses a static prefix, not github.workflow",
+    'github.workflow' not in group,
+)
+
 # Every job either ignores `edited` or is a declared consumer of it.
 for name, job in jobs.items():
     condition = str(job.get('if', ''))

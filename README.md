@@ -65,6 +65,10 @@ Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-chec
 
 The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description. Consuming that action is opt **in** per job, so the code checks ignore it rather than re-analysing an unchanged tree, and a check added later ignores it too unless its author decides otherwise. `tests/plugin_ci_invariants_test.sh` enforces both defaults.
 
+**The caller declares no `concurrency` of its own.** This workflow declares it instead, in two lanes: a push supersedes an earlier push, while a description edit only supersedes an earlier edit. One shared lane looks tidier and is wrong — an `edited` run skips every code check, so superseding a push's run with it cancels the analysis and puts nothing in its place, which on UsersFlow#135 killed both PHPStan jobs mid-checkout and left the check red for a reason nothing on the pull request explained. This is the same failure the [Codex review](#codex-review) wrapper hit, and it has the same answer: the group belongs in the workflow that knows what its own runs do, not in each caller.
+
+**Migrating a plugin off a standalone [AI checklist](#ai-checklist) workflow is where this bites:** that file rightly carries its own `concurrency`, and renaming it to `ci.yml` carries the block along with it, unnoticed. Delete the block as part of the rename.
+
 The permissions above are the union of what the four checks need. That is the cost of one caller: a plugin that only wants PHPCS previously needed no scopes at all.
 
 #### What it does not cover
@@ -192,6 +196,9 @@ jobs:
 ```
 
 The `edited` trigger matters: without it the gate does not re-run when someone fills the checklist in, and the check stays red.
+
+The single `concurrency` group is right here and only here, because every run of this workflow does the same thing — re-read the description — so a later run always supersedes an earlier one safely. That stops being true the moment the same file also runs code checks, so drop the block when folding this workflow into [Plugin CI](#plugin-ci).
+
 ### Codex review
 
 Runs an AI review over a pull request when someone applies the `codex-review` label, and posts the result as a pull request review. The review itself — preflight checks, prompt, output schema and posting — lives in composite actions in `innocraft/github-action-tests-private`, which this workflow checks out with `TESTS_ACCESS_TOKEN`.

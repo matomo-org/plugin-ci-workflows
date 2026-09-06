@@ -98,6 +98,21 @@ permissions:
   contents: read
   pull-requests: read
 
+# Two lanes, not one. An `edited` run does none of the code checks below, so letting it supersede a
+# push's run cancels analysis and replaces it with nothing -- seen on UsersFlow#135, where a
+# description edit 46 seconds after the push killed both PHPStan jobs mid-checkout and left the
+# check red for a reason nothing on the pull request explained. Discriminating on the action keeps
+# push-supersedes-push while an edit only ever supersedes another edit.
+#
+# It lives here rather than in each caller so the fleet gets it without a pull request per plugin.
+# Static prefix, for the same reason plugin-codex-review.yml uses one: in a reusable workflow
+# ${{ github.workflow }} resolves to the CALLER's workflow name, so a group built from it collides
+# with a caller group of the same name and GitHub kills the run with "a deadlock was detected for
+# concurrency group ...". Callers declare no concurrency of their own.
+concurrency:
+  group: plugin-ci-shared-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
+  cancel-in-progress: true
+
 # The caller subscribes to `edited` so the checklist gate re-runs when a description is fixed.
 # Consuming that event is opt *in*, per job: a check that does not name `edited` in its `if:`
 # ignores it, so a check added here later re-analyses nothing on a description edit unless someone
