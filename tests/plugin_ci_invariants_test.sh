@@ -94,6 +94,20 @@ for name, job in jobs.items():
             f"{name} is a declared consumer of the edited action",
             not ignores_edited,
         )
+        # Running in both lanes means racing itself on one commit, and the loser's verdict sticks
+        # if it lands last. Its own lane has to span both, so it must NOT discriminate on the
+        # action the way the workflow-level group does.
+        job_group = ''.join(str(
+            (job.get('concurrency') or {}).get('group', '')
+        ).split())
+        check(
+            f"{name} has its own concurrency lane spanning both workflow lanes",
+            bool(job_group) and 'github.event.action' not in job_group,
+        )
+        check(
+            f"{name}'s lane supersedes rather than queues",
+            (job.get('concurrency') or {}).get('cancel-in-progress') is True,
+        )
     else:
         check(
             f"{name} ignores the edited action",

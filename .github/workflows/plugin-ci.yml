@@ -121,8 +121,18 @@ concurrency:
 #
 # Opting in today: ai-checklist, which reads the description and nothing else.
 jobs:
+  # The only job that runs in both lanes, so it is the only one that can race itself: a push and a
+  # description edit produce two checklist runs against the same commit, an edit changes no commit,
+  # and the status a pull request shows is whichever check run of that name finished last. Under
+  # runner contention that can be the one that read the *old* description -- red, with nothing left
+  # to re-trigger it. Its own lane spanning both means any checklist run supersedes any other, so
+  # the verdict on show is always the newest description's. The group cannot deadlock against the
+  # workflow it calls: plugin-ai-checklist.yml declares no concurrency of its own.
   ai-checklist:
     if: ${{ !inputs.skip-ai-checklist }}
+    concurrency:
+      group: plugin-ci-checklist-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ai-checklist.yml@main
     permissions:
       actions: read
