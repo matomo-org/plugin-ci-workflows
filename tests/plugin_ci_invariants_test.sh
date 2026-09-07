@@ -57,17 +57,32 @@ check("it declares at least one job", bool(jobs))
 # An `edited` run skips every code check, so sharing one concurrency group with a push's run means
 # it cancels analysis and puts nothing in its place. The group has to discriminate on the action.
 concurrency = doc.get('concurrency') or {}
+# Whitespace-insensitive, so the assertions pin the expression's meaning and not one spelling of
+# it: `action=='edited'` behaves identically and should not be a failure.
 group = str(concurrency.get('group', ''))
+group_squashed = ''.join(group.split())
 check("the umbrella declares a concurrency group", bool(group))
 check(
     "the concurrency group separates edited runs from code runs",
-    "github.event.action == 'edited'" in group,
+    "github.event.action=='edited'" in group_squashed,
 )
 # github.workflow resolves to the caller's workflow name here, so a group built from it matches a
 # caller's own group and GitHub kills the run for a concurrency deadlock rather than running it.
 check(
     "the concurrency group uses a static prefix, not github.workflow",
-    'github.workflow' not in group,
+    'github.workflow' not in group_squashed,
+)
+# Losing the per-pull-request scope is the worst regression available here: every open pull request
+# in the repository would share one lane and cancel each other's checks.
+check(
+    "the concurrency group is scoped per pull request",
+    'github.event.pull_request.number' in group_squashed,
+)
+# Without this the group queues instead of superseding, so the file still reads as intended while
+# doing the opposite -- a stale run finishes last and its verdict is the one that sticks.
+check(
+    "the concurrency group supersedes rather than queues",
+    concurrency.get('cancel-in-progress') is True,
 )
 
 # Every job either ignores `edited` or is a declared consumer of it.
