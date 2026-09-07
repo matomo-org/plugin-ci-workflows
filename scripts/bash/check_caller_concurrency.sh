@@ -33,10 +33,17 @@ path_and_ref="${WORKFLOW_REF#*/}"
 path_and_ref="${path_and_ref#*/}"
 CALLER_PATH="${path_and_ref%%@*}"
 
-if [ -z "$CALLER_PATH" ] || [ "$path_and_ref" = "$WORKFLOW_REF" ]; then
-  echo "Could not read a workflow path out of '$WORKFLOW_REF'" >&2
-  exit 1
-fi
+# Checked by shape rather than by whether anything was stripped: GitHub runs workflows only from
+# .github/workflows/, and a ref that lost its slug leaves something plausible behind. `refs/heads/
+# main` reduces to `main`, which would otherwise be reported as a workflow missing from the
+# checkout -- true, and no help at all to whoever has to work out what went wrong.
+case "$CALLER_PATH" in
+  .github/workflows/?*) ;;
+  *)
+    echo "Could not read a workflow path out of '$WORKFLOW_REF'" >&2
+    exit 1
+    ;;
+esac
 
 CALLER_FILE="$CHECKOUT_ROOT/$CALLER_PATH"
 if [ ! -f "$CALLER_FILE" ]; then
@@ -56,8 +63,15 @@ import sys, yaml
 
 caller_file, caller_path, umbrella = sys.argv[1], sys.argv[2], sys.argv[3]
 
-with open(caller_file) as handle:
-    doc = yaml.safe_load(handle) or {}
+# Fail closed on a caller that does not parse, and say so: an uncaught traceback exits non-zero
+# too, but it reads as a broken guard rather than a broken workflow.
+try:
+    with open(caller_file) as handle:
+        doc = yaml.safe_load(handle) or {}
+except yaml.YAMLError as error:
+    print(f"{caller_path} is not valid YAML, so its concurrency cannot be read: {error}", file=sys.stderr)
+    sys.exit(1)
+
 if not isinstance(doc, dict):
     print(f"{caller_path} does not parse as a workflow", file=sys.stderr)
     sys.exit(1)
@@ -84,7 +98,7 @@ named = ' and '.join(offenders)
 print(
     f"::error file={caller_path}::Delete the concurrency block on {named}."
     " Plugin CI declares the group itself, in two lanes; one caller-level group spans both"
-    " actions and cancels a push's analysis on a description edit.",
+    " actions, so a description edit either cancels a push's analysis or queues ahead of it.",
     flush=True,
 )
 print(f"""
@@ -93,9 +107,10 @@ print(f"""
 Delete it. Plugin CI declares the group itself, in two lanes: a push supersedes an earlier push,
 while a description edit only supersedes an earlier edit. A caller-level group spans both actions,
 and this workflow cannot override it -- concurrency governs the run, and the run is yours. An
-`edited` run does none of the code checks, so it cancels the push's analysis and replaces it with
-nothing: checks that report red having never analysed a file, and nothing on the pull request to
-say why.
+`edited` run does none of the code checks, so with cancel-in-progress it cancels the push's
+analysis and replaces it with nothing -- checks that report red having never analysed a file, and
+nothing on the pull request to say why. Without cancel-in-progress the edit queues behind the
+analysis instead, and the checklist verdict waits on a run it has nothing to do with.
 
 If the block arrived by renaming matomo-ai-checklist.yml to ci.yml, deleting it is the whole fix:
 that file needs it while it stands alone, and Plugin CI replaces it. If another job in this file

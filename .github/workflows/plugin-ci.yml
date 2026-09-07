@@ -132,7 +132,8 @@ jobs:
   # runner contention that can be the one that read the *old* description -- red, with nothing left
   # to re-trigger it. Its own lane spanning both means any checklist run supersedes any other, so
   # the verdict on show is always the newest description's. The group cannot deadlock against the
-  # workflow it calls: plugin-ai-checklist.yml declares no concurrency of its own.
+  # workflow it calls, because plugin-ai-checklist.yml declares no concurrency of its own -- which
+  # the invariants assert of every workflow called from here, rather than leaving it to this line.
   ai-checklist:
     if: ${{ !inputs.skip-ai-checklist }}
     concurrency:
@@ -151,17 +152,21 @@ jobs:
   #
   # It runs in both lanes deliberately. The run this exists to catch is the one an offending
   # caller's group cancelled, so a job conditioned out of the `edited` lane would go down with it
-  # and report nothing. Unlike the checklist gate its verdict is fixed by the commit -- both runs
-  # read the same file and agree -- so its own lane is deduplication, not correctness.
+  # and report nothing.
+  #
+  # And unlike the checklist gate it takes no lane of its own. Its verdict is fixed by the commit,
+  # so the two runs read the same file and agree, and deduplicating them would buy about twenty
+  # seconds at the price of a cancelled `Caller concurrency` job in the run that lost -- a check in
+  # a state nothing on the pull request explains, which is the failure this whole file is about.
   #
   # No skip- input, unlike every check here: the way out is to delete the offending block, so a
   # caller never needs the guard turned off, and a switch for it is the hole it exists to close.
   caller-concurrency:
     name: Caller concurrency
     runs-on: ubuntu-24.04
-    concurrency:
-      group: plugin-ci-caller-concurrency-${{ github.event.pull_request.number || github.run_id }}
-      cancel-in-progress: true
+    # It parses YAML that a contributor controls, and safe_load stops object construction but not
+    # alias expansion, so a YAML bomb would otherwise sit on the six-hour default.
+    timeout-minutes: 5
     permissions:
       contents: read
     env:
@@ -185,9 +190,12 @@ jobs:
           persist-credentials: false
 
       # The guard parses the caller's YAML and fails closed without PyYAML, so install it rather
-      # than trust the runner image to keep shipping it.
+      # than trust the runner image to keep shipping it. `apt-get update` first, and only when the
+      # import fails: the runner image ships no package index, so a bare `apt-get install` can
+      # only ever report the package already present -- which is exactly what it does today, and
+      # it would fail to locate anything on the day the image stops shipping it.
       - name: Install the YAML parser the guard needs
-        run: sudo apt-get install -y --no-install-recommends python3-yaml
+        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
 
       - name: Check the caller declares no concurrency of its own
         run: bash "$WORKFLOWS_DIR/scripts/bash/check_caller_concurrency.sh" "$GITHUB_WORKFLOW_REF" .

@@ -112,20 +112,25 @@ for name, job in jobs.items():
             f"{name} is a declared consumer of the edited action",
             not ignores_edited,
         )
-        # Running in both lanes means racing itself on one commit, and the loser's verdict sticks
-        # if it lands last. Its own lane has to span both, so it must NOT discriminate on the
-        # action the way the workflow-level group does.
-        job_group = ''.join(str(
-            (job.get('concurrency') or {}).get('group', '')
-        ).split())
-        check(
-            f"{name} has its own concurrency lane spanning both workflow lanes",
-            bool(job_group) and 'github.event.action' not in job_group,
-        )
-        check(
-            f"{name}'s lane supersedes rather than queues",
-            (job.get('concurrency') or {}).get('cancel-in-progress') is True,
-        )
+        job_concurrency = job.get('concurrency') or {}
+        job_group = ''.join(str(job_concurrency.get('group', '')).split())
+        if name in guard_jobs:
+            # A guard reads a file the commit fixes, so both lanes' runs reach the same verdict
+            # and a lane would trade twenty seconds of runner time for a cancelled job in the
+            # run that lost -- a check in a state nothing on the pull request explains.
+            check(f"{name} takes no lane of its own", not job_group)
+        else:
+            # Running in both lanes means racing itself on one commit, and the loser's verdict
+            # sticks if it lands last. Its own lane has to span both, so it must NOT discriminate
+            # on the action the way the workflow-level group does.
+            check(
+                f"{name} has its own concurrency lane spanning both workflow lanes",
+                bool(job_group) and 'github.event.action' not in job_group,
+            )
+            check(
+                f"{name}'s lane supersedes rather than queues",
+                job_concurrency.get('cancel-in-progress') is True,
+            )
     else:
         check(
             f"{name} ignores the edited action",
@@ -139,6 +144,26 @@ for name in sorted(edited_consumers - set(jobs)):
 
 for name in sorted(guard_jobs - set(jobs)):
     check(f"declared guard job {name} still exists in the workflow", False)
+
+# The lanes are also defeated one level down. A workflow the umbrella calls that declared its own
+# group would claim it against the umbrella's -- deadlocking where the names match, and spanning
+# both actions where they do not. Today none of them declares one, and that is exactly the kind of
+# fact this file exists to stop being a comment.
+called_locally = sorted({
+    str(job.get('uses', '')).split('@')[0].split('/.github/workflows/')[-1]
+    for job in jobs.values()
+    if 'plugin-ci-workflows/.github/workflows/' in str(job.get('uses', ''))
+})
+for called in called_locally:
+    path = os.path.join(os.path.dirname(workflow_path), called)
+    if not os.path.isfile(path):
+        check(f"{called} is a workflow in this repository", False)
+        continue
+    with open(path) as handle:
+        check(
+            f"{called} declares no concurrency of its own",
+            not (yaml.safe_load(handle) or {}).get('concurrency'),
+        )
 
 # Every check has to be switchable off, or a plugin that cannot run one has no way out but to
 # stop calling the umbrella entirely. A guard is the exception in both directions: it asserts a

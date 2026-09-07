@@ -28,30 +28,46 @@ run_case() {
   local output status
   output="$(bash "$GUARD" 'matomo-org/plugin-Foo/.github/workflows/ci.yml@refs/pull/1/merge' "$root" 2>&1)"
   status=$?
-  if [ "$status" = "$expected" ]; then
-    echo "ok - $description"
-  else
+  if [ "$status" != "$expected" ]; then
     echo "FAIL - $description (expected exit $expected, got $status)"
     echo "$output"
     failures+=("$description")
+    return
   fi
+
+  # The explanation is the part worth pinning: a red check nobody can account for is the defect
+  # this whole guard exists to stop producing, so a rejection has to annotate the caller's file.
+  if [ "$expected" != 0 ] && [[ "$output" != *"::error file=.github/workflows/ci.yml::"* ]]; then
+    echo "FAIL - $description (no annotation naming the caller's workflow)"
+    echo "$output"
+    failures+=("$description")
+    return
+  fi
+
+  echo "ok - $description"
 }
 
-# Asserts the guard's exit status is $3 for workflow ref $2 against an empty checkout.
+# Asserts the guard fails for workflow ref $2 with a message matching $3, against an empty
+# checkout. Both malformed-ref cases exit 1, so the exit status alone cannot tell which branch
+# ran -- and one of them used to report a missing workflow rather than an unreadable ref.
 run_ref_case() {
-  local description="$1" workflow_ref="$2" expected="$3"
+  local description="$1" workflow_ref="$2" expected_message="$3"
   local root="$WORK/ref-case-$tests"
   tests=$((tests + 1))
   mkdir -p "$root/.github/workflows"
 
-  local status
-  bash "$GUARD" "$workflow_ref" "$root" >/dev/null 2>&1
+  local output status
+  output="$(bash "$GUARD" "$workflow_ref" "$root" 2>&1)"
   status=$?
-  if [ "$status" = "$expected" ]; then
-    echo "ok - $description"
-  else
-    echo "FAIL - $description (expected exit $expected, got $status)"
+  if [ "$status" != 1 ]; then
+    echo "FAIL - $description (expected exit 1, got $status)"
     failures+=("$description")
+  elif [[ "$output" != *"$expected_message"* ]]; then
+    echo "FAIL - $description (message did not mention '$expected_message')"
+    echo "$output"
+    failures+=("$description")
+  else
+    echo "ok - $description"
   fi
 }
 
@@ -120,6 +136,31 @@ $CALL
       - run: 'true'
 "
 
+run_case "a bare group on the job that calls Plugin CI fails" 1 "\
+name: CI
+on: pull_request
+jobs:
+  ci:
+$CALL
+    concurrency: ci-lane
+"
+
+# A caller that does not parse gets the tidy message, not a PyYAML traceback: the point of failing
+# closed is that whoever reads the log can tell whose file is broken.
+tests=$((tests + 1))
+BAD_ROOT="$WORK/unparseable"
+mkdir -p "$BAD_ROOT/.github/workflows"
+printf 'name: CI\njobs:\n  ci:\n   uses: x\n    with: [\n' > "$BAD_ROOT/.github/workflows/ci.yml"
+bad_output="$(bash "$GUARD" 'matomo-org/plugin-Foo/.github/workflows/ci.yml@refs/pull/1/merge' "$BAD_ROOT" 2>&1)"
+bad_status=$?
+if [ "$bad_status" = 1 ] && [[ "$bad_output" == *"is not valid YAML"* ]]; then
+  echo "ok - an unparseable caller workflow fails closed with a readable message"
+else
+  echo "FAIL - an unparseable caller workflow fails closed with a readable message (exit $bad_status)"
+  echo "$bad_output"
+  failures+=("an unparseable caller workflow fails closed with a readable message")
+fi
+
 # A caller pinning the umbrella to a SHA is the same caller.
 run_case "a concurrency block on a job calling a pinned Plugin CI fails" 1 "\
 name: CI
@@ -134,8 +175,12 @@ jobs:
 # Fail closed on anything that stops it reading the file it is meant to judge: a guard that cannot
 # see the caller has proved nothing, and passing there is how it would come to be trusted wrongly.
 run_ref_case "a workflow ref naming a file that is not checked out fails" \
-  'matomo-org/plugin-Foo/.github/workflows/absent.yml@refs/pull/1/merge' 1
-run_ref_case "a workflow ref carrying no path fails" 'refs/heads/main' 1
+  'matomo-org/plugin-Foo/.github/workflows/absent.yml@refs/pull/1/merge' \
+  'is not in the checkout'
+run_ref_case "a workflow ref carrying no path fails as an unreadable ref" \
+  'refs/heads/main' "Could not read a workflow path out of 'refs/heads/main'"
+run_ref_case "a workflow ref outside .github/workflows fails as an unreadable ref" \
+  'matomo-org/plugin-Foo/Makefile@refs/pull/1/merge' 'Could not read a workflow path'
 
 # Refs may contain `@`, so the path is taken up to the first one rather than the last.
 tests=$((tests + 1))
