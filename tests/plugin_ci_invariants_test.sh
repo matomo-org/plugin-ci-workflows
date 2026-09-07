@@ -14,7 +14,12 @@ WORKFLOW="$ROOT/.github/workflows/plugin-ci.yml"
 
 # Jobs allowed to run on a description edit. Adding a name here is the opt-in, and it should be
 # a deliberate, reviewed act -- which is the point of it living in a test rather than a comment.
-EDITED_CONSUMERS=("ai-checklist")
+export EDITED_CONSUMERS="ai-checklist caller-concurrency"
+
+# Jobs that are not plugin checks and so carry no skip- input. The concurrency guard asserts the
+# caller's half of a contract it can always satisfy by deleting a block, so it never needs a way
+# out, and a switch to turn it off is the hole it exists to close.
+export GUARD_JOBS="caller-concurrency"
 
 # The invariants parse YAML with PyYAML. It happens to be present on ubuntu-24.04 today, but a
 # check that guards a fleet-wide workflow should not depend on what a runner image ships: it
@@ -24,11 +29,12 @@ if ! python3 -c 'import yaml' 2>/dev/null; then
   exit 1
 fi
 
-python3 - "$WORKFLOW" "${EDITED_CONSUMERS[@]}" <<'PY'
-import sys, yaml
+python3 - "$WORKFLOW" <<'PY'
+import os, sys, yaml
 
 workflow_path = sys.argv[1]
-edited_consumers = set(sys.argv[2:])
+edited_consumers = set(os.environ['EDITED_CONSUMERS'].split())
+guard_jobs = set(os.environ['GUARD_JOBS'].split())
 
 with open(workflow_path) as handle:
     doc = yaml.safe_load(handle)
@@ -85,6 +91,18 @@ check(
     concurrency.get('cancel-in-progress') is True,
 )
 
+# The lanes above are defeated by a caller declaring a group of its own, silently: it spans both
+# actions, a called workflow cannot override it, and the name never matches the static prefix, so
+# no deadlock error is raised. Deleting the job that catches that would restore the silence.
+for name in sorted(guard_jobs):
+    steps = (jobs.get(name) or {}).get('steps') or []
+    runs_guard = any(
+        'check_caller_concurrency.sh' in str(step.get('run', ''))
+        for step in steps
+        if isinstance(step, dict)
+    )
+    check(f"{name} runs the caller concurrency guard", runs_guard)
+
 # Every job either ignores `edited` or is a declared consumer of it.
 for name, job in jobs.items():
     condition = str(job.get('if', ''))
@@ -119,12 +137,20 @@ for name, job in jobs.items():
 for name in sorted(edited_consumers - set(jobs)):
     check(f"declared edited consumer {name} still exists in the workflow", False)
 
+for name in sorted(guard_jobs - set(jobs)):
+    check(f"declared guard job {name} still exists in the workflow", False)
+
 # Every check has to be switchable off, or a plugin that cannot run one has no way out but to
-# stop calling the umbrella entirely.
+# stop calling the umbrella entirely. A guard is the exception in both directions: it asserts a
+# contract the caller can always satisfy, so it needs no way out, and offering one would let a
+# caller keep the misconfiguration the guard exists to surface.
 workflow_call = triggers.get('workflow_call') or {}
 inputs = workflow_call.get('inputs') or {}
 for name in jobs:
-    check(f"{name} has a skip- input", f"skip-{name}" in inputs)
+    if name in guard_jobs:
+        check(f"{name} has no skip- input, being a guard and not a check", f"skip-{name}" not in inputs)
+    else:
+        check(f"{name} has a skip- input", f"skip-{name}" in inputs)
 
 # Opt-out, not opt-in: a skip- input defaulting to true would leave a check running nowhere.
 for name, spec in inputs.items():

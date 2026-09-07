@@ -67,9 +67,11 @@ The caller subscribes to `edited` so the checklist gate re-runs when someone fix
 
 **The caller declares no `concurrency` of its own.** This workflow declares it instead, in two lanes: a push supersedes an earlier push, while a description edit only supersedes an earlier edit. One shared lane looks tidier and is wrong — an `edited` run skips every code check, so superseding a push's run with it cancels the analysis and puts nothing in its place, which on UsersFlow#135 killed both PHPStan jobs mid-checkout and left the check red for a reason nothing on the pull request explained. The [Codex review](#codex-review) wrapper hit two different concurrency failures — a `${{ github.workflow }}` group deadlocking against the caller's, and a group claimed by an unrelated label event — but all three have the same answer: the group belongs in the workflow that knows what its own runs do, not in each caller.
 
-The checklist gate then needs a third lane of its own, at the job level, because it is the one job that runs in *both* of the others. A push and a description edit produce two checklist runs against the same commit — an edit changes no commit — and the status a pull request displays is whichever check run of that name finished last. Under runner contention that can be the run that read the *old* description: red, with nothing left to re-trigger it. Its own lane spanning both means any checklist run supersedes any other, so the verdict on show is always the newest description's.
+The checklist gate then needs a third lane of its own, at the job level, because it runs in *both* of the others and a race there changes the answer. A push and a description edit produce two checklist runs against the same commit — an edit changes no commit — and the status a pull request displays is whichever check run of that name finished last. Under runner contention that can be the run that read the *old* description: red, with nothing left to re-trigger it. Its own lane spanning both means any checklist run supersedes any other, so the verdict on show is always the newest description's.
 
 **Migrating a plugin off a standalone [AI checklist](#ai-checklist) workflow is where this bites:** that file rightly carries its own `concurrency`, and renaming it to `ci.yml` carries the block along with it, unnoticed. Delete the block as part of the rename.
+
+The `caller-concurrency` job checks that you did, rather than leaving it to this paragraph. It reads the calling workflow — on a pull request, the merge ref's copy, which is the one whose group governed the run — and fails when that file declares a group of its own, at the top level or on the job that calls Plugin CI. A group on any other job in the file cancels only that job, so it is the caller's own business and passes. The job runs in both lanes, because the run it exists to catch is the one the caller's group cancelled, and it has no `skip-` input: a caller can always satisfy it by deleting the block, and a switch would reopen the hole it closes. `scripts/bash/check_caller_concurrency.sh` is the check; `tests/caller_concurrency_test.sh` holds it in both directions, since a false positive here reddens the fleet.
 
 The permissions above are the union of what the four checks need. That is the cost of one caller: a plugin that only wants PHPCS previously needed no scopes at all.
 
@@ -199,7 +201,7 @@ jobs:
 
 The `edited` trigger matters: without it the gate does not re-run when someone fills the checklist in, and the check stays red.
 
-The single `concurrency` group is right here and only here, because every run of this workflow does the same thing — re-read the description — so a later run always supersedes an earlier one safely. That stops being true the moment the same file also runs code checks, so drop the block when folding this workflow into [Plugin CI](#plugin-ci).
+The single `concurrency` group is right here and only here, because every run of this workflow does the same thing — re-read the description — so a later run always supersedes an earlier one safely. That stops being true the moment the same file also runs code checks, so drop the block when folding this workflow into [Plugin CI](#plugin-ci) — which fails the run if you do not.
 
 ### Codex review
 

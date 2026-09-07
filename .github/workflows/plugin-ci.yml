@@ -76,7 +76,7 @@ on:
         type: string
         default: 'main'
       workflows-ref:
-        description: "Ref of this repository for the pre-push hook and the PHPStan bootstrap"
+        description: "Ref of this repository for the pre-push hook, the PHPStan bootstrap and the caller concurrency guard"
         required: false
         type: string
         default: 'main'
@@ -108,7 +108,10 @@ permissions:
 # Static prefix, for the same reason plugin-codex-review.yml uses one: in a reusable workflow
 # ${{ github.workflow }} resolves to the CALLER's workflow name, so a group built from it collides
 # with a caller group of the same name and GitHub kills the run with "a deadlock was detected for
-# concurrency group ...". Callers declare no concurrency of their own.
+# concurrency group ...". Callers declare no concurrency of their own -- which the caller-concurrency
+# job below asserts, because a caller-level group silently defeats all of this: it spans both
+# actions, a called workflow cannot override it, and the group never matches this static prefix, so
+# GitHub raises no deadlock error to say so.
 concurrency:
   group: plugin-ci-shared-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
   cancel-in-progress: true
@@ -119,9 +122,11 @@ concurrency:
 # decides it should. tests/plugin_ci_invariants_test.sh holds the line, because the safe behaviour
 # here is the one you get by writing nothing, and a convention nobody checks is not a default.
 #
-# Opting in today: ai-checklist, which reads the description and nothing else.
+# Opting in today: ai-checklist, which reads the description and nothing else, and
+# caller-concurrency, which reads a workflow file and must survive the lane an offending caller
+# cancelled.
 jobs:
-  # The only job that runs in both lanes, so it is the only one that can race itself: a push and a
+  # Running in both lanes means it can race itself, and here that changes the answer: a push and a
   # description edit produce two checklist runs against the same commit, an edit changes no commit,
   # and the status a pull request shows is whichever check run of that name finished last. Under
   # runner contention that can be the one that read the *old* description -- red, with nothing left
@@ -137,6 +142,55 @@ jobs:
     permissions:
       actions: read
       pull-requests: read
+
+  # The workflow-level lanes above are worth nothing if the caller declares a group of its own: one
+  # caller-level group spans both actions, this workflow cannot override it, and its name never
+  # matches the static prefix above, so GitHub raises no deadlock error either. Nothing on the pull
+  # request would say why the analysis vanished, which is why the caller's side of the contract is
+  # checked rather than only written in the README.
+  #
+  # It runs in both lanes deliberately. The run this exists to catch is the one an offending
+  # caller's group cancelled, so a job conditioned out of the `edited` lane would go down with it
+  # and report nothing. Unlike the checklist gate its verdict is fixed by the commit -- both runs
+  # read the same file and agree -- so its own lane is deduplication, not correctness.
+  #
+  # No skip- input, unlike every check here: the way out is to delete the offending block, so a
+  # caller never needs the guard turned off, and a switch for it is the hole it exists to close.
+  caller-concurrency:
+    name: Caller concurrency
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: plugin-ci-caller-concurrency-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    env:
+      # Unique so it cannot collide with a directory the caller tracks.
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The workflow definitions and nothing else: this reads the caller's configuration and
+          # never its code. On a `pull_request` the checked-out merge ref carries the version of
+          # the workflow that actually ran, which is the copy whose group governed this run.
+          sparse-checkout: .github/workflows
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      # The guard parses the caller's YAML and fails closed without PyYAML, so install it rather
+      # than trust the runner image to keep shipping it.
+      - name: Install the YAML parser the guard needs
+        run: sudo apt-get install -y --no-install-recommends python3-yaml
+
+      - name: Check the caller declares no concurrency of its own
+        run: bash "$WORKFLOWS_DIR/scripts/bash/check_caller_concurrency.sh" "$GITHUB_WORKFLOW_REF" .
 
   phpcs:
     if: ${{ !inputs.skip-phpcs && github.event.action != 'edited' }}
