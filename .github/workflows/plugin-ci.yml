@@ -59,7 +59,7 @@ on:
         type: string
         default: '[{"target": "minimum_required_matomo"}, {"target": "maximum_supported_matomo"}]'
       verify-hook:
-        description: "Fail when the plugin ships a .git-hooks-matomo/pre-push that differs from the canonical copy. Only for repositories that still ship their own; prefer pointing core.hooksPath at this repository instead."
+        description: "Run the hook-check job, failing when the plugin ships a .git-hooks-matomo/pre-push that differs from the canonical copy. Only for repositories that still ship their own; prefer pointing core.hooksPath at this repository instead."
         required: false
         type: boolean
         default: false
@@ -200,6 +200,41 @@ jobs:
       - name: Check the caller declares no concurrency of its own
         run: bash "$WORKFLOWS_DIR/scripts/bash/check_caller_concurrency.sh" "$GITHUB_WORKFLOW_REF" .
 
+  # Its own job rather than a step inside PHPStan, where it used to live. A vendored hook drifting
+  # is not a finding about the plugin's code, and running the comparison before the analysis meant
+  # a drifted hook both reported as red PHPStan and suppressed the analysis that would have said
+  # something real. Opt in through verify-hook, so there is no skip- input: a plugin turns it off
+  # by not turning it on.
+  #
+  # It ignores `edited` like the other checks -- a description edit changes no file on disk.
+  hook-check:
+    name: Hook check
+    if: ${{ inputs.verify-hook && github.event.action != 'edited' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      # Unique so it cannot collide with a directory the caller tracks.
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          sparse-checkout: .git-hooks-matomo
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      - name: Check the pre-push hook matches the canonical copy
+        run: bash "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push
+
   phpcs:
     if: ${{ !inputs.skip-phpcs && github.event.action != 'edited' }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-phpcs.yml@main
@@ -220,7 +255,6 @@ jobs:
       dependent-plugins: ${{ inputs.dependent-plugins }}
       php-version: ${{ inputs.phpstan-php-version }}
       matomo-targets: ${{ inputs.matomo-targets }}
-      verify-hook: ${{ inputs.verify-hook }}
       scripts-ref: ${{ inputs.scripts-ref }}
       workflows-ref: ${{ inputs.workflows-ref }}
     secrets:

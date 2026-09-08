@@ -21,6 +21,11 @@ export EDITED_CONSUMERS="ai-checklist caller-concurrency"
 # out, and a switch to turn it off is the hole it exists to close.
 export GUARD_JOBS="caller-concurrency"
 
+# Jobs a caller has to ask for. An opt-in check already has an off switch -- not asking -- so a
+# skip- input beside it would be a second way to say the same thing, and the opt-out default that
+# skip- exists to protect does not apply to a check that runs nowhere by default.
+export OPT_IN_JOBS="hook-check"
+
 # The invariants parse YAML with PyYAML. It happens to be present on ubuntu-24.04 today, but a
 # check that guards a fleet-wide workflow should not depend on what a runner image ships: it
 # fails closed without it, and a job that reliably fails is no better than one that silently skips.
@@ -35,6 +40,7 @@ import os, sys, yaml
 workflow_path = sys.argv[1]
 edited_consumers = set(os.environ['EDITED_CONSUMERS'].split())
 guard_jobs = set(os.environ['GUARD_JOBS'].split())
+opt_in_jobs = set(os.environ['OPT_IN_JOBS'].split())
 
 with open(workflow_path) as handle:
     doc = yaml.safe_load(handle)
@@ -145,6 +151,18 @@ for name in sorted(edited_consumers - set(jobs)):
 for name in sorted(guard_jobs - set(jobs)):
     check(f"declared guard job {name} still exists in the workflow", False)
 
+for name in sorted(opt_in_jobs - set(jobs)):
+    check(f"declared opt-in job {name} still exists in the workflow", False)
+
+# An opt-in job that stopped consulting its input would run everywhere, which for verify-hook
+# means failing every plugin that has not synced its hook -- most of them.
+for name in sorted(opt_in_jobs & set(jobs)):
+    condition = str((jobs.get(name) or {}).get('if', ''))
+    check(
+        f"{name} runs only when its caller asks for it",
+        'inputs.' in condition and 'skip-' not in condition,
+    )
+
 # The lanes are also defeated one level down. A workflow the umbrella calls that declared its own
 # group would claim it against the umbrella's -- deadlocking where the names match, and spanning
 # both actions where they do not. Today none of them declares one, and that is exactly the kind of
@@ -174,6 +192,8 @@ inputs = workflow_call.get('inputs') or {}
 for name in jobs:
     if name in guard_jobs:
         check(f"{name} has no skip- input, being a guard and not a check", f"skip-{name}" not in inputs)
+    elif name in opt_in_jobs:
+        check(f"{name} has no skip- input, being opt in already", f"skip-{name}" not in inputs)
     else:
         check(f"{name} has a skip- input", f"skip-{name}" in inputs)
 

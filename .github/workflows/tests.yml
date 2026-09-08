@@ -49,6 +49,9 @@ jobs:
       - name: Check the caller concurrency guard
         run: bash tests/caller_concurrency_test.sh
 
+      - name: Check the pre-push hook sync check
+        run: bash tests/hook_sync_test.sh
+
   codex-review-invariants:
     name: Codex review invariants
     runs-on: ubuntu-24.04

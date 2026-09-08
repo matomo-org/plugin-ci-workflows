@@ -61,7 +61,7 @@ jobs:
     secrets: inherit
 ```
 
-Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check` and `skip-ai-checklist`. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the two that take a PHP version are named `phpcs-php-version` and `phpstan-php-version`.
+Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the two that take a PHP version are named `phpcs-php-version` and `phpstan-php-version`.
 
 The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description. Consuming that action is opt **in** per job, so the code checks ignore it rather than re-analysing an unchanged tree, and a check added later ignores it too unless its author decides otherwise. `tests/plugin_ci_invariants_test.sh` enforces both defaults.
 
@@ -118,7 +118,7 @@ Analyses the plugin with PHPStan against a checked-out Matomo. By default it run
 | `matomo-targets` | no | min and max | JSON array of `{target, php}` objects, one analysis run each |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the shared helper scripts |
 | `workflows-ref` | no | `main` | Ref of this repository for the pre-push hook and the PHPStan bootstrap |
-| `verify-hook` | no | `false` | Fail when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/`. Turn it on once that copy has been synced — see [The pre-push hook](#the-pre-push-hook). |
+| `verify-hook` | no | `false` | Run the `hook-check` job, failing when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/`. Turn it on once that copy has been synced — see [The pre-push hook](#the-pre-push-hook). |
 
 `TESTS_ACCESS_TOKEN` is an optional secret, needed only when `dependent-plugins` names a private repository.
 
@@ -293,7 +293,9 @@ The cost of a copy per repository is drift, and those copies currently sit at se
 cp path/to/plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
 ```
 
-Then set `verify-hook: true` in that plugin's PHPStan caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning.
+Then set `verify-hook: true` on that plugin's [Plugin CI](#plugin-ci) caller — or on its PHPStan caller, if it still calls that workflow directly — which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning.
+
+Under Plugin CI the comparison is its own `hook-check` job, not a step inside PHPStan. A vendored hook drifting is not a finding about the plugin's code, and running the comparison before the analysis meant a drift both reported as a red PHPStan check and suppressed the analysis that would have told you something real. Callers still on a standalone `phpstan.yml` keep the old placement until they migrate; both run `scripts/bash/check_hook_sync.sh`, so the two cannot disagree.
 
 The hook works out for itself which plugin it is in, from the repository root git reports, so the same file works unmodified in every plugin. Where it cannot find a `plugins/` directory above it — any repository that is not a Matomo plugin — it prints a line saying so and exits 0.
 
