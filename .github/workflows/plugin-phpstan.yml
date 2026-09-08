@@ -135,7 +135,24 @@ jobs:
       - name: Check the pre-push hook matches the canonical copy
         if: ${{ inputs.verify-hook }}
         shell: bash
-        run: diff -u "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push
+        run: |
+          # diff exits 2 rather than 1 when an operand is missing, so without this the drift
+          # message below would tell the author their absent file differs from the canonical copy.
+          if [ ! -f .git-hooks-matomo/pre-push ]; then
+            echo "::error::verify-hook is on for this plugin but it ships no .git-hooks-matomo/pre-push. Either copy hooks/pre-push from matomo-org/plugin-ci-workflows into place, or drop verify-hook and point core.hooksPath at that repository instead. It is not a PHPStan finding and no analysis ran."
+            exit 1
+          fi
+
+          if diff -u "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push; then
+            exit 0
+          fi
+
+          # This job is called PHPStan and the analysis has not started yet, so on its own a
+          # drifted hook surfaces as a red PHPStan check whose only annotation is GitHub's
+          # "Process completed with exit code 1" -- on both matrix legs, having analysed nothing,
+          # and reading like a finding about the plugin's code.
+          echo "::error file=.git-hooks-matomo/pre-push::This plugin's .git-hooks-matomo/pre-push differs from the canonical copy in matomo-org/plugin-ci-workflows (diff above). It is not a PHPStan finding and no analysis ran. Copy hooks/pre-push over it, or delete the file and point core.hooksPath at that repository."
+          exit 1
 
       - name: checkout matomo for plugin builds
         shell: bash

@@ -14,7 +14,12 @@ WORKFLOW="$ROOT/.github/workflows/plugin-ci.yml"
 
 # Jobs allowed to run on a description edit. Adding a name here is the opt-in, and it should be
 # a deliberate, reviewed act -- which is the point of it living in a test rather than a comment.
-EDITED_CONSUMERS=("ai-checklist")
+export EDITED_CONSUMERS="ai-checklist caller-concurrency"
+
+# Jobs that are not plugin checks and so carry no skip- input. The concurrency guard asserts the
+# caller's half of a contract it can always satisfy by deleting a block, so it never needs a way
+# out, and a switch to turn it off is the hole it exists to close.
+export GUARD_JOBS="caller-concurrency"
 
 # The invariants parse YAML with PyYAML. It happens to be present on ubuntu-24.04 today, but a
 # check that guards a fleet-wide workflow should not depend on what a runner image ships: it
@@ -24,11 +29,12 @@ if ! python3 -c 'import yaml' 2>/dev/null; then
   exit 1
 fi
 
-python3 - "$WORKFLOW" "${EDITED_CONSUMERS[@]}" <<'PY'
-import sys, yaml
+python3 - "$WORKFLOW" <<'PY'
+import os, sys, yaml
 
 workflow_path = sys.argv[1]
-edited_consumers = set(sys.argv[2:])
+edited_consumers = set(os.environ['EDITED_CONSUMERS'].split())
+guard_jobs = set(os.environ['GUARD_JOBS'].split())
 
 with open(workflow_path) as handle:
     doc = yaml.safe_load(handle)
@@ -54,6 +60,49 @@ def check(description, condition):
 check("the umbrella is a reusable workflow", 'workflow_call' in triggers)
 check("it declares at least one job", bool(jobs))
 
+# An `edited` run skips every code check, so sharing one concurrency group with a push's run means
+# it cancels analysis and puts nothing in its place. The group has to discriminate on the action.
+concurrency = doc.get('concurrency') or {}
+# Whitespace-insensitive, so the assertions pin the expression's meaning and not one spelling of
+# it: `action=='edited'` behaves identically and should not be a failure.
+group = str(concurrency.get('group', ''))
+group_squashed = ''.join(group.split())
+check("the umbrella declares a concurrency group", bool(group))
+check(
+    "the concurrency group separates edited runs from code runs",
+    "github.event.action=='edited'" in group_squashed,
+)
+# github.workflow resolves to the caller's workflow name here, so a group built from it matches a
+# caller's own group and GitHub kills the run for a concurrency deadlock rather than running it.
+check(
+    "the concurrency group uses a static prefix, not github.workflow",
+    'github.workflow' not in group_squashed,
+)
+# Losing the per-pull-request scope is the worst regression available here: every open pull request
+# in the repository would share one lane and cancel each other's checks.
+check(
+    "the concurrency group is scoped per pull request",
+    'github.event.pull_request.number' in group_squashed,
+)
+# Without this the group queues instead of superseding, so the file still reads as intended while
+# doing the opposite -- a stale run finishes last and its verdict is the one that sticks.
+check(
+    "the concurrency group supersedes rather than queues",
+    concurrency.get('cancel-in-progress') is True,
+)
+
+# The lanes above are defeated by a caller declaring a group of its own, silently: it spans both
+# actions, a called workflow cannot override it, and the name never matches the static prefix, so
+# no deadlock error is raised. Deleting the job that catches that would restore the silence.
+for name in sorted(guard_jobs):
+    steps = (jobs.get(name) or {}).get('steps') or []
+    runs_guard = any(
+        'check_caller_concurrency.sh' in str(step.get('run', ''))
+        for step in steps
+        if isinstance(step, dict)
+    )
+    check(f"{name} runs the caller concurrency guard", runs_guard)
+
 # Every job either ignores `edited` or is a declared consumer of it.
 for name, job in jobs.items():
     condition = str(job.get('if', ''))
@@ -63,6 +112,25 @@ for name, job in jobs.items():
             f"{name} is a declared consumer of the edited action",
             not ignores_edited,
         )
+        job_concurrency = job.get('concurrency') or {}
+        job_group = ''.join(str(job_concurrency.get('group', '')).split())
+        if name in guard_jobs:
+            # A guard reads a file the commit fixes, so both lanes' runs reach the same verdict
+            # and a lane would trade twenty seconds of runner time for a cancelled job in the
+            # run that lost -- a check in a state nothing on the pull request explains.
+            check(f"{name} takes no lane of its own", not job_group)
+        else:
+            # Running in both lanes means racing itself on one commit, and the loser's verdict
+            # sticks if it lands last. Its own lane has to span both, so it must NOT discriminate
+            # on the action the way the workflow-level group does.
+            check(
+                f"{name} has its own concurrency lane spanning both workflow lanes",
+                bool(job_group) and 'github.event.action' not in job_group,
+            )
+            check(
+                f"{name}'s lane supersedes rather than queues",
+                job_concurrency.get('cancel-in-progress') is True,
+            )
     else:
         check(
             f"{name} ignores the edited action",
@@ -74,12 +142,40 @@ for name, job in jobs.items():
 for name in sorted(edited_consumers - set(jobs)):
     check(f"declared edited consumer {name} still exists in the workflow", False)
 
+for name in sorted(guard_jobs - set(jobs)):
+    check(f"declared guard job {name} still exists in the workflow", False)
+
+# The lanes are also defeated one level down. A workflow the umbrella calls that declared its own
+# group would claim it against the umbrella's -- deadlocking where the names match, and spanning
+# both actions where they do not. Today none of them declares one, and that is exactly the kind of
+# fact this file exists to stop being a comment.
+called_locally = sorted({
+    str(job.get('uses', '')).split('@')[0].split('/.github/workflows/')[-1]
+    for job in jobs.values()
+    if 'plugin-ci-workflows/.github/workflows/' in str(job.get('uses', ''))
+})
+for called in called_locally:
+    path = os.path.join(os.path.dirname(workflow_path), called)
+    if not os.path.isfile(path):
+        check(f"{called} is a workflow in this repository", False)
+        continue
+    with open(path) as handle:
+        check(
+            f"{called} declares no concurrency of its own",
+            not (yaml.safe_load(handle) or {}).get('concurrency'),
+        )
+
 # Every check has to be switchable off, or a plugin that cannot run one has no way out but to
-# stop calling the umbrella entirely.
+# stop calling the umbrella entirely. A guard is the exception in both directions: it asserts a
+# contract the caller can always satisfy, so it needs no way out, and offering one would let a
+# caller keep the misconfiguration the guard exists to surface.
 workflow_call = triggers.get('workflow_call') or {}
 inputs = workflow_call.get('inputs') or {}
 for name in jobs:
-    check(f"{name} has a skip- input", f"skip-{name}" in inputs)
+    if name in guard_jobs:
+        check(f"{name} has no skip- input, being a guard and not a check", f"skip-{name}" not in inputs)
+    else:
+        check(f"{name} has a skip- input", f"skip-{name}" in inputs)
 
 # Opt-out, not opt-in: a skip- input defaulting to true would leave a check running nowhere.
 for name, spec in inputs.items():

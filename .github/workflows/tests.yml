@@ -35,8 +35,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Same reasoning as codex-review-invariants below: the script parses the workflow with
+      # PyYAML and fails closed without it, so install it rather than trust the runner image.
+      - name: Install the YAML parser the invariants need
+        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+
       - name: Run tests
         run: bash tests/plugin_ci_invariants_test.sh
+
+      # Runs in this job rather than one of its own so it lands inside a check `main` already
+      # requires, and because it asserts the other half of the same contract: the umbrella's two
+      # lanes here, and the caller declaring no group that would span them.
+      - name: Check the caller concurrency guard
+        run: bash tests/caller_concurrency_test.sh
 
   codex-review-invariants:
     name: Codex review invariants
@@ -51,8 +62,11 @@ jobs:
       # fails is no better than one that silently skips.
       # apt, not pip: `pip install` into system Python on ubuntu-24.04 can refuse with PEP 668
       # externally-managed-environment, and the distro package is a pinned, signed artifact.
+      # `apt-get update` first, and only when the import fails: the image ships no package index,
+      # so a bare `apt-get install` can only report what is already present -- which is what it
+      # does today, and it would locate nothing on the day the image stops shipping it.
       - name: Install the YAML parser the invariants need
-        run: sudo apt-get install -y --no-install-recommends python3-yaml
+        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
 
       # The review's other half lives in a private repository whose tests cannot see
       # this workflow, so the controls that live here are asserted here.
