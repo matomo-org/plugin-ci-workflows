@@ -78,34 +78,6 @@ mv "$CANONICAL.moved" "$CANONICAL"
 printf '#!/bin/bash\necho canonical' > "$PLUGIN_HOOK"
 run_case "a hook differing only in its trailing newline fails" 1 "differs from the canonical copy"
 
-# The context sentence is how the placement inside PHPStan stays comprehensible, so it has to
-# reach every failure -- and has to leave no trace when the umbrella omits it.
-printf '#!/bin/bash\necho drifted\n' > "$PLUGIN_HOOK"
-tests=$((tests + 1))
-with_context="$(bash "$CHECK" "$CANONICAL" "$PLUGIN_HOOK" "It is not a PHPStan finding." 2>&1)"
-without_context="$(bash "$CHECK" "$CANONICAL" "$PLUGIN_HOOK" 2>&1)"
-# The error line, not the whole output: the diff now follows it, so a suffix match on the output
-# would be testing the ordering rather than the absence of a trailing gap.
-without_context_error="$(printf '%s\n' "$without_context" | grep '^::error' || true)"
-if [[ "$with_context" == *"repository. It is not a PHPStan finding."* ]] \
-  && [[ "$without_context_error" == *"at that repository." ]]; then
-  echo "ok - a caller's context sentence is appended, and omitting it leaves no gap"
-else
-  echo "FAIL - a caller's context sentence is appended, and omitting it leaves no gap"
-  echo "$with_context"
-  echo "$without_context"
-  failures+=("a caller's context sentence is appended, and omitting it leaves no gap")
-fi
-
-rm -f "$PLUGIN_HOOK"
-tests=$((tests + 1))
-if bash "$CHECK" "$CANONICAL" "$PLUGIN_HOOK" "Trailing context." 2>&1 | grep -q "instead. Trailing context."; then
-  echo "ok - the context sentence reaches the missing-hook failure too"
-else
-  echo "FAIL - the context sentence reaches the missing-hook failure too"
-  failures+=("the context sentence reaches the missing-hook failure too")
-fi
-
 echo
 echo "$tests tests, ${#failures[@]} failures"
 [ ${#failures[@]} -eq 0 ] || exit 1

@@ -126,7 +126,6 @@ Analyses the plugin with PHPStan against a checked-out Matomo. By default it run
 | `matomo-targets` | no | min and max | JSON array of `{target, php}` objects, one analysis run each |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the shared helper scripts |
 | `workflows-ref` | no | `main` | Ref of this repository for the pre-push hook and the PHPStan bootstrap |
-| `verify-hook` | no | `false` | Fail when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/`, as a step before the analysis. Under [Plugin CI](#plugin-ci) the same check is its own `hook-check` job instead. Turn it on once that copy has been synced — see [The pre-push hook](#the-pre-push-hook). |
 
 `TESTS_ACCESS_TOKEN` is an optional secret, needed only when `dependent-plugins` names a private repository.
 
@@ -301,9 +300,9 @@ The cost of a copy per repository is drift, and those copies currently sit at se
 cp path/to/plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
 ```
 
-Then set `verify-hook: true` on that plugin's [Plugin CI](#plugin-ci) caller — or on its PHPStan caller, if it still calls that workflow directly — which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning.
+Then set `verify-hook: true` on that plugin's [Plugin CI](#plugin-ci) caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning. A plugin that has not migrated to Plugin CI cannot have this check: `plugin-phpstan.yml` used to carry it and no longer does, because a drifted hook reporting as red PHPStan was the problem.
 
-Set it on the Plugin CI caller, not on PHPStan's inputs there: Plugin CI no longer forwards `verify-hook` to PHPStan, so setting it in the wrong place runs no check at all. Under Plugin CI the comparison is its own `hook-check` job, not a step inside PHPStan. A vendored hook drifting is not a finding about the plugin's code, and running the comparison before the analysis meant a drift both reported as a red PHPStan check and suppressed the analysis that would have told you something real. Callers still on a standalone `phpstan.yml` keep the old placement until they migrate; both run `scripts/bash/check_hook_sync.sh`, and `tests/plugin_ci_invariants_test.sh` asserts that of both workflow files, so the two cannot disagree. One consequence of the move: a repository setting both `verify-hook: true` and `skip-phpstan: true` used to get no hook check, because the check lived inside the workflow it was skipping. It now runs, and can fail.
+The comparison is its own `hook-check` job, running `scripts/bash/check_hook_sync.sh`. It used to be a step inside the PHPStan job, which was wrong twice over: a vendored hook drifting is not a finding about the plugin's code, and the comparison ran before the analysis started, so a drift both reported as red PHPStan on two matrix legs and suppressed the analysis that would have told you something real. One consequence of the move: a repository setting both `verify-hook: true` and `skip-phpstan: true` used to get no hook check, because the check lived inside the workflow it was skipping. It now runs, and can fail.
 
 The hook works out for itself which plugin it is in, from the repository root git reports, so the same file works unmodified in every plugin. Where it cannot find a `plugins/` directory above it — any repository that is not a Matomo plugin — it prints a line saying so and exits 0.
 

@@ -28,9 +28,8 @@ export GUARD_JOBS="caller-concurrency"
 # default, not merely that the job consults something.
 export OPT_IN_JOBS="hook-check:verify-hook"
 
-# The hook check has two placements while the fleet migrates -- a job here, a step in
-# plugin-phpstan.yml for callers that still use it directly -- and the README promises the two
-# cannot disagree because one script is behind both. That is a property of two workflow files.
+# The hook check's one home. Gutting the job's step would leave `verify-hook: true` silently
+# checking nothing, which is worse than the misplacement this replaced.
 export HOOK_SCRIPT="check_hook_sync.sh"
 
 # Jobs that cannot run outside a pull request. Callers subscribe to push and workflow_dispatch so
@@ -221,10 +220,8 @@ for name, input_name in sorted(opt_in_jobs.items()):
     )
 
 
-# The hook check's two placements, asserted together because the README promises they cannot
-# disagree: a job here, and a step in plugin-phpstan.yml for callers that have not migrated. Keyed
-# on the job by name rather than looped over every opt-in job, since a second opt-in job would have
-# nothing to do with this script.
+# Keyed on the job by name rather than looped over every opt-in job, since a second opt-in job
+# would have nothing to do with this script.
 hook_steps = [
     step
     for step in ((jobs.get('hook-check') or {}).get('steps') or [])
@@ -234,32 +231,6 @@ check(
     f"hook-check runs {hook_script}",
     any(hook_script in str(step.get('run', '')) for step in hook_steps),
 )
-
-phpstan_path = os.path.join(os.path.dirname(workflow_path), 'plugin-phpstan.yml')
-if not os.path.isfile(phpstan_path):
-    # Named rather than raised: a traceback here would abort the invariants below it, so the
-    # failure would take unrelated assertions down with it silently.
-    check("plugin-phpstan.yml is a workflow in this repository", False)
-else:
-    with open(phpstan_path) as handle:
-        phpstan_jobs = (yaml.safe_load(handle) or {}).get('jobs') or {}
-    phpstan_hook_steps = [
-        step
-        for job in phpstan_jobs.values() if isinstance(job, dict)
-        for step in (job.get('steps') or []) if isinstance(step, dict)
-        and hook_script in str(step.get('run', ''))
-    ]
-    check(
-        f"plugin-phpstan.yml runs the same {hook_script}",
-        bool(phpstan_hook_steps),
-    )
-    # Its `if:` is the only thing keeping the check off every direct caller, exactly as the
-    # umbrella job's is, so it is pinned the same way and against the same input.
-    for step in phpstan_hook_steps:
-        check(
-            "plugin-phpstan.yml's hook step runs only when the caller sets verify-hook",
-            re.search(r'(?<![!\w.-])inputs\.verify-hook(?![\w-])', str(step.get('if', ''))) is not None,
-        )
 
 for name in sorted(pull_request_only):
     if name not in jobs:

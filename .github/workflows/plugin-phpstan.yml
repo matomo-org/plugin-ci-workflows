@@ -23,15 +23,10 @@ on:
         type: string
         default: 'main'
       workflows-ref:
-        description: "Ref of matomo-org/plugin-ci-workflows to take the pre-push hook and the PHPStan bootstrap from. This is this repository, so the workflow SHA is the right value when pinning."
+        description: "Ref of matomo-org/plugin-ci-workflows to take the PHPStan bootstrap from. This is this repository, so the workflow SHA is the right value when pinning."
         required: false
         type: string
         default: 'main'
-      verify-hook:
-        description: "Fail when the plugin's .git-hooks-matomo/pre-push differs from the canonical copy in this repository. Opt in once the plugin's hook has been synced; most have not been. Callers of plugin-ci.yml should not set it here -- the umbrella runs the same check as its own hook-check job, so a drift does not report as a red PHPStan."
-        required: false
-        type: boolean
-        default: false
       matomo-targets:
         description: >-
           JSON array of {target, php} objects, one per analysis run. Analysing the minimum target
@@ -105,8 +100,8 @@ jobs:
           persist-credentials: false
 
       # A reusable workflow does not bring its own repository into the caller's
-      # workspace, so the files this workflow ships alongside it — the canonical
-      # pre-push hook and the PHPStan bootstrap — need checking out explicitly too.
+      # workspace, so the PHPStan bootstrap this workflow ships alongside it needs
+      # checking out explicitly too.
       - name: Check out plugin-ci-workflows repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,24 +126,6 @@ jobs:
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: ${{ steps.resolve-php.outputs.version }}
-
-      # Kept here for the repositories still calling this workflow directly with verify-hook.
-      # Umbrella callers get it as its own `hook-check` job instead, so a drifted hook stops
-      # reporting as a red PHPStan check that analysed nothing -- see plugin-ci.yml. One script
-      # behind both, because two copies of a ten-line comparison is how the hook itself rotted.
-      - name: Check the pre-push hook matches the canonical copy
-        if: ${{ inputs.verify-hook }}
-        shell: bash
-        run: |
-          # $WORKFLOWS_DIR is the caller's workflows-ref, which this repository's own README
-          # encourages pinning. A pin predating this script would otherwise leave bash exiting 127
-          # with no annotation -- a red check that analysed nothing and explains nothing.
-          if [ ! -f "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" ]; then
-            echo "::error::workflows-ref does not carry scripts/bash/check_hook_sync.sh. Move that pin forward, or turn verify-hook off."
-            exit 1
-          fi
-
-          bash "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push "It is not a PHPStan finding and no analysis ran."
 
       - name: checkout matomo for plugin builds
         shell: bash
