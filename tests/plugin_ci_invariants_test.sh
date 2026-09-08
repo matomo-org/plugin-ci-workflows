@@ -33,6 +33,12 @@ export OPT_IN_JOBS="hook-check:verify-hook"
 # cannot disagree because one script is behind both. That is a property of two workflow files.
 export HOOK_SCRIPT="check_hook_sync.sh"
 
+# Jobs that cannot run outside a pull request. Callers subscribe to push and workflow_dispatch so
+# that one badge on their workflow reports the default branch, and the checklist gate reads a
+# description that only a pull request has -- so losing this condition fails every push run, on
+# the very badge the triggers exist to make trustworthy.
+export PULL_REQUEST_ONLY_JOBS="ai-checklist"
+
 # The invariants parse YAML with PyYAML. It happens to be present on ubuntu-24.04 today, but a
 # check that guards a fleet-wide workflow should not depend on what a runner image ships: it
 # fails closed without it, and a job that reliably fails is no better than one that silently skips.
@@ -49,6 +55,7 @@ edited_consumers = set(os.environ['EDITED_CONSUMERS'].split())
 guard_jobs = set(os.environ['GUARD_JOBS'].split())
 opt_in_jobs = dict(pair.split(':') for pair in os.environ['OPT_IN_JOBS'].split())
 hook_script = os.environ['HOOK_SCRIPT']
+pull_request_only = set(os.environ['PULL_REQUEST_ONLY_JOBS'].split())
 
 with open(workflow_path) as handle:
     doc = yaml.safe_load(handle)
@@ -213,26 +220,56 @@ for name, input_name in sorted(opt_in_jobs.items()):
         (inputs.get(input_name) or {}).get('default') is False,
     )
 
-    steps = (jobs.get(name) or {}).get('steps') or []
-    check(
-        f"{name} runs the shared hook sync script",
-        any(hook_script in str(step.get('run', '')) for step in steps if isinstance(step, dict)),
-    )
 
-# The other placement of the same check. Two copies of a ten-line comparison is how the hook this
-# checks came to drift in the first place.
-phpstan_path = os.path.join(os.path.dirname(workflow_path), 'plugin-phpstan.yml')
-with open(phpstan_path) as handle:
-    phpstan_jobs = (yaml.safe_load(handle) or {}).get('jobs') or {}
-phpstan_runs = [
-    str(step.get('run', ''))
-    for job in phpstan_jobs.values() if isinstance(job, dict)
-    for step in (job.get('steps') or []) if isinstance(step, dict)
+# The hook check's two placements, asserted together because the README promises they cannot
+# disagree: a job here, and a step in plugin-phpstan.yml for callers that have not migrated. Keyed
+# on the job by name rather than looped over every opt-in job, since a second opt-in job would have
+# nothing to do with this script.
+hook_steps = [
+    step
+    for step in ((jobs.get('hook-check') or {}).get('steps') or [])
+    if isinstance(step, dict)
 ]
 check(
-    f"plugin-phpstan.yml runs the same {hook_script}",
-    any(hook_script in run for run in phpstan_runs),
+    f"hook-check runs {hook_script}",
+    any(hook_script in str(step.get('run', '')) for step in hook_steps),
 )
+
+phpstan_path = os.path.join(os.path.dirname(workflow_path), 'plugin-phpstan.yml')
+if not os.path.isfile(phpstan_path):
+    # Named rather than raised: a traceback here would abort the invariants below it, so the
+    # failure would take unrelated assertions down with it silently.
+    check("plugin-phpstan.yml is a workflow in this repository", False)
+else:
+    with open(phpstan_path) as handle:
+        phpstan_jobs = (yaml.safe_load(handle) or {}).get('jobs') or {}
+    phpstan_hook_steps = [
+        step
+        for job in phpstan_jobs.values() if isinstance(job, dict)
+        for step in (job.get('steps') or []) if isinstance(step, dict)
+        and hook_script in str(step.get('run', ''))
+    ]
+    check(
+        f"plugin-phpstan.yml runs the same {hook_script}",
+        bool(phpstan_hook_steps),
+    )
+    # Its `if:` is the only thing keeping the check off every direct caller, exactly as the
+    # umbrella job's is, so it is pinned the same way and against the same input.
+    for step in phpstan_hook_steps:
+        check(
+            "plugin-phpstan.yml's hook step runs only when the caller sets verify-hook",
+            re.search(r'(?<![!\w.-])inputs\.verify-hook(?![\w-])', str(step.get('if', ''))) is not None,
+        )
+
+for name in sorted(pull_request_only):
+    if name not in jobs:
+        check(f"declared pull-request-only job {name} still exists in the workflow", False)
+        continue
+    condition = ''.join(str((jobs.get(name) or {}).get('if', '')).split())
+    check(
+        f"{name} runs only on a pull request",
+        "github.event_name=='pull_request'" in condition,
+    )
 
 # Opt-out, not opt-in: a skip- input defaulting to true would leave a check running nowhere.
 for name, spec in inputs.items():

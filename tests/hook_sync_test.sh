@@ -49,6 +49,19 @@ run_case "a drifted hook fails and annotates the plugin's file" 1 \
   "::error file=$PLUGIN_HOOK::"
 run_case "the drift message names the canonical source" 1 "plugin-ci-workflows"
 
+# A hook file that tries to stop GitHub interpreting workflow commands must not be able to hide
+# the annotation about itself, which is why the annotation is emitted before the diff body.
+printf '#!/bin/bash\n::stop-commands::hidetoken\n' > "$PLUGIN_HOOK"
+tests=$((tests + 1))
+injected="$(bash "$CHECK" "$CANONICAL" "$PLUGIN_HOOK" 2>&1)"
+if [[ "$(printf '%s\n' "$injected" | head -1)" == "::error file=$PLUGIN_HOOK::"* ]]; then
+  echo "ok - the annotation precedes the diff, so a hook cannot suppress it"
+else
+  echo "FAIL - the annotation precedes the diff, so a hook cannot suppress it"
+  echo "$injected"
+  failures+=("the annotation precedes the diff, so a hook cannot suppress it")
+fi
+
 # A plugin that ships no hook at all is a caller error rather than drift, and telling it that its
 # absent file differs from the canonical copy is advice about nothing.
 rm -f "$PLUGIN_HOOK"
@@ -71,8 +84,11 @@ printf '#!/bin/bash\necho drifted\n' > "$PLUGIN_HOOK"
 tests=$((tests + 1))
 with_context="$(bash "$CHECK" "$CANONICAL" "$PLUGIN_HOOK" "It is not a PHPStan finding." 2>&1)"
 without_context="$(bash "$CHECK" "$CANONICAL" "$PLUGIN_HOOK" 2>&1)"
+# The error line, not the whole output: the diff now follows it, so a suffix match on the output
+# would be testing the ordering rather than the absence of a trailing gap.
+without_context_error="$(printf '%s\n' "$without_context" | grep '^::error' || true)"
 if [[ "$with_context" == *"repository. It is not a PHPStan finding."* ]] \
-  && [[ "$without_context" == *"at that repository." ]]; then
+  && [[ "$without_context_error" == *"at that repository." ]]; then
   echo "ok - a caller's context sentence is appended, and omitting it leaves no gap"
 else
   echo "FAIL - a caller's context sentence is appended, and omitting it leaves no gap"

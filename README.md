@@ -39,7 +39,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 
 ### Plugin CI
 
-Runs PHPCS, PHPStan, the license check and the AI checklist gate from a single caller, so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
+Runs PHPCS, PHPStan, the license check and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
 
 ```yaml
 name: CI
@@ -47,6 +47,10 @@ name: CI
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  push:
+    branches:
+      - '**.x-dev'
+  workflow_dispatch:
 
 permissions:
   actions: read
@@ -61,6 +65,10 @@ jobs:
     secrets: inherit
 ```
 
+**The `push` and `workflow_dispatch` triggers are what make a build badge mean anything**, and they follow the shape `matomo-tests.yml` already uses across the fleet. A workflow that only runs on `pull_request` never runs on the default branch, so GitHub's badge — which takes the newest run on any branch when it cannot find one on the default branch — reports whichever pull request someone opened last. That is why `plugin-LogViewer`'s PHPStan badge reads *failing* off a feature branch while its `6.x-dev` is fine. With the triggers above, one `?branch=6.x-dev` badge on this workflow says whether the plugin's checks pass on the branch that ships.
+
+The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs the same way on all three.
+
 Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the two that take a PHP version are named `phpcs-php-version` and `phpstan-php-version`.
 
 The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description. Consuming that action is opt **in** per job, so the code checks ignore it rather than re-analysing an unchanged tree, and a check added later ignores it too unless its author decides otherwise. `tests/plugin_ci_invariants_test.sh` enforces both defaults.
@@ -73,7 +81,7 @@ The checklist gate then needs a third lane of its own, at the job level, because
 
 The `caller-concurrency` job checks that you did, rather than leaving it to this paragraph. It reads the calling workflow — on a pull request, the merge ref's copy, which is the one whose group governed the run — and fails when that file declares a group of its own, at the top level or on the job that calls Plugin CI. A group on any other job in the file cancels only that job, so it is the caller's own business and passes. The job runs in both lanes, because the run it exists to catch is the one the caller's group cancelled, and it has no `skip-` input: a caller can always satisfy it by deleting the block, and a switch would reopen the hole it closes. `scripts/bash/check_caller_concurrency.sh` is the check; `tests/caller_concurrency_test.sh` holds it in both directions, since a false positive here reddens the fleet.
 
-The permissions above are the union of what the four checks need. That is the cost of one caller: a plugin that only wants PHPCS previously needed no scopes at all.
+The permissions above are the union of what the checks need. That is the cost of one caller: a plugin that only wants PHPCS previously needed no scopes at all.
 
 #### What it does not cover
 
@@ -295,7 +303,7 @@ cp path/to/plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
 
 Then set `verify-hook: true` on that plugin's [Plugin CI](#plugin-ci) caller — or on its PHPStan caller, if it still calls that workflow directly — which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning.
 
-Under Plugin CI the comparison is its own `hook-check` job, not a step inside PHPStan. A vendored hook drifting is not a finding about the plugin's code, and running the comparison before the analysis meant a drift both reported as a red PHPStan check and suppressed the analysis that would have told you something real. Callers still on a standalone `phpstan.yml` keep the old placement until they migrate; both run `scripts/bash/check_hook_sync.sh`, so the two cannot disagree.
+Set it on the Plugin CI caller, not on PHPStan's inputs there: Plugin CI no longer forwards `verify-hook` to PHPStan, so setting it in the wrong place runs no check at all. Under Plugin CI the comparison is its own `hook-check` job, not a step inside PHPStan. A vendored hook drifting is not a finding about the plugin's code, and running the comparison before the analysis meant a drift both reported as a red PHPStan check and suppressed the analysis that would have told you something real. Callers still on a standalone `phpstan.yml` keep the old placement until they migrate; both run `scripts/bash/check_hook_sync.sh`, and `tests/plugin_ci_invariants_test.sh` asserts that of both workflow files, so the two cannot disagree. One consequence of the move: a repository setting both `verify-hook: true` and `skip-phpstan: true` used to get no hook check, because the check lived inside the workflow it was skipping. It now runs, and can fail.
 
 The hook works out for itself which plugin it is in, from the repository root git reports, so the same file works unmodified in every plugin. Where it cannot find a `plugins/` directory above it — any repository that is not a Matomo plugin — it prints a line saying so and exits 0.
 

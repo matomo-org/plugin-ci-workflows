@@ -33,10 +33,15 @@ if [ ! -f "$PLUGIN_HOOK" ]; then
   exit 1
 fi
 
-if diff -u "$CANONICAL" "$PLUGIN_HOOK"; then
+if diff_output="$(diff -u "$CANONICAL" "$PLUGIN_HOOK")"; then
   echo "$PLUGIN_HOOK matches the canonical copy."
   exit 0
 fi
 
-echo "::error file=$PLUGIN_HOOK::This plugin's $PLUGIN_HOOK differs from the canonical copy in matomo-org/plugin-ci-workflows (diff above). Copy hooks/pre-push over it, or delete the file and point core.hooksPath at that repository.${CONTEXT}"
+# The annotation goes first and the diff after it, because the diff quotes a file a contributor
+# controls: a line in it reading `::stop-commands::<token>` would otherwise make GitHub print the
+# annotation below as literal text, and this check's whole purpose is a failure that explains
+# itself.
+echo "::error file=$PLUGIN_HOOK::This plugin's $PLUGIN_HOOK differs from the canonical copy in matomo-org/plugin-ci-workflows (diff below). Copy hooks/pre-push over it, or delete the file and point core.hooksPath at that repository.${CONTEXT}"
+echo "$diff_output"
 exit 1

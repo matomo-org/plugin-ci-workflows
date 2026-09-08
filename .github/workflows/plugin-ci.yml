@@ -135,7 +135,10 @@ jobs:
   # workflow it calls, because plugin-ai-checklist.yml declares no concurrency of its own -- which
   # the invariants assert of every workflow called from here, rather than leaving it to this line.
   ai-checklist:
-    if: ${{ !inputs.skip-ai-checklist }}
+    # pull_request only, because the gate reads the pull request's description and there is none on
+    # a push or a dispatch. Callers subscribe to those so one badge on this workflow can report the
+    # default branch, and without this the gate would fail every such run.
+    if: ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request' }}
     concurrency:
       group: plugin-ci-checklist-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: true
@@ -233,7 +236,16 @@ jobs:
           persist-credentials: false
 
       - name: Check the pre-push hook matches the canonical copy
-        run: bash "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push
+        run: |
+          # $WORKFLOWS_DIR is the caller's workflows-ref, which this repository's own README
+          # encourages pinning. A pin predating this script would otherwise leave bash exiting 127
+          # with no annotation -- a red check that analysed nothing and explains nothing.
+          if [ ! -f "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" ]; then
+            echo "::error::workflows-ref does not carry scripts/bash/check_hook_sync.sh. Move that pin forward, or turn verify-hook off."
+            exit 1
+          fi
+
+          bash "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push
 
   phpcs:
     if: ${{ !inputs.skip-phpcs && github.event.action != 'edited' }}
