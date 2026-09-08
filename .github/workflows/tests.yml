@@ -29,7 +29,7 @@ jobs:
         run: bash tests/pre_push_base_branch_test.sh
 
   plugin-ci-invariants:
-    name: Plugin CI invariants
+    name: Plugins CI invariants
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -48,6 +48,9 @@ jobs:
       # lanes here, and the caller declaring no group that would span them.
       - name: Check the caller concurrency guard
         run: bash tests/caller_concurrency_test.sh
+
+      - name: Check the pre-push hook sync check
+        run: bash tests/hook_sync_test.sh
 
   codex-review-invariants:
     name: Codex review invariants

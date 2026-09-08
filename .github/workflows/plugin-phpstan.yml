@@ -23,15 +23,10 @@ on:
         type: string
         default: 'main'
       workflows-ref:
-        description: "Ref of matomo-org/plugin-ci-workflows to take the pre-push hook and the PHPStan bootstrap from. This is this repository, so the workflow SHA is the right value when pinning."
+        description: "Ref of matomo-org/plugin-ci-workflows to take the PHPStan bootstrap from. This is this repository, so the workflow SHA is the right value when pinning."
         required: false
         type: string
         default: 'main'
-      verify-hook:
-        description: "Fail when the plugin's .git-hooks-matomo/pre-push differs from the canonical copy in this repository. Opt in once the plugin's hook has been synced; most have not been."
-        required: false
-        type: boolean
-        default: false
       matomo-targets:
         description: >-
           JSON array of {target, php} objects, one per analysis run. Analysing the minimum target
@@ -105,8 +100,8 @@ jobs:
           persist-credentials: false
 
       # A reusable workflow does not bring its own repository into the caller's
-      # workspace, so the files this workflow ships alongside it — the canonical
-      # pre-push hook and the PHPStan bootstrap — need checking out explicitly too.
+      # workspace, so the PHPStan bootstrap this workflow ships alongside it needs
+      # checking out explicitly too.
       - name: Check out plugin-ci-workflows repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,28 +126,6 @@ jobs:
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: ${{ steps.resolve-php.outputs.version }}
-
-      - name: Check the pre-push hook matches the canonical copy
-        if: ${{ inputs.verify-hook }}
-        shell: bash
-        run: |
-          # diff exits 2 rather than 1 when an operand is missing, so without this the drift
-          # message below would tell the author their absent file differs from the canonical copy.
-          if [ ! -f .git-hooks-matomo/pre-push ]; then
-            echo "::error::verify-hook is on for this plugin but it ships no .git-hooks-matomo/pre-push. Either copy hooks/pre-push from matomo-org/plugin-ci-workflows into place, or drop verify-hook and point core.hooksPath at that repository instead. It is not a PHPStan finding and no analysis ran."
-            exit 1
-          fi
-
-          if diff -u "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push; then
-            exit 0
-          fi
-
-          # This job is called PHPStan and the analysis has not started yet, so on its own a
-          # drifted hook surfaces as a red PHPStan check whose only annotation is GitHub's
-          # "Process completed with exit code 1" -- on both matrix legs, having analysed nothing,
-          # and reading like a finding about the plugin's code.
-          echo "::error file=.git-hooks-matomo/pre-push::This plugin's .git-hooks-matomo/pre-push differs from the canonical copy in matomo-org/plugin-ci-workflows (diff above). It is not a PHPStan finding and no analysis ran. Copy hooks/pre-push over it, or delete the file and point core.hooksPath at that repository."
-          exit 1
 
       - name: checkout matomo for plugin builds
         shell: bash

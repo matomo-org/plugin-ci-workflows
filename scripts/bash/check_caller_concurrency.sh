@@ -86,7 +86,7 @@ for name, job in (doc.get('jobs') or {}).items():
     if not isinstance(job, dict) or not job.get('concurrency'):
         continue
     if umbrella in str(job.get('uses', '')):
-        offenders.append(f"the job '{name}', which calls Plugin CI")
+        offenders.append(f"the job '{name}', which calls Plugins CI")
 
 if not offenders:
     print(f"ok - {caller_path} declares no concurrency of its own")
@@ -97,14 +97,14 @@ named = ' and '.join(offenders)
 # interleaves them in the order they arrive.
 print(
     f"::error file={caller_path}::Delete the concurrency block on {named}."
-    " Plugin CI declares the group itself, in two lanes; one caller-level group spans both"
+    " Plugins CI declares the group itself, in two lanes; one caller-level group spans both"
     " actions, so a description edit either cancels a push's analysis or queues ahead of it.",
     flush=True,
 )
 print(f"""
 {caller_path} declares its own concurrency on {named}.
 
-Delete it. Plugin CI declares the group itself, in two lanes: a push supersedes an earlier push,
+Delete it. Plugins CI declares the group itself, in two lanes: a push supersedes an earlier push,
 while a description edit only supersedes an earlier edit. A caller-level group spans both actions,
 and this workflow cannot override it -- concurrency governs the run, and the run is yours. An
 `edited` run does none of the code checks, so with cancel-in-progress it cancels the push's
@@ -113,7 +113,7 @@ nothing on the pull request to say why. Without cancel-in-progress the edit queu
 analysis instead, and the checklist verdict waits on a run it has nothing to do with.
 
 If the block arrived by renaming matomo-ai-checklist.yml to ci.yml, deleting it is the whole fix:
-that file needs it while it stands alone, and Plugin CI replaces it. If another job in this file
+that file needs it while it stands alone, and Plugins CI replaces it. If another job in this file
 needs a lane of its own, give that job its own workflow file.
 """, file=sys.stderr)
 sys.exit(1)

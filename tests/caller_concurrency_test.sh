@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests for scripts/bash/check_caller_concurrency.sh, the guard that fails a Plugin CI run when
+# Tests for scripts/bash/check_caller_concurrency.sh, the guard that fails a Plugins CI run when
 # the calling workflow declares a `concurrency` block of its own.
 # Usage: bash tests/caller_concurrency_test.sh
 #
@@ -109,7 +109,7 @@ jobs:
 $CALL
 "
 
-run_case "a concurrency block on the job that calls Plugin CI fails" 1 "\
+run_case "a concurrency block on the job that calls Plugins CI fails" 1 "\
 name: CI
 on: pull_request
 jobs:
@@ -121,7 +121,7 @@ $CALL
 "
 
 # It cancels that job and nothing of ours, so it is the caller's business. Failing it would redden
-# a plugin for a lane that cannot touch a Plugin CI run.
+# a plugin for a lane that cannot touch a Plugins CI run.
 run_case "a concurrency block on an unrelated job passes" 0 "\
 name: CI
 on: pull_request
@@ -136,7 +136,7 @@ $CALL
       - run: 'true'
 "
 
-run_case "a bare group on the job that calls Plugin CI fails" 1 "\
+run_case "a bare group on the job that calls Plugins CI fails" 1 "\
 name: CI
 on: pull_request
 jobs:
@@ -162,7 +162,7 @@ else
 fi
 
 # A caller pinning the umbrella to a SHA is the same caller.
-run_case "a concurrency block on a job calling a pinned Plugin CI fails" 1 "\
+run_case "a concurrency block on a job calling a pinned Plugins CI fails" 1 "\
 name: CI
 on: pull_request
 jobs:

@@ -21,6 +21,23 @@ export EDITED_CONSUMERS="ai-checklist caller-concurrency"
 # out, and a switch to turn it off is the hole it exists to close.
 export GUARD_JOBS="caller-concurrency"
 
+# Jobs a caller has to ask for, and the input each one asks through. An opt-in check already has
+# an off switch -- not asking -- so a skip- input beside it would be a second way to say the same
+# thing, and the opt-out default that skip- exists to protect does not apply to a check that runs
+# nowhere by default. The input is named here because the assertions below pin its polarity and its
+# default, not merely that the job consults something.
+export OPT_IN_JOBS="hook-check:verify-hook"
+
+# The hook check's one home. Gutting the job's step would leave `verify-hook: true` silently
+# checking nothing, which is worse than the misplacement this replaced.
+export HOOK_SCRIPT="check_hook_sync.sh"
+
+# Jobs that cannot run outside a pull request. Callers subscribe to push and workflow_dispatch so
+# that one badge on their workflow reports the default branch, and the checklist gate reads a
+# description that only a pull request has -- so losing this condition fails every push run, on
+# the very badge the triggers exist to make trustworthy.
+export PULL_REQUEST_ONLY_JOBS="ai-checklist"
+
 # The invariants parse YAML with PyYAML. It happens to be present on ubuntu-24.04 today, but a
 # check that guards a fleet-wide workflow should not depend on what a runner image ships: it
 # fails closed without it, and a job that reliably fails is no better than one that silently skips.
@@ -30,11 +47,14 @@ if ! python3 -c 'import yaml' 2>/dev/null; then
 fi
 
 python3 - "$WORKFLOW" <<'PY'
-import os, sys, yaml
+import os, re, sys, yaml
 
 workflow_path = sys.argv[1]
 edited_consumers = set(os.environ['EDITED_CONSUMERS'].split())
 guard_jobs = set(os.environ['GUARD_JOBS'].split())
+opt_in_jobs = dict(pair.split(':') for pair in os.environ['OPT_IN_JOBS'].split())
+hook_script = os.environ['HOOK_SCRIPT']
+pull_request_only = set(os.environ['PULL_REQUEST_ONLY_JOBS'].split())
 
 with open(workflow_path) as handle:
     doc = yaml.safe_load(handle)
@@ -174,8 +194,53 @@ inputs = workflow_call.get('inputs') or {}
 for name in jobs:
     if name in guard_jobs:
         check(f"{name} has no skip- input, being a guard and not a check", f"skip-{name}" not in inputs)
+    elif name in opt_in_jobs:
+        check(f"{name} has no skip- input, being opt in already", f"skip-{name}" not in inputs)
     else:
         check(f"{name} has a skip- input", f"skip-{name}" in inputs)
+
+# An opt-in job that stopped consulting its input would run everywhere, which for verify-hook means
+# failing every plugin that has not synced its hook -- most of them.
+for name, input_name in sorted(opt_in_jobs.items()):
+    if name not in jobs:
+        check(f"declared opt-in job {name} still exists in the workflow", False)
+        continue
+
+    condition = str((jobs.get(name) or {}).get('if', ''))
+    # Not a substring test: `!inputs.verify-hook` references the input and inverts the job, which
+    # is the fleet-wide failure this is here to stop.
+    check(
+        f"{name} runs only when the caller sets {input_name}",
+        re.search(r'(?<![!\w.-])inputs\.' + re.escape(input_name) + r'(?![\w-])', condition) is not None,
+    )
+    # And a default of true would redden every caller without a pull request against any of them.
+    check(
+        f"{input_name} defaults to not running {name}",
+        (inputs.get(input_name) or {}).get('default') is False,
+    )
+
+
+# Keyed on the job by name rather than looped over every opt-in job, since a second opt-in job
+# would have nothing to do with this script.
+hook_steps = [
+    step
+    for step in ((jobs.get('hook-check') or {}).get('steps') or [])
+    if isinstance(step, dict)
+]
+check(
+    f"hook-check runs {hook_script}",
+    any(hook_script in str(step.get('run', '')) for step in hook_steps),
+)
+
+for name in sorted(pull_request_only):
+    if name not in jobs:
+        check(f"declared pull-request-only job {name} still exists in the workflow", False)
+        continue
+    condition = ''.join(str((jobs.get(name) or {}).get('if', '')).split())
+    check(
+        f"{name} runs only on a pull request",
+        "github.event_name=='pull_request'" in condition,
+    )
 
 # Opt-out, not opt-in: a skip- input defaulting to true would leave a check running nowhere.
 for name, spec in inputs.items():
