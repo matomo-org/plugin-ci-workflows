@@ -33,16 +33,16 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
-| [`plugin-ci.yml`](#plugin-ci) | Reusable workflow | The whole pull request check set behind one caller |
+| [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
-### Plugin CI
+### Plugins CI
 
 Runs PHPCS, PHPStan, the license check and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
 
 ```yaml
-name: CI
+name: Plugins CI
 
 on:
   pull_request:
@@ -79,7 +79,7 @@ The checklist gate then needs a third lane of its own, at the job level, because
 
 **Migrating a plugin off a standalone [AI checklist](#ai-checklist) workflow is where this bites:** that file rightly carries its own `concurrency`, and renaming it to `ci.yml` carries the block along with it, unnoticed. Delete the block as part of the rename.
 
-The `caller-concurrency` job checks that you did, rather than leaving it to this paragraph. It reads the calling workflow — on a pull request, the merge ref's copy, which is the one whose group governed the run — and fails when that file declares a group of its own, at the top level or on the job that calls Plugin CI. A group on any other job in the file cancels only that job, so it is the caller's own business and passes. The job runs in both lanes, because the run it exists to catch is the one the caller's group cancelled, and it has no `skip-` input: a caller can always satisfy it by deleting the block, and a switch would reopen the hole it closes. `scripts/bash/check_caller_concurrency.sh` is the check; `tests/caller_concurrency_test.sh` holds it in both directions, since a false positive here reddens the fleet.
+The `caller-concurrency` job checks that you did, rather than leaving it to this paragraph. It reads the calling workflow — on a pull request, the merge ref's copy, which is the one whose group governed the run — and fails when that file declares a group of its own, at the top level or on the job that calls Plugins CI. A group on any other job in the file cancels only that job, so it is the caller's own business and passes. The job runs in both lanes, because the run it exists to catch is the one the caller's group cancelled, and it has no `skip-` input: a caller can always satisfy it by deleting the block, and a switch would reopen the hole it closes. `scripts/bash/check_caller_concurrency.sh` is the check; `tests/caller_concurrency_test.sh` holds it in both directions, since a false positive here reddens the fleet.
 
 The permissions above are the union of what the checks need. That is the cost of one caller: a plugin that only wants PHPCS previously needed no scopes at all.
 
@@ -208,7 +208,7 @@ jobs:
 
 The `edited` trigger matters: without it the gate does not re-run when someone fills the checklist in, and the check stays red.
 
-The single `concurrency` group is right here and only here, because every run of this workflow does the same thing — re-read the description — so a later run always supersedes an earlier one safely. That stops being true the moment the same file also runs code checks, so drop the block when folding this workflow into [Plugin CI](#plugin-ci) — which fails the run if you do not.
+The single `concurrency` group is right here and only here, because every run of this workflow does the same thing — re-read the description — so a later run always supersedes an earlier one safely. That stops being true the moment the same file also runs code checks, so drop the block when folding this workflow into [Plugins CI](#plugins-ci) — which fails the run if you do not.
 
 ### Codex review
 
@@ -300,7 +300,7 @@ The cost of a copy per repository is drift, and those copies currently sit at se
 cp path/to/plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
 ```
 
-Then set `verify-hook: true` on that plugin's [Plugin CI](#plugin-ci) caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning. A plugin that has not migrated to Plugin CI cannot have this check: `plugin-phpstan.yml` used to carry it and no longer does, because a drifted hook reporting as red PHPStan was the problem.
+Then set `verify-hook: true` on that plugin's [Plugins CI](#plugins-ci) caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning. A plugin that has not migrated to Plugins CI cannot have this check: `plugin-phpstan.yml` used to carry it and no longer does, because a drifted hook reporting as red PHPStan was the problem.
 
 The comparison is its own `hook-check` job, running `scripts/bash/check_hook_sync.sh`. It used to be a step inside the PHPStan job, which was wrong twice over: a vendored hook drifting is not a finding about the plugin's code, and the comparison ran before the analysis started, so a drift both reported as red PHPStan on two matrix legs and suppressed the analysis that would have told you something real. One consequence of the move: a repository setting both `verify-hook: true` and `skip-phpstan: true` used to get no hook check, because the check lived inside the workflow it was skipping. It now runs, and can fail.
 

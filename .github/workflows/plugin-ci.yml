@@ -1,4 +1,4 @@
-name: Plugin CI
+name: Plugins CI
 
 # The whole pull request check set behind one caller, so a plugin's own workflow carries its name
 # and nothing else, and a check added here reaches every plugin without a pull request against any
