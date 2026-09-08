@@ -139,7 +139,7 @@ jobs:
       - name: Check the pre-push hook matches the canonical copy
         if: ${{ inputs.verify-hook }}
         shell: bash
-        run: bash "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push
+        run: bash "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push "It is not a PHPStan finding and no analysis ran."
 
       - name: checkout matomo for plugin builds
         shell: bash

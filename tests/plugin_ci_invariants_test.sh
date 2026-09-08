@@ -21,10 +21,17 @@ export EDITED_CONSUMERS="ai-checklist caller-concurrency"
 # out, and a switch to turn it off is the hole it exists to close.
 export GUARD_JOBS="caller-concurrency"
 
-# Jobs a caller has to ask for. An opt-in check already has an off switch -- not asking -- so a
-# skip- input beside it would be a second way to say the same thing, and the opt-out default that
-# skip- exists to protect does not apply to a check that runs nowhere by default.
-export OPT_IN_JOBS="hook-check"
+# Jobs a caller has to ask for, and the input each one asks through. An opt-in check already has
+# an off switch -- not asking -- so a skip- input beside it would be a second way to say the same
+# thing, and the opt-out default that skip- exists to protect does not apply to a check that runs
+# nowhere by default. The input is named here because the assertions below pin its polarity and its
+# default, not merely that the job consults something.
+export OPT_IN_JOBS="hook-check:verify-hook"
+
+# The hook check has two placements while the fleet migrates -- a job here, a step in
+# plugin-phpstan.yml for callers that still use it directly -- and the README promises the two
+# cannot disagree because one script is behind both. That is a property of two workflow files.
+export HOOK_SCRIPT="check_hook_sync.sh"
 
 # The invariants parse YAML with PyYAML. It happens to be present on ubuntu-24.04 today, but a
 # check that guards a fleet-wide workflow should not depend on what a runner image ships: it
@@ -35,12 +42,13 @@ if ! python3 -c 'import yaml' 2>/dev/null; then
 fi
 
 python3 - "$WORKFLOW" <<'PY'
-import os, sys, yaml
+import os, re, sys, yaml
 
 workflow_path = sys.argv[1]
 edited_consumers = set(os.environ['EDITED_CONSUMERS'].split())
 guard_jobs = set(os.environ['GUARD_JOBS'].split())
-opt_in_jobs = set(os.environ['OPT_IN_JOBS'].split())
+opt_in_jobs = dict(pair.split(':') for pair in os.environ['OPT_IN_JOBS'].split())
+hook_script = os.environ['HOOK_SCRIPT']
 
 with open(workflow_path) as handle:
     doc = yaml.safe_load(handle)
@@ -151,18 +159,6 @@ for name in sorted(edited_consumers - set(jobs)):
 for name in sorted(guard_jobs - set(jobs)):
     check(f"declared guard job {name} still exists in the workflow", False)
 
-for name in sorted(opt_in_jobs - set(jobs)):
-    check(f"declared opt-in job {name} still exists in the workflow", False)
-
-# An opt-in job that stopped consulting its input would run everywhere, which for verify-hook
-# means failing every plugin that has not synced its hook -- most of them.
-for name in sorted(opt_in_jobs & set(jobs)):
-    condition = str((jobs.get(name) or {}).get('if', ''))
-    check(
-        f"{name} runs only when its caller asks for it",
-        'inputs.' in condition and 'skip-' not in condition,
-    )
-
 # The lanes are also defeated one level down. A workflow the umbrella calls that declared its own
 # group would claim it against the umbrella's -- deadlocking where the names match, and spanning
 # both actions where they do not. Today none of them declares one, and that is exactly the kind of
@@ -196,6 +192,47 @@ for name in jobs:
         check(f"{name} has no skip- input, being opt in already", f"skip-{name}" not in inputs)
     else:
         check(f"{name} has a skip- input", f"skip-{name}" in inputs)
+
+# An opt-in job that stopped consulting its input would run everywhere, which for verify-hook means
+# failing every plugin that has not synced its hook -- most of them.
+for name, input_name in sorted(opt_in_jobs.items()):
+    if name not in jobs:
+        check(f"declared opt-in job {name} still exists in the workflow", False)
+        continue
+
+    condition = str((jobs.get(name) or {}).get('if', ''))
+    # Not a substring test: `!inputs.verify-hook` references the input and inverts the job, which
+    # is the fleet-wide failure this is here to stop.
+    check(
+        f"{name} runs only when the caller sets {input_name}",
+        re.search(r'(?<![!\w.-])inputs\.' + re.escape(input_name) + r'(?![\w-])', condition) is not None,
+    )
+    # And a default of true would redden every caller without a pull request against any of them.
+    check(
+        f"{input_name} defaults to not running {name}",
+        (inputs.get(input_name) or {}).get('default') is False,
+    )
+
+    steps = (jobs.get(name) or {}).get('steps') or []
+    check(
+        f"{name} runs the shared hook sync script",
+        any(hook_script in str(step.get('run', '')) for step in steps if isinstance(step, dict)),
+    )
+
+# The other placement of the same check. Two copies of a ten-line comparison is how the hook this
+# checks came to drift in the first place.
+phpstan_path = os.path.join(os.path.dirname(workflow_path), 'plugin-phpstan.yml')
+with open(phpstan_path) as handle:
+    phpstan_jobs = (yaml.safe_load(handle) or {}).get('jobs') or {}
+phpstan_runs = [
+    str(step.get('run', ''))
+    for job in phpstan_jobs.values() if isinstance(job, dict)
+    for step in (job.get('steps') or []) if isinstance(step, dict)
+]
+check(
+    f"plugin-phpstan.yml runs the same {hook_script}",
+    any(hook_script in run for run in phpstan_runs),
+)
 
 # Opt-out, not opt-in: a skip- input defaulting to true would leave a check running nowhere.
 for name, spec in inputs.items():

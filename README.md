@@ -118,7 +118,7 @@ Analyses the plugin with PHPStan against a checked-out Matomo. By default it run
 | `matomo-targets` | no | min and max | JSON array of `{target, php}` objects, one analysis run each |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the shared helper scripts |
 | `workflows-ref` | no | `main` | Ref of this repository for the pre-push hook and the PHPStan bootstrap |
-| `verify-hook` | no | `false` | Run the `hook-check` job, failing when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/`. Turn it on once that copy has been synced — see [The pre-push hook](#the-pre-push-hook). |
+| `verify-hook` | no | `false` | Fail when the plugin's `.git-hooks-matomo/pre-push` differs from the canonical copy in `hooks/`, as a step before the analysis. Under [Plugin CI](#plugin-ci) the same check is its own `hook-check` job instead. Turn it on once that copy has been synced — see [The pre-push hook](#the-pre-push-hook). |
 
 `TESTS_ACCESS_TOKEN` is an optional secret, needed only when `dependent-plugins` names a private repository.
 
