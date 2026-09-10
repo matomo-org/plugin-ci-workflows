@@ -100,13 +100,18 @@ if [ "$1" = "api" ]; then
       n=$(cat "$STUB_STATE/attempts" 2>/dev/null || echo 0)
       n=$((n + 1)); echo "$n" > "$STUB_STATE/attempts"
       if [ "$n" -le "${DEFAULT_FAILS_N:-0}" ]; then
-        echo "gh: Server Error (HTTP 502)" >&2; exit 1
+        printf '{"message":"Server Error","status":"502"}'
+        echo "gh: Server Error (HTTP 502)" >&2
+        exit 1
       fi
       echo "${DEFAULT_BRANCH:-6.x-dev}"; exit 0 ;;
   esac
 fi
 if [ "$1" = "workflow" ]; then
   if [ -n "${DISPATCH_FAILS:-}" ]; then echo "gh: dispatch refused" >&2; exit 1; fi
+  if [ -n "${DISPATCH_422:-}" ]; then
+    echo "gh: HTTP 422: Workflow does not have workflow_dispatch trigger" >&2; exit 1
+  fi
   n=$(cat "$STUB_STATE/dispatch-attempts" 2>/dev/null || echo 0)
   n=$((n + 1)); echo "$n" > "$STUB_STATE/dispatch-attempts"
   if [ "$n" -le "${DISPATCH_FAILS_N:-0}" ]; then
@@ -151,6 +156,10 @@ run_case() {
     echo "FAIL - $description (dispatched '$dispatched', expected '$want_dispatched')"
     echo "$output"; failures+=("$description"); return
   fi
+  if [ -n "${WANT_ABSENT:-}" ] && [[ "$output" == *"${WANT_ABSENT}"* ]]; then
+    echo "FAIL - $description (output unexpectedly contained '${WANT_ABSENT}')"
+    echo "$output"; failures+=("$description"); return
+  fi
   if [ -n "$want_output" ] && [[ "$output" != *"$want_output"* ]]; then
     echo "FAIL - $description (output did not contain '$want_output')"
     echo "$output"; failures+=("$description"); return
@@ -164,7 +173,8 @@ run_case "the non-default maintained branch is dispatched" 0 '5.x-dev' 'Dispatch
 run_case "the default branch is never dispatched" 0 '6.x-dev' 'Dispatched matomo-tests.yml on 6.x-dev' \
   DEFAULT_BRANCH=5.x-dev
 
-run_case "an absent branch is skipped and stays green" 0 '' '::warning::Skipping 5.x-dev' \
+WANT_ABSENT='Attempt 1 of 3 failed' \
+  run_case "an absent branch is skipped without retrying" 0 '' '::warning::Skipping 5.x-dev' \
   BRANCH_STATUS=404
 
 # The case that matters: an API failure must never read as "nothing to do".
@@ -176,7 +186,7 @@ run_case "a transient default-branch lookup failure is retried" 0 '5.x-dev' 'Att
 
 # Medium 1 of the third review round: the retry was on the lookup only, so a transient failure on
 # either call that carries the weekly cost dropped that branch for the week.
-run_case "a transient branch-probe failure is retried" 0 '5.x-dev' 'checking whether 5.x-dev exists' \
+run_case "a transient branch-probe failure is retried" 0 '5.x-dev' 'branches/5.x-dev' \
   BRANCH_FAILS_N=2
 run_case "a transient dispatch failure is retried" 0 '5.x-dev' 'Dispatched matomo-tests.yml on 5.x-dev' \
   DISPATCH_FAILS_N=2
@@ -203,6 +213,23 @@ OVERRIDE_ENV='unset GH_REPO' \
 # maintained branch including the real default, which is the double build the sweep must not cause.
 run_case "a null default branch is refused" 1 '' '::error::Could not read the default branch' \
   DEFAULT_BRANCH=null
+
+# The input is a string and a caller writing it as a YAML block scalar is natural, so the list has
+# to split on newlines too. `read -ra` took only the first line of a here-string, silently dropping
+# every branch after it -- a branch quietly not built, through this workflow's own input.
+OVERRIDE_ENV=$'MAINTAINED_BRANCHES=\'5.x-dev\n4.x-dev\'' \
+  run_case "a newline-separated branch list is split" 0 '5.x-dev 4.x-dev' 'on 4.x-dev'
+
+# gh writes a failed response body to stdout with no trailing newline, so emitting every attempt's
+# output would splice the error into the real answer on one line. A default branch read as that
+# garbage matches no branch, and the real default gets dispatched along with the rest.
+run_case "a failed attempt does not contaminate the default branch" 0 '5.x-dev' \
+  'Default branch is 6.x-dev' DEFAULT_FAILS_N=1
+
+# A ref carrying no workflow_dispatch trigger will never come good, so it must not burn three
+# backoffs and two misleading retry lines before reporting the real error.
+WANT_ABSENT='Attempt 1 of 3 failed' \
+  run_case "a 422 dispatch is not retried" 1 '' '::error::Could not dispatch' DISPATCH_422=1
 
 # The invariant the workflow calls its reason for existing. Every other case has at most one
 # non-default branch, so a `continue` silently becoming a `break` would leave them all green.

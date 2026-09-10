@@ -27,6 +27,7 @@ on:
       maintained-branches:
         description: >-
           Space-separated branches to keep built, whichever of them is not the default.
+          Whitespace-separated, so a YAML block scalar works as well as one line.
           Deliberately an explicit list rather than every `*.x-dev` branch a repository has:
           most still carry dead 2.x-dev, 3.x-dev and 4.x-dev lines. Dispatching 4.x-dev queues
           for 24 hours and then auto-cancels, because its workflow requests a runner label that
@@ -73,16 +74,35 @@ jobs:
           MAINTAINED_BRANCHES: ${{ inputs.maintained-branches }}
           WORKFLOW_FILE: ${{ inputs.workflow-file }}
         run: |
-          # Retries a transient failure. One attempt is not enough for any call here: this runs
-          # weekly, GitHub does not auto-retry a scheduled run, and nobody watches a cron, so a
-          # single 5xx or secondary rate limit costs that branch a whole week of builds.
-          retry() {
-            local attempt
+          # Runs a command up to three times, emitting only the successful attempt's output.
+          # That last part is load-bearing: gh writes a failed response body to stdout, with no
+          # trailing newline, so returning every attempt's output would let a 404 body run
+          # straight into the real answer on one line. A default branch read as that garbage
+          # matches no branch name, so the real default would be dispatched too -- the double
+          # build this design exists to avoid. RETRY_ERROR carries the last failure's output.
+          #
+          # $1 is a pattern that ends it early, for the failures that will never come good:
+          # backing off three times over a branch that does not exist, or a ref that carries no
+          # workflow_dispatch trigger, is pure delay and two misleading log lines.
+          retry_unless() {
+            # $stop is expanded unquoted below, so it has to be a bare glob: quotes inside it
+            # would be matched as literal characters instead of quoting the pattern, which is
+            # what they do in an inline `case`.
+            local stop="$1" attempt out
+            shift
+            RETRY_ERROR=''
             for attempt in 1 2 3; do
-              if "$@"; then
+              if out=$("$@" 2>&1); then
+                printf '%s\n' "$out"
                 return 0
               fi
-              # stderr, so a caller capturing stdout receives the command's output and not this.
+              RETRY_ERROR="$out"
+              if [ -n "$stop" ]; then
+                # shellcheck disable=SC2254 # $stop is a glob pattern by design
+                case "$out" in
+                  $stop) return 1 ;;
+                esac
+              fi
               echo "Attempt $attempt of 3 failed: $*" >&2
               if [ "$attempt" -lt 3 ]; then
                 sleep $(( attempt * 5 ))
@@ -91,34 +111,12 @@ jobs:
             return 1
           }
 
-          # Sets BRANCH_PROBE_ERROR to the failure text, or leaves it empty when the branch is
-          # simply absent. A 404 is deliberately not retried: an absent branch will not start
-          # existing, and three backoffs each would be pure delay on the repositories that
-          # legitimately maintain only one line.
-          branch_exists() {
-            local branch="$1" attempt out
-            BRANCH_PROBE_ERROR=''
-            for attempt in 1 2 3; do
-              if out=$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .name 2>&1); then
-                return 0
-              fi
-              case "$out" in
-                *"HTTP 404"*)
-                  return 1
-                  ;;
-              esac
-              echo "Attempt $attempt of 3 failed: checking whether $branch exists" >&2
-              if [ "$attempt" -lt 3 ]; then
-                sleep $(( attempt * 5 ))
-              fi
-            done
-            BRANCH_PROBE_ERROR="$out"
-            return 1
-          }
-
           # Read from the API rather than github.event.repository.default_branch, which only the
           # payload-carrying triggers supply: workflow_call makes this callable from any of them.
-          default=$(retry gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch) || default=''
+          if ! default=$(retry_unless '' gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch); then
+            echo "::error::Could not read the default branch, so nothing was dispatched: $RETRY_ERROR"
+            exit 1
+          fi
 
           # --jq prints the string "null" for a field the response does not carry, which an
           # emptiness check alone does not catch.
@@ -129,7 +127,12 @@ jobs:
 
           echo "Default branch is $default; its own schedule builds it."
 
-          read -ra branches <<< "$MAINTAINED_BRANCHES"
+          # Unquoted on purpose, so the list splits on newlines as well as spaces: the input is a
+          # string, and a caller writing it as a YAML block scalar is natural. `read -ra` takes
+          # only the first line of a here-string, which would silently drop every branch after
+          # the first -- a branch quietly not being built, through this workflow's own input.
+          # shellcheck disable=SC2206
+          branches=( $MAINTAINED_BRANCHES )
           dispatched=0
           failed=0
 
@@ -140,23 +143,29 @@ jobs:
 
             # A failure must not stop the loop: one bad branch starving every branch after it is
             # exactly how the previous central sweep went unnoticed for two weekends.
-            if ! branch_exists "$branch"; then
-              if [ -n "$BRANCH_PROBE_ERROR" ]; then
-                echo "::error::Could not check whether $branch exists: $BRANCH_PROBE_ERROR"
-                failed=1
-              else
-                echo "::warning::Skipping $branch: it is listed as maintained but does not exist here."
-              fi
+            if ! retry_unless '*HTTP 404*' \
+              gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .name >/dev/null; then
+              # Only a 404 means the branch is genuinely absent. Reading every error as absence
+              # would report a rate limit or an outage as "nothing to do" and leave the run green.
+              case "$RETRY_ERROR" in
+                *"HTTP 404"*)
+                  echo "::warning::Skipping $branch: it is listed as maintained but does not exist here."
+                  ;;
+                *)
+                  echo "::error::Could not check whether $branch exists: $RETRY_ERROR"
+                  failed=1
+                  ;;
+              esac
               continue
             fi
 
-            if retry gh workflow run "$WORKFLOW_FILE" --ref "$branch"; then
+            if retry_unless '*HTTP 422*' gh workflow run "$WORKFLOW_FILE" --ref "$branch" >/dev/null; then
               echo "Dispatched $WORKFLOW_FILE on $branch."
               # Not (( dispatched++ )), which evaluates to the pre-increment 0 and so exits
               # non-zero on the first success, killing the step under `bash -e`.
               dispatched=$(( dispatched + 1 ))
             else
-              echo "::error::Could not dispatch $WORKFLOW_FILE on $branch."
+              echo "::error::Could not dispatch $WORKFLOW_FILE on $branch: $RETRY_ERROR"
               failed=1
             fi
           done
