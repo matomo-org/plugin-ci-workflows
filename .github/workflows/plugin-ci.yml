@@ -36,8 +36,13 @@ on:
         required: false
         type: boolean
         default: false
+      skip-min-php-lint:
+        description: "Do not run the minimum PHP lint over scoped dependencies"
+        required: false
+        type: boolean
+        default: false
 
-      # --- pass-through, named per check because two of them take a php-version ---
+      # --- pass-through, named per check because three of them take a php-version ---
       phpcs-php-version:
         description: "PHP version for the PHPCS run. PHPCS needs at least 7.4, so matomo5_min_php is too low."
         required: false
@@ -68,6 +73,16 @@ on:
         required: false
         type: boolean
         default: false
+      min-php-lint-path:
+        description: "Directory the minimum PHP lint parses. Skipped when absent, so a plugin with no scoped dependencies needs no opt-out."
+        required: false
+        type: string
+        default: 'vendor/prefixed'
+      min-php-lint-php-version:
+        description: "Override the floor the minimum PHP lint derives from the plugin's composer.json and plugin.json. Accepts a major.minor version such as 8.1, or one of the shared aliases. Leave unset unless the declared floor is wrong."
+        required: false
+        type: string
+        default: ''
 
       # --- refs ---
       scripts-ref:
@@ -76,7 +91,7 @@ on:
         type: string
         default: 'main'
       workflows-ref:
-        description: "Ref of this repository for the pre-push hook, the PHPStan bootstrap and the caller concurrency guard"
+        description: "Ref of this repository for the pre-push hook, the PHPStan bootstrap, the caller concurrency guard and the plugin floor resolver"
         required: false
         type: string
         default: 'main'
@@ -271,6 +286,21 @@ jobs:
       workflows-ref: ${{ inputs.workflows-ref }}
     secrets:
       TESTS_ACCESS_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN }}
+
+  # Its own job rather than a step inside another. Folding a second check into an existing one
+  # is what made hook drift surface as a red PHPStan check that had analysed nothing, and #12
+  # has only just unpicked that. The cost is a job that starts and finds nothing to do in the
+  # plugins with no scoped dependencies, which is seconds and no PHP setup.
+  min-php-lint:
+    if: ${{ !inputs.skip-min-php-lint && github.event.action != 'edited' }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-min-php-lint.yml@main
+    permissions:
+      contents: read
+    with:
+      lint-path: ${{ inputs.min-php-lint-path }}
+      php-version: ${{ inputs.min-php-lint-php-version }}
+      scripts-ref: ${{ inputs.scripts-ref }}
+      workflows-ref: ${{ inputs.workflows-ref }}
 
   license-check:
     if: ${{ !inputs.skip-license-check && github.event.action != 'edited' }}

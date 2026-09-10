@@ -1,0 +1,213 @@
+# Parses a plugin's scoped dependencies against the oldest PHP that tree has to run on.
+#
+# `vendor/prefixed` is prefixed by matomo-scoper but not downgraded -- the scoper deliberately
+# keeps attributes rather than rewriting them away, and ships no rector pass -- so the syntax in
+# there is whatever composer resolved. Nothing else proves that resolution matched the plugin's
+# floor: a file is only parsed when something loads it, so the tests reach whichever prefixed
+# files they happen to exercise, and PHPStan need not reach them at all (GoogleAnalyticsImporter
+# puts `vendor/` under excludePaths.analyse so the prefixed tree does not drown its report).
+#
+# The floor is derived rather than pinned, because it differs per plugin and per branch, and
+# composer.json governs it -- see scripts/bash/resolve_plugin_min_php.sh for the precedence and
+# why plugin.json alone is the wrong source.
+
+name: Minimum PHP lint
+
+on:
+  workflow_call:
+    inputs:
+      lint-path:
+        description: "Directory to parse. Skipped when it does not exist, so this is safe to run on a plugin that ships no scoped dependencies."
+        required: false
+        type: string
+        default: 'vendor/prefixed'
+      php-version:
+        description: "Override the floor derived from the plugin's composer.json and plugin.json. Accepts a major.minor version such as 8.1, or one of the shared aliases. Leave unset unless the declared floor is wrong."
+        required: false
+        type: string
+        default: ''
+      scripts-ref:
+        description: "Ref of matomo-org/github-action-tests to take the version resolver from. Pinning this workflow does not pin that: pass a SHA from that repository, which is a different repository with different SHAs."
+        required: false
+        type: string
+        default: 'main'
+      workflows-ref:
+        description: "Ref of this repository to take the plugin floor resolver from."
+        required: false
+        type: string
+        default: 'main'
+
+permissions:
+  contents: read
+
+jobs:
+  min-php-lint:
+    name: Lint scoped dependencies on minimum PHP
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          # Only the tree being parsed. Cone mode brings the root files regardless, which is
+          # where composer.json and plugin.json are read from. A plugin with no scoped
+          # dependencies then clones almost nothing, which is most of them.
+          sparse-checkout: ${{ inputs.lint-path }}
+          persist-credentials: false
+
+      # Checked before anything is installed: most plugins ship no scoped dependencies, and the
+      # whole job is then a few seconds rather than a PHP setup they never use.
+      - name: Look for scoped dependencies
+        id: look
+        shell: bash
+        env:
+          LINT_PATH: ${{ inputs.lint-path }}
+        run: |
+          if [ -d "$LINT_PATH" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            # A notice rather than a log line: this is the supported no-op for most plugins, but
+            # it is also what a mistyped or newly-gitignored lint-path looks like, and that would
+            # otherwise be green across the fleet with nothing to see.
+            echo "::notice::No $LINT_PATH directory; nothing to lint."
+            echo "No $LINT_PATH directory; nothing to lint." >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Only needed to derive the floor, so skipped entirely when a caller supplies one.
+      - name: Check out plugin-ci-workflows repository
+        if: ${{ steps.look.outputs.present == 'true' && inputs.php-version == '' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+
+      # No GitHub context identifies the called workflow's own commit (verified empirically:
+      # github.job_workflow_sha evaluates to empty), so pinning the resolvers is the caller's
+      # job via scripts-ref and workflows-ref.
+      - name: Check out github-action-tests repository
+        if: ${{ steps.look.outputs.present == 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/github-action-tests
+          ref: ${{ inputs.scripts-ref }}
+          path: .github-action-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+
+      - name: Resolve the plugin's minimum PHP
+        id: resolve
+        if: ${{ steps.look.outputs.present == 'true' }}
+        shell: bash
+        env:
+          PHP_VERSION_INPUT: ${{ inputs.php-version }}
+          WORKFLOWS_REF: ${{ inputs.workflows-ref }}
+          SCRIPTS_REF: ${{ inputs.scripts-ref }}
+          WORKFLOWS_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+          SCRIPTS_CHECKOUT: .github-action-tests-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if [ -n "$PHP_VERSION_INPUT" ]; then
+            floor="$PHP_VERSION_INPUT"
+            source='the php-version override'
+            echo "Using the php-version override: $floor"
+          else
+            # A pinned workflows-ref predating this script would otherwise fail as a bare 127.
+            RESOLVER="$WORKFLOWS_CHECKOUT/scripts/bash/resolve_plugin_min_php.sh"
+            if [ ! -f "$RESOLVER" ]; then
+              echo "::error::workflows-ref '$WORKFLOWS_REF' does not carry scripts/bash/resolve_plugin_min_php.sh. Pin a ref that has it, or pass php-version."
+              exit 1
+            fi
+            notes=$(mktemp)
+            if ! floor=$(bash "$RESOLVER" . 2>"$notes"); then
+              sed 's/^/::error::/' "$notes"
+              rm -f "$notes"
+              exit 1
+            fi
+            # Promoted to an annotation: the resolver calls a disagreement between the manifests
+            # the defect itself, and as plain stderr it was the least visible thing the job emits.
+            sed 's/^Manifests disagree/::warning::Manifests disagree/' "$notes"
+            source=$(sed -n 's/^Floor from \(.*\): .*/\1/p' "$notes" | head -1)
+            rm -f "$notes"
+          fi
+
+          # resolve_php_version.sh turns an alias into a version and passes anything else through
+          # unchanged, so an alias it does not know -- a Matomo major newer than its table --
+          # would arrive at setup-php verbatim. Fail on it here rather than there.
+          ALIAS_RESOLVER="$SCRIPTS_CHECKOUT/scripts/bash/resolve_php_version.sh"
+          if [ ! -f "$ALIAS_RESOLVER" ]; then
+            echo "::error::scripts-ref '$SCRIPTS_REF' does not carry scripts/bash/resolve_php_version.sh."
+            exit 1
+          fi
+          version=$("$ALIAS_RESOLVER" "$floor")
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$floor' is not a usable PHP version. Pass a major.minor version such as 8.1, or a shared alias the table knows."
+            exit 1
+          fi
+
+          # Removed before the lint so a helper checkout can never be mistaken for the plugin's
+          # own code, the way a checkout left in the workspace is picked up by a phpcs.xml
+          # scanning `.`.
+          rm -rf "$WORKFLOWS_CHECKOUT" "$SCRIPTS_CHECKOUT"
+
+          echo "Linting against PHP $version, from ${source:-an unknown source}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source=${source:-an unknown source}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup PHP
+        if: ${{ steps.look.outputs.present == 'true' }}
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ steps.resolve.outputs.version }}
+
+      - name: Lint
+        if: ${{ steps.look.outputs.present == 'true' }}
+        shell: bash
+        env:
+          LINT_PATH: ${{ inputs.lint-path }}
+          PHP_VERSION: ${{ steps.resolve.outputs.version }}
+          PHP_VERSION_SOURCE: ${{ steps.resolve.outputs.source }}
+        run: |
+          # Collected rather than streamed: the exit status of a process substitution is
+          # discarded, so a find that failed partway would leave a green check over a partial
+          # tree -- the same silence the empty-directory warning below exists to prevent.
+          listing=$(mktemp)
+          if ! find "$LINT_PATH" -type f -name '*.php' > "$listing"; then
+            echo "::error::Could not list PHP files under $LINT_PATH."
+            exit 1
+          fi
+
+          status=0
+          files=0
+          while IFS= read -r file; do
+            files=$(( files + 1 ))
+            if ! error=$(php -l "$file" 2>&1); then
+              # A workflow command is parsed one line at a time, and php -l emits the parse error
+              # plus a trailing summary line, so the rest would fall out of the annotation.
+              # % first: GitHub unescapes %25 too, so escaping newlines first would let a literal
+              # %0A in the message come back out as a real newline.
+              escaped="${error//%/%25}"
+              echo "::error file=${file}::${escaped//$'\n'/%0A}"
+              status=1
+            fi
+          done < "$listing"
+          rm -f "$listing"
+
+          # Failing rather than warning, because a green check that parsed nothing reads as
+          # coverage. An absent directory is the supported no-op and skips earlier; a directory
+          # that exists and holds no PHP means lint-path is stale or mistyped.
+          if [ "$files" -eq 0 ]; then
+            echo "::error::$LINT_PATH contains no PHP files, so nothing was linted. Check lint-path."
+            exit 1
+          fi
+          echo "Parsed $files file(s) against PHP $PHP_VERSION."
+
+
+          if [ "$status" -ne 0 ]; then
+            echo "Scoped dependencies do not parse on PHP $PHP_VERSION, taken from $PHP_VERSION_SOURCE."
+            echo "The scoper prefixes but does not downgrade, so re-running it changes nothing."
+            echo "Either the tree was resolved too high -- lower config.platform.php in"
+            echo "composer.json and re-resolve -- or the declared floor is stale, in which case"
+            echo "raise require.php in plugin.json to what the tree actually needs."
+          fi
+          exit "$status"

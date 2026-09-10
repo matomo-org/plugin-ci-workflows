@@ -304,6 +304,14 @@ tests=$((tests + $(printf '%s\n' "$yaml_output" | grep -c '^\(ok\|FAIL\) - ')))
 if [ "$yaml_status" != 0 ]; then
   while IFS= read -r line; do failures+=("${line#FAIL - }"); done \
     < <(printf '%s\n' "$yaml_output" | grep '^FAIL - ')
+  # A traceback exits non-zero and prints no FAIL line -- its output went to stderr, which the
+  # capture above does not take. Without this the greps find nothing and the suite reports
+  # success having asserted none of the invariants, which renaming a step id was enough to cause.
+  if ! printf '%s\n' "$yaml_output" | grep -q '^FAIL - '; then
+    tests=$((tests + 1))
+    echo "FAIL - the workflow invariants block ran to completion (exited $yaml_status)"
+    failures+=("the workflow invariants block ran to completion")
+  fi
 fi
 
 echo

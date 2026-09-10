@@ -58,6 +58,9 @@ jobs:
       - name: Check the branch sweep
         run: bash tests/branch_sweep_test.sh
 
+      - name: Check the minimum PHP lint
+        run: bash tests/min_php_lint_test.sh
+
   codex-review-invariants:
     name: Codex review invariants
     runs-on: ubuntu-24.04
