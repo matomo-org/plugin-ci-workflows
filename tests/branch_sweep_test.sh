@@ -104,6 +104,9 @@ if [ "$1" = "api" ]; then
         echo "gh: Server Error (HTTP 502)" >&2
         exit 1
       fi
+      # A real gh can write to stderr on a call that succeeds -- a token precedence or scope
+      # notice. Merging that into the captured stdout spliced it onto the branch name.
+      if [ -n "${DEFAULT_STDERR:-}" ]; then echo "gh: using token from GH_TOKEN" >&2; fi
       echo "${DEFAULT_BRANCH:-6.x-dev}"; exit 0 ;;
   esac
 fi
@@ -229,6 +232,17 @@ OVERRIDE_ENV=$'MAINTAINED_BRANCHES=\'5.x-dev\n4.x-dev\'' \
 # garbage matches no branch, and the real default gets dispatched along with the rest.
 run_case "a failed attempt does not contaminate the default branch" 0 '5.x-dev' \
   'Default branch is 6.x-dev' DEFAULT_FAILS_N=1
+
+# The same splice from the other direction, and the one the retry fix introduced: a warning on
+# stderr from a call that *succeeded*. Left merged, the default branch reads as garbage, matches
+# nothing, and gets dispatched alongside the rest -- the double build.
+run_case "stderr on a successful read is not spliced in" 0 '5.x-dev' \
+  'Default branch is 6.x-dev' DEFAULT_STDERR=1
+
+# Defence in depth at the consumer: whatever the cause, a value that cannot be a git ref name
+# must stop the run rather than dispatch against it.
+run_case "a default branch that cannot be a ref name is refused" 1 '' \
+  '::error::Could not read the default branch' DEFAULT_BRANCH='6.x-dev {"message":"x"}'
 
 # A ref carrying no workflow_dispatch trigger will never come good, so it must not burn three
 # backoffs and two misleading retry lines before reporting the real error.

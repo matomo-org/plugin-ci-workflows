@@ -88,19 +88,26 @@ jobs:
             # $stop is expanded unquoted below, so it has to be a bare glob: quotes inside it
             # would be matched as literal characters instead of quoting the pattern, which is
             # what they do in an inline `case`.
-            local stop="$1" attempt out
+            local stop="$1" attempt out errors
             shift
             RETRY_ERROR=''
+            errors=$(mktemp)
             for attempt in 1 2 3; do
-              if out=$("$@" 2>&1); then
+              # stderr is captured separately rather than merged: the default-branch read consumes
+              # what this emits, so an otherwise successful gh writing a warning there -- a token
+              # precedence or scope notice, say -- would arrive spliced onto the branch name.
+              if out=$("$@" 2>"$errors"); then
                 printf '%s\n' "$out"
+                rm -f "$errors"
                 return 0
               fi
-              RETRY_ERROR="$out"
+              # Both streams matter on failure: gh puts the message on stderr and the response
+              # body on stdout, and the stop pattern is matched against the message.
+              RETRY_ERROR="$(cat "$errors")$out"
               if [ -n "$stop" ]; then
                 # shellcheck disable=SC2254 # $stop is a glob pattern by design
-                case "$out" in
-                  $stop) return 1 ;;
+                case "$RETRY_ERROR" in
+                  $stop) rm -f "$errors"; return 1 ;;
                 esac
               fi
               echo "Attempt $attempt of 3 failed: $*" >&2
@@ -108,6 +115,7 @@ jobs:
                 sleep $(( attempt * 5 ))
               fi
             done
+            rm -f "$errors"
             return 1
           }
 
@@ -118,12 +126,15 @@ jobs:
             exit 1
           fi
 
-          # --jq prints the string "null" for a field the response does not carry, which an
-          # emptiness check alone does not catch.
-          if [ -z "${default:-}" ] || [ "${default:-}" = null ]; then
-            echo "::error::Could not read the default branch, so nothing was dispatched."
-            exit 1
-          fi
+          # --jq prints the string "null" for a field the response does not carry, and anything
+          # spliced onto the answer carries characters a git ref cannot. All three read as a name
+          # matching no branch, which would leave the real default dispatched alongside the rest.
+          case "${default:-}" in
+            ''|null|*[!A-Za-z0-9._/+-]*)
+              echo "::error::Could not read the default branch, so nothing was dispatched."
+              exit 1
+              ;;
+          esac
 
           echo "Default branch is $default; its own schedule builds it."
 
