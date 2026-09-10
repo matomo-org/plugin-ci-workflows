@@ -309,6 +309,8 @@ jobs:
 
 Two things have to stay in the caller and cannot move here. The `schedule` trigger, because a cron in this repository would fire here rather than in the plugin; keep the minute and hour of the plugin's own `matomo-tests.yml` cron so the fleet stays staggered across the window. And the `actions: write` grant, because permissions can only be maintained or reduced down a call chain and never elevated — a caller that omits it leaves the dispatch unauthorised, which surfaces as a failed run rather than a silent one.
 
+Two preconditions are the caller's to meet, and both fail loudly rather than silently. The workflow being dispatched has to carry a `workflow_dispatch` trigger **on the target ref**, not merely on the default branch, or GitHub rejects the dispatch with a 422 — every workflow `generate:test-action` produces already has one. And this caller file has to be carried onto the new default branch whenever a plugin's default flips, which is the same failure this workflow exists to fix, recurring one level up.
+
 The branch list is deliberately explicit rather than every `*.x-dev` branch a repository has: most still carry dead `2.x-dev`, `3.x-dev` and `4.x-dev` lines. Dispatching `4.x-dev` queues for 24 hours and is then auto-cancelled, because its workflow requests a runner label that no longer exists, and the older two carry no test workflow at all.
 
 ## The pre-push hook

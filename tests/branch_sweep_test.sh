@@ -22,7 +22,7 @@ failures=()
 # Read the step's shell out of the YAML rather than slicing the file by indentation: an awk
 # range over `run: |` silently extracts nothing the day the block moves a level.
 python3 - "$WORKFLOW" "$WORK/sweep.sh" "$WORK/env.sh" <<'PY' || { echo "could not extract the step"; exit 1; }
-import sys, yaml
+import shlex, sys, yaml
 
 doc = yaml.safe_load(open(sys.argv[1]))
 inputs = (doc['on'] if 'on' in doc else doc[True])['workflow_call']['inputs']
@@ -56,7 +56,7 @@ def resolve(value):
 
 with open(sys.argv[3], 'w') as fh:
     for key, value in (step.get('env') or {}).items():
-        fh.write("export %s=%s\n" % (key, repr(resolve(value)).replace('"', '\\"')))
+        fh.write("export %s=%s\n" % (key, shlex.quote(resolve(value))))
 PY
 
 mkdir -p "$WORK/bin"
@@ -72,16 +72,20 @@ EOF
 # can assert which branch was built, not merely that something was.
 cat > "$WORK/bin/gh" <<'EOF'
 #!/bin/bash
-# gh resolves the target repository from GH_REPO or a git remote, never from GITHUB_REPOSITORY.
-# The sweep's job checks nothing out, so without GH_REPO the real gh fails here -- and a stub that
-# ignored that is what let an earlier revision pass with a dispatch that could never have worked.
-if [ -z "${GH_REPO:-}" ]; then
+# Only `gh workflow run` resolves a base repository, from GH_REPO or a git remote, never from
+# GITHUB_REPOSITORY. The `gh api` calls pass fully-qualified paths and need none of it. Failing
+# every subcommand here instead would send the missing-GH_REPO case down the retry-exhaustion
+# path, so it would go red without ever reaching the dispatch it is meant to be about.
+if [ "$1" = "workflow" ] && [ -z "${GH_REPO:-}" ]; then
   echo "failed to run git: fatal: not a git repository (or any of the parent directories): .git" >&2
   exit 1
 fi
 if [ "$1" = "api" ]; then
   case "$2" in
     repos/*/branches/*)
+      if [ "${2##*/}" = "${FAIL_BRANCH:-}" ]; then
+        echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1
+      fi
       case "${BRANCH_STATUS:-200}" in
         404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
         500) echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1 ;;
@@ -175,7 +179,19 @@ OVERRIDE_ENV="MAINTAINED_BRANCHES='6.x-dev'" \
 # The sweep runs without a checkout, so gh has no git remote to infer a repository from. This is
 # the case that would have caught the dispatch failing in every repository at once.
 OVERRIDE_ENV='unset GH_REPO' \
-  run_case "a missing GH_REPO is not silently tolerated" 1 '' 'not a git repository'
+  run_case "a missing GH_REPO fails the dispatch loudly" 1 '' '::error::Could not dispatch'
+
+# `gh api --jq` prints the string "null" for a field the response does not carry, which an
+# emptiness check does not catch. Dispatching against a default read as "null" would build every
+# maintained branch including the real default, which is the double build the sweep must not cause.
+run_case "a null default branch is refused" 1 '' '::error::Could not read the default branch' \
+  DEFAULT_BRANCH=null
+
+# Medium 2: the invariant the workflow calls its reason for existing. Every other case has at most
+# one non-default branch, so a `continue` silently becoming a `break` would leave them all green.
+OVERRIDE_ENV="MAINTAINED_BRANCHES='5.x-dev 4.x-dev'" \
+  run_case "a failure on one branch does not starve the next" 1 '4.x-dev' \
+  '::error::Could not check whether 5.x-dev exists' FAIL_BRANCH=5.x-dev
 
 echo
 echo "$tests tests, ${#failures[@]} failures"

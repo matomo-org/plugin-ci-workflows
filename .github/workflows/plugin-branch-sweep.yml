@@ -52,7 +52,7 @@ permissions:
 # CALLER's workflow name, which collides with a caller group of the same name and GitHub then
 # cancels the run for a concurrency deadlock.
 concurrency:
-  group: plugin-branch-sweep-${{ github.repository }}
+  group: plugin-branch-sweep
   cancel-in-progress: false
 
 jobs:
@@ -65,13 +65,15 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          # gh resolves the target repository from a git remote, and this job deliberately checks
-          # nothing out. GITHUB_REPOSITORY is not consulted, so without this every `gh` call fails
-          # with "not a git repository" -- verified against gh directly.
+          # `gh workflow run` resolves its target repository from GH_REPO or a git remote, and this
+          # job deliberately checks nothing out. GITHUB_REPOSITORY is not consulted. The `gh api`
+          # calls below need none of this, because their paths are already fully qualified.
           GH_REPO: ${{ github.repository }}
           MAINTAINED_BRANCHES: ${{ inputs.maintained-branches }}
           WORKFLOW_FILE: ${{ inputs.workflow-file }}
         run: |
+          # Read from the API rather than github.event.repository.default_branch, which only the
+          # payload-carrying triggers supply: workflow_call makes this callable from any of them.
           # Retried rather than taken once: this runs before the loop, so under `bash -e` a single
           # transient error here would abort the step and starve every branch below.
           for attempt in 1 2 3; do
@@ -82,7 +84,7 @@ jobs:
             fi
           done
 
-          if [ -z "${default:-}" ]; then
+          if [ -z "${default:-}" ] || [ "$default" = null ]; then
             echo "::error::Could not read the default branch, so nothing was dispatched."
             exit 1
           fi
