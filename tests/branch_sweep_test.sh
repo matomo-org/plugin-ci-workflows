@@ -21,13 +21,42 @@ failures=()
 
 # Read the step's shell out of the YAML rather than slicing the file by indentation: an awk
 # range over `run: |` silently extracts nothing the day the block moves a level.
-python3 - "$WORKFLOW" "$WORK/sweep.sh" <<'PY' || { echo "could not extract the run block"; exit 1; }
+python3 - "$WORKFLOW" "$WORK/sweep.sh" "$WORK/env.sh" <<'PY' || { echo "could not extract the step"; exit 1; }
 import sys, yaml
+
 doc = yaml.safe_load(open(sys.argv[1]))
+inputs = (doc['on'] if 'on' in doc else doc[True])['workflow_call']['inputs']
 steps = doc['jobs']['sweep']['steps']
-run = [s['run'] for s in steps if 'run' in s]
-assert len(run) == 1, f"expected exactly one run step, found {len(run)}"
-open(sys.argv[2], 'w').write(run[0])
+step = [s for s in steps if 'run' in s]
+assert len(step) == 1, f"expected exactly one run step, found {len(step)}"
+step = step[0]
+
+open(sys.argv[2], 'w').write(step['run'])
+
+# The step's own `env:` is read from the workflow rather than restated here. Restating it is how
+# an earlier revision of this test passed while the workflow was missing GH_REPO entirely: the
+# harness supplied what the workflow did not, so the suite proved the stub and not the workflow.
+FAKE_REPO = 'matomo-org/plugin-Foo'
+def resolve(value):
+    v = str(value).strip()
+    if not v.startswith('${{'):
+        return v
+    expr = v[3:-2].strip() if v.endswith('}}') else None
+    if expr == 'github.token':
+        return 'test-token'
+    if expr == 'github.repository':
+        return FAKE_REPO
+    if expr and expr.startswith('inputs.'):
+        name = expr[len('inputs.'):]
+        assert name in inputs, f"env references undeclared input {name}"
+        return str(inputs[name]['default'])
+    # Failing here is deliberate: a new expression must be taught to the harness, not silently
+    # resolved to an empty string that makes a case pass for the wrong reason.
+    raise AssertionError(f"harness cannot resolve {v!r}")
+
+with open(sys.argv[3], 'w') as fh:
+    for key, value in (step.get('env') or {}).items():
+        fh.write("export %s=%s\n" % (key, repr(resolve(value)).replace('"', '\\"')))
 PY
 
 mkdir -p "$WORK/bin"
@@ -43,6 +72,13 @@ EOF
 # can assert which branch was built, not merely that something was.
 cat > "$WORK/bin/gh" <<'EOF'
 #!/bin/bash
+# gh resolves the target repository from GH_REPO or a git remote, never from GITHUB_REPOSITORY.
+# The sweep's job checks nothing out, so without GH_REPO the real gh fails here -- and a stub that
+# ignored that is what let an earlier revision pass with a dispatch that could never have worked.
+if [ -z "${GH_REPO:-}" ]; then
+  echo "failed to run git: fatal: not a git repository (or any of the parent directories): .git" >&2
+  exit 1
+fi
 if [ "$1" = "api" ]; then
   case "$2" in
     repos/*/branches/*)
@@ -78,10 +114,15 @@ run_case() {
   mkdir -p "$state"
 
   local output status dispatched
+  # GITHUB_REPOSITORY is supplied by Actions itself rather than by the step, so it is the one
+  # variable the harness is entitled to invent. Everything else comes from the workflow's env.
+  # Single quotes are the point: these expand in the inner shell, after env.sh is sourced.
+  # shellcheck disable=SC2016
   output="$(env PATH="$WORK/bin:$PATH" STUB_STATE="$state" \
-    GITHUB_REPOSITORY='matomo-org/plugin-Foo' WORKFLOW_FILE='matomo-tests.yml' \
-    MAINTAINED_BRANCHES="${MAINTAINED_BRANCHES:-6.x-dev 5.x-dev}" "$@" \
-    bash --noprofile --norc -eo pipefail "$WORK/sweep.sh" 2>&1)"
+    GITHUB_REPOSITORY='matomo-org/plugin-Foo' "$@" \
+    bash --noprofile --norc -eo pipefail -c \
+    'set -a; . "$1"; eval "${OVERRIDE_ENV:-:}"; set +a; exec bash --noprofile --norc -eo pipefail "$2"' \
+    _ "$WORK/env.sh" "$WORK/sweep.sh" 2>&1)"
   status=$?
   dispatched=""
   if [ -f "$state/dispatched" ]; then
@@ -109,7 +150,7 @@ run_case "the non-default maintained branch is dispatched" 0 '5.x-dev' 'Dispatch
 run_case "the default branch is never dispatched" 0 '6.x-dev' 'Dispatched matomo-tests.yml on 6.x-dev' \
   DEFAULT_BRANCH=5.x-dev
 
-run_case "an absent branch is skipped and stays green" 0 '' 'Skipping 5.x-dev' \
+run_case "an absent branch is skipped and stays green" 0 '' '::warning::Skipping 5.x-dev' \
   BRANCH_STATUS=404
 
 # The case that matters: an API failure must never read as "nothing to do".
@@ -128,8 +169,13 @@ run_case "a refused dispatch goes red" 1 '' '::error::Could not dispatch matomo-
 
 # A stale branch list is the way this silently stops working fleet-wide, so it warns rather than
 # passing quietly. A warning and not an error: one maintained line is a legitimate state.
-MAINTAINED_BRANCHES='6.x-dev' \
+OVERRIDE_ENV="MAINTAINED_BRANCHES='6.x-dev'" \
   run_case "a run that dispatches nothing warns" 0 '' '::warning::No non-default maintained branch was dispatched'
+
+# The sweep runs without a checkout, so gh has no git remote to infer a repository from. This is
+# the case that would have caught the dispatch failing in every repository at once.
+OVERRIDE_ENV='unset GH_REPO' \
+  run_case "a missing GH_REPO is not silently tolerated" 1 '' 'not a git repository'
 
 echo
 echo "$tests tests, ${#failures[@]} failures"

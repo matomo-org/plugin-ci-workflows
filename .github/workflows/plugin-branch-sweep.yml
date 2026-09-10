@@ -59,11 +59,16 @@ jobs:
   sweep:
     name: Dispatch builds for non-default branches
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Dispatch
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # gh resolves the target repository from a git remote, and this job deliberately checks
+          # nothing out. GITHUB_REPOSITORY is not consulted, so without this every `gh` call fails
+          # with "not a git repository" -- verified against gh directly.
+          GH_REPO: ${{ github.repository }}
           MAINTAINED_BRANCHES: ${{ inputs.maintained-branches }}
           WORKFLOW_FILE: ${{ inputs.workflow-file }}
         run: |
@@ -72,7 +77,9 @@ jobs:
           for attempt in 1 2 3; do
             default=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch) && break
             echo "Default branch lookup failed (attempt $attempt of 3)."
-            sleep $(( attempt * 5 ))
+            if [ "$attempt" -lt 3 ]; then
+              sleep $(( attempt * 5 ))
+            fi
           done
 
           if [ -z "${default:-}" ]; then
@@ -97,7 +104,7 @@ jobs:
             if ! probe=$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .name 2>&1); then
               case "$probe" in
                 *"HTTP 404"*)
-                  echo "Skipping $branch: the branch does not exist here."
+                  echo "::warning::Skipping $branch: it is listed as maintained but does not exist here."
                   ;;
                 *)
                   echo "::error::Could not check whether $branch exists: $probe"
