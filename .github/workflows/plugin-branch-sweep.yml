@@ -1,0 +1,129 @@
+# Dispatches a plugin's build for every maintained branch that is not its default one.
+#
+# GitHub only ever runs `schedule` from the default branch's copy of a workflow file, so the
+# moment a plugin's default flips (5.x-dev -> 6.x-dev) the older line stops being built and
+# nothing says so. This closes that gap from inside the plugin repository: `workflow_dispatch`
+# is a documented exception to the rule that GITHUB_TOKEN-triggered events create no workflow
+# run, so the caller's own token is enough and no PAT or cross-repository App is involved.
+#
+# Dispatching, rather than building another branch's source from a central definition, is what
+# keeps the result correct and legible: the run uses the target branch's own workflow file --
+# whose test matrix genuinely differs per branch -- and it is attributed to the branch it built,
+# which is what the plugin build dashboard's per-branch badges read.
+#
+# The caller keeps two things that cannot move here. The `schedule` trigger, because a reusable
+# workflow's own cron would fire in this repository rather than the plugin's; and the
+# `actions: write` grant, because permissions can only be maintained or reduced down a call
+# chain, never elevated, so a caller that does not grant it leaves the dispatch unauthorised.
+#
+# One bound on the guarantee: GitHub disables scheduled workflows in a public repository after
+# 60 days without repository activity, which a branch in pure maintenance can reach.
+
+name: Branch sweep
+
+on:
+  workflow_call:
+    inputs:
+      maintained-branches:
+        description: >-
+          Space-separated branches to keep built, whichever of them is not the default.
+          Deliberately an explicit list rather than every `*.x-dev` branch a repository has:
+          most still carry dead 2.x-dev, 3.x-dev and 4.x-dev lines. Dispatching 4.x-dev queues
+          for 24 hours and then auto-cancels, because its workflow requests a runner label that
+          no longer exists, and the older two carry no test workflow at all.
+        required: false
+        type: string
+        default: '6.x-dev 5.x-dev'
+      workflow-file:
+        description: "Workflow file to dispatch in the plugin repository"
+        required: false
+        type: string
+        default: 'matomo-tests.yml'
+
+permissions:
+  actions: write # dispatch the plugin's build workflow
+  contents: read # read the default branch name and check a branch exists
+
+# A manual run overlapping the schedule would dispatch every branch twice, and a plugin's build
+# workflow cancels in progress on its own ref, so the second dispatch would kill the build the
+# first one just started. Queue instead of cancelling: losing a sweep is losing a week.
+#
+# A static prefix, not ${{ github.workflow }}: in a reusable workflow that resolves to the
+# CALLER's workflow name, which collides with a caller group of the same name and GitHub then
+# cancels the run for a concurrency deadlock.
+concurrency:
+  group: plugin-branch-sweep-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Dispatch builds for non-default branches
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Dispatch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAINTAINED_BRANCHES: ${{ inputs.maintained-branches }}
+          WORKFLOW_FILE: ${{ inputs.workflow-file }}
+        run: |
+          # Retried rather than taken once: this runs before the loop, so under `bash -e` a single
+          # transient error here would abort the step and starve every branch below.
+          for attempt in 1 2 3; do
+            default=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch) && break
+            echo "Default branch lookup failed (attempt $attempt of 3)."
+            sleep $(( attempt * 5 ))
+          done
+
+          if [ -z "${default:-}" ]; then
+            echo "::error::Could not read the default branch, so nothing was dispatched."
+            exit 1
+          fi
+
+          echo "Default branch is $default; its own schedule builds it."
+
+          read -ra branches <<< "$MAINTAINED_BRANCHES"
+          dispatched=0
+          failed=0
+
+          for branch in "${branches[@]}"; do
+            if [ "$branch" = "$default" ]; then
+              continue
+            fi
+
+            # Only a 404 means the branch is genuinely absent. Reading every error as absence would
+            # report a rate limit or an outage as "nothing to do" and leave the run green, which is
+            # the silent failure this workflow exists to remove.
+            if ! probe=$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .name 2>&1); then
+              case "$probe" in
+                *"HTTP 404"*)
+                  echo "Skipping $branch: the branch does not exist here."
+                  ;;
+                *)
+                  echo "::error::Could not check whether $branch exists: $probe"
+                  failed=1
+                  ;;
+              esac
+              continue
+            fi
+
+            # A failure must not stop the loop: one bad branch starving every branch after it is
+            # exactly how the previous central sweep went unnoticed for two weekends.
+            if gh workflow run "$WORKFLOW_FILE" --ref "$branch"; then
+              echo "Dispatched $WORKFLOW_FILE on $branch."
+              # Not (( dispatched++ )), which evaluates to the pre-increment 0 and so exits
+              # non-zero on the first success, killing the step under `bash -e`.
+              dispatched=$(( dispatched + 1 ))
+            else
+              echo "::error::Could not dispatch $WORKFLOW_FILE on $branch."
+              failed=1
+            fi
+          done
+
+          # A run that dispatches nothing looks exactly like a working one. Warn rather than fail:
+          # a plugin with only one maintained line is legitimately empty.
+          if [ "$dispatched" -eq 0 ] && [ "$failed" -eq 0 ]; then
+            echo "::warning::No non-default maintained branch was dispatched. Check maintained-branches ($MAINTAINED_BRANCHES) against the branches this repository has."
+          fi
+
+          exit "$failed"
