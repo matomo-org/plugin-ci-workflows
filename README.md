@@ -307,9 +307,11 @@ jobs:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-branch-sweep.yml@main
 ```
 
-Two things have to stay in the caller and cannot move here. The `schedule` trigger, because a cron in this repository would fire here rather than in the plugin; keep the minute and hour of the plugin's own `matomo-tests.yml` cron so the fleet stays staggered across the window. And the `actions: write` grant, because permissions can only be maintained or reduced down a call chain and never elevated — a caller that omits it leaves the dispatch unauthorised, which surfaces as a failed run rather than a silent one.
+Two things have to stay in the caller and cannot move here. The `schedule` trigger, because a cron in this repository would fire here rather than in the plugin — take the minute and hour from the plugin's own `matomo-tests.yml` cron rather than copying the example's, so the fleet stays staggered across the window. And the permissions, because they can only be maintained or reduced down a call chain and never elevated: `actions: write` for the dispatch and `contents: read` for the branch probe, which calls `GET /repos/{owner}/{repo}/branches/{branch}`. A caller that omits either leaves the run failing rather than silently doing nothing.
 
 Two preconditions are the caller's to meet, and both fail loudly rather than silently. The workflow being dispatched has to carry a `workflow_dispatch` trigger **on the target ref**, not merely on the default branch, or GitHub rejects the dispatch with a 422 — every workflow `generate:test-action` produces already has one. And this caller file has to be carried onto the new default branch whenever a plugin's default flips, which is the same failure this workflow exists to fix, recurring one level up.
+
+One bound is worth knowing before adopting this: GitHub disables scheduled workflows in a public repository after 60 days without repository activity. A plugin in pure maintenance is both the case this sweep is for and the case that reaches 60 days, and when the cron is disabled the sweep stops without announcing it — the same shape of silence the section above is about. Re-enabling it is a click in the Actions tab, but nothing prompts you to.
 
 The branch list is deliberately explicit rather than every `*.x-dev` branch a repository has: most still carry dead `2.x-dev`, `3.x-dev` and `4.x-dev` lines. Dispatching `4.x-dev` queues for 24 hours and is then auto-cancelled, because its workflow requests a runner label that no longer exists, and the older two carry no test workflow at all.
 

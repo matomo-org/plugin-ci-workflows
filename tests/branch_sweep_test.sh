@@ -86,6 +86,11 @@ if [ "$1" = "api" ]; then
       if [ "${2##*/}" = "${FAIL_BRANCH:-}" ]; then
         echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1
       fi
+      n=$(cat "$STUB_STATE/branch-attempts" 2>/dev/null || echo 0)
+      n=$((n + 1)); echo "$n" > "$STUB_STATE/branch-attempts"
+      if [ "$n" -le "${BRANCH_FAILS_N:-0}" ]; then
+        echo "gh: Server Error (HTTP 502)" >&2; exit 1
+      fi
       case "${BRANCH_STATUS:-200}" in
         404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
         500) echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1 ;;
@@ -102,6 +107,11 @@ if [ "$1" = "api" ]; then
 fi
 if [ "$1" = "workflow" ]; then
   if [ -n "${DISPATCH_FAILS:-}" ]; then echo "gh: dispatch refused" >&2; exit 1; fi
+  n=$(cat "$STUB_STATE/dispatch-attempts" 2>/dev/null || echo 0)
+  n=$((n + 1)); echo "$n" > "$STUB_STATE/dispatch-attempts"
+  if [ "$n" -le "${DISPATCH_FAILS_N:-0}" ]; then
+    echo "gh: Server Error (HTTP 502)" >&2; exit 1
+  fi
   # `gh workflow run <file> --ref <branch>`, so the ref is the fifth argument
   shift 4; echo "$1" >> "$STUB_STATE/dispatched"; exit 0
 fi
@@ -161,8 +171,15 @@ run_case "an absent branch is skipped and stays green" 0 '' '::warning::Skipping
 run_case "an API failure on the branch check goes red" 1 '' '::error::Could not check whether 5.x-dev exists' \
   BRANCH_STATUS=500
 
-run_case "a transient default-branch lookup failure is retried" 0 '5.x-dev' 'attempt 2 of 3' \
+run_case "a transient default-branch lookup failure is retried" 0 '5.x-dev' 'Attempt 2 of 3 failed' \
   DEFAULT_FAILS_N=2
+
+# Medium 1 of the third review round: the retry was on the lookup only, so a transient failure on
+# either call that carries the weekly cost dropped that branch for the week.
+run_case "a transient branch-probe failure is retried" 0 '5.x-dev' 'checking whether 5.x-dev exists' \
+  BRANCH_FAILS_N=2
+run_case "a transient dispatch failure is retried" 0 '5.x-dev' 'Dispatched matomo-tests.yml on 5.x-dev' \
+  DISPATCH_FAILS_N=2
 
 # Dispatching against a default branch read as empty would target the wrong ref, so it stops.
 run_case "an exhausted default-branch lookup goes red" 1 '' '::error::Could not read the default branch' \
@@ -187,11 +204,62 @@ OVERRIDE_ENV='unset GH_REPO' \
 run_case "a null default branch is refused" 1 '' '::error::Could not read the default branch' \
   DEFAULT_BRANCH=null
 
-# Medium 2: the invariant the workflow calls its reason for existing. Every other case has at most
-# one non-default branch, so a `continue` silently becoming a `break` would leave them all green.
+# The invariant the workflow calls its reason for existing. Every other case has at most one
+# non-default branch, so a `continue` silently becoming a `break` would leave them all green.
 OVERRIDE_ENV="MAINTAINED_BRANCHES='5.x-dev 4.x-dev'" \
   run_case "a failure on one branch does not starve the next" 1 '4.x-dev' \
   '::error::Could not check whether 5.x-dev exists' FAIL_BRANCH=5.x-dev
+
+# The harness above extracts only the step's shell, so the workflow-level guarantees the design
+# rests on are invisible to it: deleting the concurrency block or the actions: write grant leaves
+# every case above green. This repository's convention is that a load-bearing workflow property is
+# a test rather than a comment.
+yaml_output="$(python3 - "$WORKFLOW" <<'YAMLPY'
+import sys, yaml
+
+doc = yaml.safe_load(open(sys.argv[1]))
+failed = []
+
+
+def check(description, condition):
+    print(("ok - " if condition else "FAIL - ") + description)
+    if not condition:
+        failed.append(description)
+
+
+triggers = doc['on'] if 'on' in doc else doc[True]
+check("the sweep is a reusable workflow", 'workflow_call' in triggers)
+
+perms = doc.get('permissions') or {}
+# Without this the dispatch is unauthorised and the whole workflow is decorative.
+check("actions: write is granted", perms.get('actions') == 'write')
+# The branch probe calls GET /repos/{owner}/{repo}/branches/{branch}, which needs Contents read.
+check("contents: read is granted", perms.get('contents') == 'read')
+
+conc = doc.get('concurrency') or {}
+group = str(conc.get('group', ''))
+check("a concurrency group is declared", bool(group))
+# github.workflow resolves to the CALLER's workflow name here, which deadlocks against a caller
+# group of the same name and GitHub cancels the run rather than running it.
+check("the concurrency group carries no expression", '${{' not in group)
+# Superseding a queued sweep drops it, and a dropped sweep is a week of builds for that branch.
+check("the concurrency group queues rather than cancels", conc.get('cancel-in-progress') is False)
+
+step = [s for s in doc['jobs']['sweep']['steps'] if 'run' in s][0]
+# The harness runs the block under `bash -eo pipefail`. Without this the step gets plain `bash -e`,
+# and the harness would be proving different semantics from the ones production uses.
+check("the step declares shell: bash", step.get('shell') == 'bash')
+
+sys.exit(1 if failed else 0)
+YAMLPY
+)"
+yaml_status=$?
+echo "$yaml_output"
+tests=$((tests + $(printf '%s\n' "$yaml_output" | grep -c '^\(ok\|FAIL\) - ')))
+if [ "$yaml_status" != 0 ]; then
+  while IFS= read -r line; do failures+=("${line#FAIL - }"); done \
+    < <(printf '%s\n' "$yaml_output" | grep '^FAIL - ')
+fi
 
 echo
 echo "$tests tests, ${#failures[@]} failures"

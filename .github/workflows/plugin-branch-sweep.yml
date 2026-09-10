@@ -44,13 +44,14 @@ permissions:
   actions: write # dispatch the plugin's build workflow
   contents: read # read the default branch name and check a branch exists
 
-# A manual run overlapping the schedule would dispatch every branch twice, and a plugin's build
-# workflow cancels in progress on its own ref, so the second dispatch would kill the build the
-# first one just started. Queue instead of cancelling: losing a sweep is losing a week.
+# Queued rather than superseded, because losing a sweep is losing a week of builds for that
+# branch. Cancelling would be the wrong trade even though the job is seconds long. (Queueing does
+# not stop a manual run and the schedule both dispatching -- the second sweep runs moments later
+# and re-dispatches -- but a re-dispatched build simply replaces the cancelled one.)
 #
-# A static prefix, not ${{ github.workflow }}: in a reusable workflow that resolves to the
-# CALLER's workflow name, which collides with a caller group of the same name and GitHub then
-# cancels the run for a concurrency deadlock.
+# Named without ${{ github.workflow }}: in a reusable workflow that resolves to the CALLER's
+# workflow name, which collides with a caller group of the same name and GitHub then cancels the
+# run for a concurrency deadlock.
 concurrency:
   group: plugin-branch-sweep
   cancel-in-progress: false
@@ -72,19 +73,56 @@ jobs:
           MAINTAINED_BRANCHES: ${{ inputs.maintained-branches }}
           WORKFLOW_FILE: ${{ inputs.workflow-file }}
         run: |
+          # Retries a transient failure. One attempt is not enough for any call here: this runs
+          # weekly, GitHub does not auto-retry a scheduled run, and nobody watches a cron, so a
+          # single 5xx or secondary rate limit costs that branch a whole week of builds.
+          retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              # stderr, so a caller capturing stdout receives the command's output and not this.
+              echo "Attempt $attempt of 3 failed: $*" >&2
+              if [ "$attempt" -lt 3 ]; then
+                sleep $(( attempt * 5 ))
+              fi
+            done
+            return 1
+          }
+
+          # Sets BRANCH_PROBE_ERROR to the failure text, or leaves it empty when the branch is
+          # simply absent. A 404 is deliberately not retried: an absent branch will not start
+          # existing, and three backoffs each would be pure delay on the repositories that
+          # legitimately maintain only one line.
+          branch_exists() {
+            local branch="$1" attempt out
+            BRANCH_PROBE_ERROR=''
+            for attempt in 1 2 3; do
+              if out=$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .name 2>&1); then
+                return 0
+              fi
+              case "$out" in
+                *"HTTP 404"*)
+                  return 1
+                  ;;
+              esac
+              echo "Attempt $attempt of 3 failed: checking whether $branch exists" >&2
+              if [ "$attempt" -lt 3 ]; then
+                sleep $(( attempt * 5 ))
+              fi
+            done
+            BRANCH_PROBE_ERROR="$out"
+            return 1
+          }
+
           # Read from the API rather than github.event.repository.default_branch, which only the
           # payload-carrying triggers supply: workflow_call makes this callable from any of them.
-          # Retried rather than taken once: this runs before the loop, so under `bash -e` a single
-          # transient error here would abort the step and starve every branch below.
-          for attempt in 1 2 3; do
-            default=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch) && break
-            echo "Default branch lookup failed (attempt $attempt of 3)."
-            if [ "$attempt" -lt 3 ]; then
-              sleep $(( attempt * 5 ))
-            fi
-          done
+          default=$(retry gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch) || default=''
 
-          if [ -z "${default:-}" ] || [ "$default" = null ]; then
+          # --jq prints the string "null" for a field the response does not carry, which an
+          # emptiness check alone does not catch.
+          if [ -z "${default:-}" ] || [ "${default:-}" = null ]; then
             echo "::error::Could not read the default branch, so nothing was dispatched."
             exit 1
           fi
@@ -100,25 +138,19 @@ jobs:
               continue
             fi
 
-            # Only a 404 means the branch is genuinely absent. Reading every error as absence would
-            # report a rate limit or an outage as "nothing to do" and leave the run green, which is
-            # the silent failure this workflow exists to remove.
-            if ! probe=$(gh api "repos/$GITHUB_REPOSITORY/branches/$branch" --jq .name 2>&1); then
-              case "$probe" in
-                *"HTTP 404"*)
-                  echo "::warning::Skipping $branch: it is listed as maintained but does not exist here."
-                  ;;
-                *)
-                  echo "::error::Could not check whether $branch exists: $probe"
-                  failed=1
-                  ;;
-              esac
+            # A failure must not stop the loop: one bad branch starving every branch after it is
+            # exactly how the previous central sweep went unnoticed for two weekends.
+            if ! branch_exists "$branch"; then
+              if [ -n "$BRANCH_PROBE_ERROR" ]; then
+                echo "::error::Could not check whether $branch exists: $BRANCH_PROBE_ERROR"
+                failed=1
+              else
+                echo "::warning::Skipping $branch: it is listed as maintained but does not exist here."
+              fi
               continue
             fi
 
-            # A failure must not stop the loop: one bad branch starving every branch after it is
-            # exactly how the previous central sweep went unnoticed for two weekends.
-            if gh workflow run "$WORKFLOW_FILE" --ref "$branch"; then
+            if retry gh workflow run "$WORKFLOW_FILE" --ref "$branch"; then
               echo "Dispatched $WORKFLOW_FILE on $branch."
               # Not (( dispatched++ )), which evaluates to the pre-increment 0 and so exits
               # non-zero on the first success, killing the step under `bash -e`.
