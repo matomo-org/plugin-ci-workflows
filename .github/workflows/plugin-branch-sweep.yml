@@ -26,8 +26,8 @@ on:
     inputs:
       maintained-branches:
         description: >-
-          Space-separated branches to keep built, whichever of them is not the default.
-          Whitespace-separated, so a YAML block scalar works as well as one line.
+          Whitespace-separated branches to keep built, whichever of them is not the default,
+          so a YAML block scalar works as well as a single line.
           Deliberately an explicit list rather than every `*.x-dev` branch a repository has:
           most still carry dead 2.x-dev, 3.x-dev and 4.x-dev lines. Dispatching 4.x-dev queues
           for 24 hours and then auto-cancels, because its workflow requests a runner label that
@@ -134,6 +134,7 @@ jobs:
           # shellcheck disable=SC2206
           branches=( $MAINTAINED_BRANCHES )
           dispatched=0
+          absent=0
           failed=0
 
           for branch in "${branches[@]}"; do
@@ -149,7 +150,8 @@ jobs:
               # would report a rate limit or an outage as "nothing to do" and leave the run green.
               case "$RETRY_ERROR" in
                 *"HTTP 404"*)
-                  echo "::warning::Skipping $branch: it is listed as maintained but does not exist here."
+                  echo "::notice::Skipping $branch: it is listed as maintained but does not exist here."
+                  absent=$(( absent + 1 ))
                   ;;
                 *)
                   echo "::error::Could not check whether $branch exists: $RETRY_ERROR"
@@ -170,9 +172,11 @@ jobs:
             fi
           done
 
-          # A run that dispatches nothing looks exactly like a working one. Warn rather than fail:
-          # a plugin with only one maintained line is legitimately empty.
-          if [ "$dispatched" -eq 0 ] && [ "$failed" -eq 0 ]; then
+          # A run that dispatches nothing looks exactly like a working one, so say so -- but only
+          # when an absent branch does not already explain it. A plugin with a single maintained
+          # line reaches this every week by design, and warning at it weekly is how the annotation
+          # stops being read. Naming nothing but the default is a real misconfiguration.
+          if [ "$dispatched" -eq 0 ] && [ "$failed" -eq 0 ] && [ "$absent" -eq 0 ]; then
             echo "::warning::No non-default maintained branch was dispatched. Check maintained-branches ($MAINTAINED_BRANCHES) against the branches this repository has."
           fi
 

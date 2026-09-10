@@ -287,7 +287,7 @@ It dispatches rather than building another branch's source from here, which matt
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `maintained-branches` | no | `6.x-dev 5.x-dev` | Space-separated branches to keep built, whichever of them is not the default |
+| `maintained-branches` | no | `6.x-dev 5.x-dev` | Whitespace-separated branches to keep built, whichever of them is not the default. A YAML block scalar works as well as a single line |
 | `workflow-file` | no | `matomo-tests.yml` | Workflow file to dispatch in the plugin repository |
 
 ```yaml
@@ -307,7 +307,9 @@ jobs:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-branch-sweep.yml@main
 ```
 
-Two things have to stay in the caller and cannot move here. The `schedule` trigger, because a cron in this repository would fire here rather than in the plugin — take the minute and hour from the plugin's own `matomo-tests.yml` cron rather than copying the example's, so the fleet stays staggered across the window. And the permissions, because they can only be maintained or reduced down a call chain and never elevated: `actions: write` for the dispatch and `contents: read` for the branch probe, which calls `GET /repos/{owner}/{repo}/branches/{branch}`. A caller that omits either leaves the run failing rather than silently doing nothing.
+Three things are the caller's. Two of them cannot move here. The `schedule` trigger, because a cron in this repository would fire here rather than in the plugin — take the minute and hour from the plugin's own `matomo-tests.yml` cron rather than copying the example's, so the fleet stays staggered across the window. And the permissions, because they can only be maintained or reduced down a call chain and never elevated: `actions: write` for the dispatch and `contents: read` for the branch probe, which calls `GET /repos/{owner}/{repo}/branches/{branch}`. A caller that omits either leaves the run failing rather than silently doing nothing.
+
+The third is a prohibition rather than a requirement: **the caller must declare no `concurrency` block of its own.** Concurrency governs the run and the run belongs to the caller, so a caller-level group replaces the queueing this workflow declares — and because the names never match, GitHub raises no deadlock error to say so. `cancel-in-progress: true` there would let a later run supersede a queued sweep, which costs that branch a week.
 
 Two preconditions are the caller's to meet, and both fail loudly rather than silently. The workflow being dispatched has to carry a `workflow_dispatch` trigger **on the target ref**, not merely on the default branch, or GitHub rejects the dispatch with a 422 — every workflow `generate:test-action` produces already has one. And this caller file has to be carried onto the new default branch whenever a plugin's default flips, which is the same failure this workflow exists to fix, recurring one level up.
 

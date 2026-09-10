@@ -174,7 +174,7 @@ run_case "the default branch is never dispatched" 0 '6.x-dev' 'Dispatched matomo
   DEFAULT_BRANCH=5.x-dev
 
 WANT_ABSENT='Attempt 1 of 3 failed' \
-  run_case "an absent branch is skipped without retrying" 0 '' '::warning::Skipping 5.x-dev' \
+  run_case "an absent branch is skipped without retrying" 0 '' '::notice::Skipping 5.x-dev' \
   BRANCH_STATUS=404
 
 # The case that matters: an API failure must never read as "nothing to do".
@@ -201,7 +201,11 @@ run_case "a refused dispatch goes red" 1 '' '::error::Could not dispatch matomo-
 # A stale branch list is the way this silently stops working fleet-wide, so it warns rather than
 # passing quietly. A warning and not an error: one maintained line is a legitimate state.
 OVERRIDE_ENV="MAINTAINED_BRANCHES='6.x-dev'" \
-  run_case "a run that dispatches nothing warns" 0 '' '::warning::No non-default maintained branch was dispatched'
+  run_case "a list naming only the default warns" 0 '' '::warning::No non-default maintained branch was dispatched'
+
+WANT_ABSENT='::warning::No non-default maintained branch was dispatched' \
+  run_case "one maintained line does not warn every week" 0 '' '::notice::Skipping 6.x-dev' \
+  DEFAULT_BRANCH=5.x-dev BRANCH_STATUS=404
 
 # The sweep runs without a checkout, so gh has no git remote to infer a repository from. This is
 # the case that would have caught the dispatch failing in every repository at once.
