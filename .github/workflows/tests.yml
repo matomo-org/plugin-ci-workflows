@@ -52,6 +52,12 @@ jobs:
       - name: Check the pre-push hook sync check
         run: bash tests/hook_sync_test.sh
 
+      # Same reasoning as the two above: it lands inside a check `main` already requires. It also
+      # needs PyYAML, which this job has already installed, to read the sweep's shell out of the
+      # workflow rather than slicing the file by indentation.
+      - name: Check the branch sweep
+        run: bash tests/branch_sweep_test.sh
+
   codex-review-invariants:
     name: Codex review invariants
     runs-on: ubuntu-24.04

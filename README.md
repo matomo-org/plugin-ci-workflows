@@ -35,6 +35,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
+| [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
 ### Plugins CI
@@ -277,6 +278,44 @@ Who can start a review: the label is a trigger, not an authorisation check. Anyo
 Refs into our own organisations — the review actions and the agent skills — track `main` on purpose, as they do elsewhere in this repository. Third-party actions are pinned to a full commit SHA. The distinction matters more here than in the other workflows, because these jobs hold `OPENAI_API_KEY`, `TESTS_ACCESS_TOKEN` and write permission on the calling repository, so a change to either of those repositories takes effect on the next review with those credentials in scope. Pin `review-actions-ref` and `matomo-agent-skills-ref` to SHAs for a caller that needs that fixed.
 
 The security model, the trust boundaries and the review prompt are documented in `review/README.md` in the review actions repository.
+
+### Branch sweep
+
+GitHub only ever runs `schedule` from the default branch's copy of a workflow file. So the moment a plugin's default flips from `5.x-dev` to `6.x-dev`, the older line stops getting a weekly build and nothing announces it — the dashboard badge simply keeps showing an ageing run. This dispatches that build from inside the plugin repository, on the repository's own token: `workflow_dispatch` is a documented exception to the rule that GITHUB_TOKEN-triggered events create no workflow run, so no PAT and no cross-repository App is involved.
+
+It dispatches rather than building another branch's source from here, which matters twice over. The run uses the target branch's own workflow file, whose test matrix genuinely differs per branch (`matomo5_min_php` against `matomo6_min_php`, and different dependent plugins), and the run is attributed to the branch it built, which is what the build dashboard's per-branch badges read.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `maintained-branches` | no | `6.x-dev 5.x-dev` | Whitespace-separated branches to keep built, whichever of them is not the default. A YAML block scalar works as well as a single line |
+| `workflow-file` | no | `matomo-tests.yml` | Workflow file to dispatch in the plugin repository |
+
+```yaml
+name: Weekly branch sweep
+on:
+  schedule:
+    - cron: '5 3 * * 0'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  sweep:
+    permissions:
+      actions: write
+      contents: read
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-branch-sweep.yml@main
+```
+
+Three things are the caller's. Two of them cannot move here. The `schedule` trigger, because a cron in this repository would fire here rather than in the plugin — take the minute and hour from the plugin's own `matomo-tests.yml` cron rather than copying the example's, so the fleet stays staggered across the window. And the permissions, because they can only be maintained or reduced down a call chain and never elevated: `actions: write` for the dispatch and `contents: read` for the branch probe, which calls `GET /repos/{owner}/{repo}/branches/{branch}`. A caller that omits either leaves the run failing rather than silently doing nothing.
+
+The third is a prohibition rather than a requirement: **the caller must declare no `concurrency` block of its own.** Concurrency governs the run and the run belongs to the caller, so a caller-level group replaces the queueing this workflow declares — and because the names never match, GitHub raises no deadlock error to say so. `cancel-in-progress: true` there would let a later run supersede a queued sweep, which costs that branch a week.
+
+Two preconditions are the caller's to meet, and both fail loudly rather than silently. The workflow being dispatched has to carry a `workflow_dispatch` trigger **on the target ref**, not merely on the default branch, or GitHub rejects the dispatch with a 422 — every workflow `generate:test-action` produces already has one. And this caller file has to be carried onto the new default branch whenever a plugin's default flips, which is the same failure this workflow exists to fix, recurring one level up.
+
+One bound is worth knowing before adopting this: GitHub disables scheduled workflows in a public repository after 60 days without repository activity. A plugin in pure maintenance is both the case this sweep is for and the case that reaches 60 days, and when the cron is disabled the sweep stops without announcing it — the same shape of silence the section above is about. Re-enabling it is a click in the Actions tab, but nothing prompts you to.
+
+The branch list is deliberately explicit rather than every `*.x-dev` branch a repository has: most still carry dead `2.x-dev`, `3.x-dev` and `4.x-dev` lines. Dispatching `4.x-dev` queues for 24 hours and is then auto-cancelled, because its workflow requests a runner label that no longer exists, and the older two carry no test workflow at all.
 
 ## The pre-push hook
 
