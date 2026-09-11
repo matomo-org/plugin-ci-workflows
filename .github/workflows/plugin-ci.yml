@@ -145,8 +145,10 @@ jobs:
     # request carries, but it is not unconditionally safe: a caller subscribing to both
     # `pull_request` and `push: branches: ['**.x-dev']` puts two runs on one commit when the pull
     # request's own head branch matches that filter -- a forward-merge from 5.x-dev, say -- and the
-    # push run skips this gate. Unmeasured, and it needs the caller's filter to match a head
-    # branch, so it is recorded rather than worked around.
+    # push run skips this gate. Measured on a probe, twice: GitHub created the `pull_request` run
+    # three to four seconds AFTER the `push` run, on the pull request being opened and on a later
+    # push to it, so the failing suite was the newest and the verdict held. That ordering is not
+    # documented and the margin is seconds, so this is recorded rather than relied on.
     if: ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request' }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ai-checklist.yml@main
     permissions:
