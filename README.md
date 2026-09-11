@@ -290,6 +290,8 @@ Lowest rather than first-found, and OAuth2 is why. It declares `>=8.1.0` in `plu
 
 When it fails, the fix is composer-side. Re-running the scoper re-prefixes the same code and produces the same failure; align `config.platform.php` with the floor and re-resolve.
 
+**What it catches, and what it cannot.** `php -l` reports what the parser rejects, so at an 8.x floor it catches syntax the older 8.x does not know. At a 7.2 or 7.4 floor it is blinder than the paragraph above implies: `#[Attr]` written on one line is a `#` comment to PHP 7, so the parser accepts it silently, and only a multi-line attribute argument list — where the continuation is no longer commented out — produces an error. So the attribute case that motivates this check is caught on the 8.x branches and, on the 5.x ones, only in its multi-line form. Nothing short of a real static parse would close that, and this check is deliberately not one.
+
 Running it costs nothing on a plugin with no scoped dependencies: the job checks for the directory before it installs anything, so it finishes in seconds without setting up PHP.
 
 | Input | Required | Default | Description |
@@ -298,6 +300,8 @@ Running it costs nothing on a plugin with no scoped dependencies: the job checks
 | `php-version` | no | derived | Override the floor derived from `composer.json` and `plugin.json`. A `major.minor` version such as `8.1`, or a shared alias |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the alias resolver |
 | `workflows-ref` | no | `main` | Ref of this repository for the plugin floor resolver |
+
+There is no per-file ignore list, so one vendored file that legitimately targets a newer PHP fails the whole job. The intended escape hatch is `min-php-lint-php-version`, which lowers the bar for the whole tree, or `skip-min-php-lint` to stand the check down entirely — both deliberate and both visible in the caller, which a silent per-file exemption would not be.
 
 It runs as part of [Plugins CI](#plugins-ci), so a plugin calling that gets it already; `skip-min-php-lint` opts out. Call it directly only if you are not using the umbrella.
 

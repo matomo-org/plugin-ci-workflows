@@ -12,6 +12,15 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RESOLVER="$ROOT/scripts/bash/resolve_plugin_min_php.sh"
 WORKFLOW="$ROOT/.github/workflows/plugin-min-php-lint.yml"
+# The lint step and the harness below both shell out to php. ubuntu-24.04 ships 8.3 today, but a
+# check guarding a fleet-wide workflow should not rest on what a runner image happens to carry --
+# the same reason plugin_ci_invariants_test.sh fails closed without PyYAML. Without this the suite
+# reports `expected exit 0, got 1` and never says why.
+if ! command -v php >/dev/null 2>&1; then
+  echo "FAIL - php is not available, so the lint step cannot be exercised"
+  exit 1
+fi
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -67,8 +76,25 @@ resolves "a declared 7.4 floor is not rounded up" \
   '{"require":{"php":">=7.4.0","matomo":">=5.0.0-stable,<6.0.0-b1"}}' '7.4'
 resolves "an upper bound does not become the floor" \
   '{"require":{"php":">=7.2.5 <9"}}' '7.2'
+# The case above passed under the old first-token regex only because `>=` happened to come first.
+# These three did not: a union written high-first linted a minor too high, and a bare upper bound
+# became a floor out of nothing.
+resolves "a union takes its lowest branch, whichever is written first" \
+  '{"require":{"php":"^8.0 || ^7.4"}}' '7.4'
+resolves "a union takes its lowest branch, low written first" \
+  '{"require":{"php":"^7.4 || ^8.0"}}' '7.4'
+resolves "an upper bound alone is no floor at all" \
+  '{"require":{"php":"<8.0"}}' ''
 resolves "a caret range floors at the version it names" \
   '{"require":{"php":"^8.1"}}' '8.1'
+# A hand-written manifest carries a caret or a tilde, not the generator's `>=`. Matching only
+# `>=` failed these outright, and they are the population that reaches the Matomo fallback.
+resolves "a caret Matomo constraint reaches the Matomo floor" \
+  '{"require":{"matomo":"^5.0"}}' 'matomo5_min_php'
+resolves "a tilde Matomo constraint reaches the Matomo floor" \
+  '{"require":{"matomo":"~5.0"}}' 'matomo5_min_php'
+resolves "the Matomo upper bound is not mistaken for the floor" \
+  '{"require":{"matomo":">=5.0.0-rc5,<6.0.0-b1"}}' 'matomo5_min_php'
 # GoogleAnalyticsImporter and SearchEngineKeywordsPerformance declare no require.php.
 resolves "no declared floor falls back to the Matomo major" \
   '{"require":{"matomo":">=5.0.0-rc5,<6.0.0-b1"}}' 'matomo5_min_php'

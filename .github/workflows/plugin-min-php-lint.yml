@@ -172,7 +172,11 @@ jobs:
           # discarded, so a find that failed partway would leave a green check over a partial
           # tree -- the same silence the empty-directory warning below exists to prevent.
           listing=$(mktemp)
-          if ! find "$LINT_PATH" -type f -name '*.php' > "$listing"; then
+          # -H, because the probe above uses `[ -d ]`, which follows a symlink, while a bare
+          # `find` does not follow a symlinked starting point. A committed `vendor/prefixed`
+          # symlink would otherwise probe as present, list nothing, and fail with "contains no PHP
+          # files. Check lint-path" -- pointing the maintainer at the one thing that is correct.
+          if ! find -H "$LINT_PATH" -type f -name '*.php' > "$listing"; then
             echo "::error::Could not list PHP files under $LINT_PATH."
             exit 1
           fi
