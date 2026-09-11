@@ -3,10 +3,10 @@
 # Usage: check_hook_sync.sh <canonical-hook> <plugin-hook>
 #
 # Copying a file into N repositories means it starts rotting the moment the source changes, so
-# `verify-hook` turns that silent drift into a failure. What it must not do is look like a finding
+# this check turns that silent drift into a failure -- through Plugins CI that is `verify-hook`. What it must not do is look like a finding
 # about the plugin's code: it used to run inside the PHPStan job, before the analysis started, so a
 # drifted hook both reported as red PHPStan on two matrix legs and suppressed the analysis that
-# would have told you something real. Hence its own job, and hence the annotations below.
+# would have told you something real. Hence its own workflow, and hence the annotations below.
 set -u
 
 CANONICAL="${1:-}"
@@ -25,7 +25,7 @@ fi
 # diff exits 2 rather than 1 for a missing operand, and every non-zero status takes the same
 # branch, so without this the drift message below would describe a file that is not there.
 if [ ! -f "$PLUGIN_HOOK" ]; then
-  echo "::error::verify-hook is on for this plugin but it ships no $PLUGIN_HOOK. Either copy hooks/pre-push from matomo-org/plugin-ci-workflows into place, or turn verify-hook off and point core.hooksPath at that repository instead."
+  echo "::error::The hook check is running but this plugin ships no $PLUGIN_HOOK. Either copy hooks/pre-push from matomo-org/plugin-ci-workflows into place, or stop running the check -- through Plugins CI that is verify-hook -- and point core.hooksPath at that repository instead."
   exit 1
 fi
 
