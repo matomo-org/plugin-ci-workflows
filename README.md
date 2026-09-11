@@ -33,6 +33,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
+| [`plugin-hook-check.yml`](#hook-check) | Reusable workflow | Fails when a plugin's vendored pre-push hook has drifted from the copy here |
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
@@ -73,15 +74,17 @@ The AI checklist gate is the one job that cannot run outside a pull request — 
 
 Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check`, `skip-min-php-lint` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the three that take a PHP version are named `phpcs-php-version`, `phpstan-php-version` and `min-php-lint-php-version`.
 
-The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description. Consuming that action is opt **in** per job, so the code checks ignore it rather than re-analysing an unchanged tree, and a check added later ignores it too unless its author decides otherwise. `tests/plugin_ci_invariants_test.sh` enforces both defaults.
+The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description, and **every check runs on that event like any other**. Skipping the code checks on an edit is the obvious economy and it is the one thing this workflow must not do: a run whose checks are all skipped concludes `success`, and GitHub resolves a commit's verdict from the newest check suite per workflow, ordered by suite *creation* time — so the edited run's green suite replaces the code run's verdict, while the analysis is still running, and still after it fails. Nine of the fleet's migration pull requests had a red license check hidden that way before this was found. `tests/plugin_ci_invariants_test.sh` fails the build if any job conditions itself on `github.event.action`.
 
-**The caller declares no `concurrency` of its own.** This workflow declares it instead, in two lanes: a push supersedes an earlier push, while a description edit only supersedes an earlier edit. One shared lane looks tidier and is wrong — an `edited` run skips every code check, so superseding a push's run with it cancels the analysis and puts nothing in its place, which on UsersFlow#135 killed both PHPStan jobs mid-checkout and left the check red for a reason nothing on the pull request explained. The [Codex review](#codex-review) wrapper hit two different concurrency failures — a `${{ github.workflow }}` group deadlocking against the caller's, and a group claimed by an unrelated label event — but all three have the same answer: the group belongs in the workflow that knows what its own runs do, not in each caller.
+The price is one extra run of these checks per description edit, around three minutes of runner, and — because one lane means an edit supersedes a run in flight — an edit made while the analysis is still going discards it and starts again. Filling in the AI checklist just after opening a pull request is exactly that shape, so expect the verdict to restart once or twice. The test matrix lives in `matomo-tests.yml`, which does not subscribe to `edited`, so it never re-runs for this.
 
-The checklist gate then needs a third lane of its own, at the job level, because it runs in *both* of the others and a race there changes the answer. A push and a description edit produce two checklist runs against the same commit — an edit changes no commit — and the status a pull request displays is whichever check run of that name finished last. Under runner contention that can be the run that read the *old* description: red, with nothing left to re-trigger it. Its own lane spanning both means any checklist run supersedes any other, so the verdict on show is always the newest description's.
+**The caller declares no `concurrency` of its own.** This workflow declares it instead, as one lane per pull request. It was briefly two — a code lane and an edited lane — to stop an edit cancelling an in-flight analysis, as happened on UsersFlow#135. That was the wrong fix for the right problem: it stopped the cancellation and left the masking above. With every run doing the whole check set, one lane is correct, because a run that supersedes another has checked the same things. The [Codex review](#codex-review) wrapper hit two different concurrency failures — a `${{ github.workflow }}` group deadlocking against the caller's, and a group claimed by an unrelated label event — but all of these have the same answer: the group belongs in the workflow that knows what its own runs do, not in each caller.
+
+No job declares a lane of its own. The checklist gate used to, so that it could span the two workflow-level lanes and stop a stale verdict landing last; with one lane the workflow-level group already does that, and a second group would only give two runs of a commit a side door to disagree through. The invariants enforce this too.
 
 **Migrating a plugin off a standalone [AI checklist](#ai-checklist) workflow is where this bites:** that file rightly carries its own `concurrency`, and renaming it to `ci.yml` carries the block along with it, unnoticed. Delete the block as part of the rename.
 
-The `caller-concurrency` job checks that you did, rather than leaving it to this paragraph. It reads the calling workflow — on a pull request, the merge ref's copy, which is the one whose group governed the run — and fails when that file declares a group of its own, at the top level or on the job that calls Plugins CI. A group on any other job in the file cancels only that job, so it is the caller's own business and passes. The job runs in both lanes, because the run it exists to catch is the one the caller's group cancelled, and it has no `skip-` input: a caller can always satisfy it by deleting the block, and a switch would reopen the hole it closes. `scripts/bash/check_caller_concurrency.sh` is the check; `tests/caller_concurrency_test.sh` holds it in both directions, since a false positive here reddens the fleet.
+The `caller-concurrency` job checks that you did, rather than leaving it to this paragraph. It reads the calling workflow — on a pull request, the merge ref's copy, which is the one whose group governed the run — and fails when that file declares a group of its own, at the top level or on the job that calls Plugins CI. A group on any other job in the file cancels only that job, so it is the caller's own business and passes. It has no `skip-` input: a caller can always satisfy it by deleting the block, and a switch would reopen the hole it closes. `scripts/bash/check_caller_concurrency.sh` is the check; `tests/caller_concurrency_test.sh` holds it in both directions, since a false positive here reddens the fleet.
 
 The permissions above are the union of what the checks need. That is the cost of one caller: a plugin that only wants PHPCS previously needed no scopes at all.
 
@@ -183,6 +186,23 @@ jobs:
 
 The check script lives at `scripts/bash/license_check.sh` and is covered by `tests/license_check_test.sh`, which runs on every pull request to this repository.
 
+### Hook check
+
+Fails when the plugin's vendored `.git-hooks-matomo/pre-push` differs from the canonical copy in this repository, so a copy taken once cannot drift unnoticed. Called from [Plugins CI](#plugins-ci) through `verify-hook`, which is off by default; see [Keeping a plugin's copy in sync](#keeping-a-plugins-copy-in-sync) for what to do before turning it on.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `workflows-ref` | no | `main` | Ref of this repository to take `hooks/pre-push` and `check_hook_sync.sh` from. When pinning the workflow to a SHA, pass the same SHA here. |
+
+```yaml
+name: Hook check
+on: pull_request
+
+jobs:
+  hook-check:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-hook-check.yml@main
+```
+
 ### AI checklist
 
 Runs [`github-action-checklist-gate`](https://github.com/matomo-org/github-action-checklist-gate) against the pull request description, which is what enforces the two AI attestation items in the pull request template. No inputs.
@@ -210,7 +230,7 @@ jobs:
 
 The `edited` trigger matters: without it the gate does not re-run when someone fills the checklist in, and the check stays red.
 
-The single `concurrency` group is right here and only here, because every run of this workflow does the same thing — re-read the description — so a later run always supersedes an earlier one safely. That stops being true the moment the same file also runs code checks, so drop the block when folding this workflow into [Plugins CI](#plugins-ci) — which fails the run if you do not.
+The single `concurrency` group is right here, because every run of this workflow does the same thing — re-read the description — so a later run always supersedes an earlier one safely. Drop the block when folding this workflow into [Plugins CI](#plugins-ci), which declares its own and fails the run if the caller declares one too.
 
 ### Codex review
 
@@ -365,9 +385,11 @@ The cost of a copy per repository is drift, and those copies currently sit at se
 cp path/to/plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
 ```
 
-Then set `verify-hook: true` on that plugin's [Plugins CI](#plugins-ci) caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning. A plugin that has not migrated to Plugins CI cannot have this check: `plugin-phpstan.yml` used to carry it and no longer does, because a drifted hook reporting as red PHPStan was the problem.
+Then set `verify-hook: true` on that plugin's [Plugins CI](#plugins-ci) caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning. The check reports as `ci / hook-check / Hook check`. It was `ci / Hook check` until the comparison moved into its own called workflow, so a repository that lists the old string as a required status check has to be updated — a required context that stops being reported does not fail, it waits forever. A plugin that has not migrated to Plugins CI cannot have this check: `plugin-phpstan.yml` used to carry it and no longer does, because a drifted hook reporting as red PHPStan was the problem.
 
-The comparison is its own `hook-check` job, running `scripts/bash/check_hook_sync.sh`. It used to be a step inside the PHPStan job, which was wrong twice over: a vendored hook drifting is not a finding about the plugin's code, and the comparison ran before the analysis started, so a drift both reported as red PHPStan on two matrix legs and suppressed the analysis that would have told you something real. One consequence of the move: a repository setting both `verify-hook: true` and `skip-phpstan: true` used to get no hook check, because the check lived inside the workflow it was skipping. It now runs, and can fail.
+The comparison is its own check, [`plugin-hook-check.yml`](.github/workflows/plugin-hook-check.yml), running `scripts/bash/check_hook_sync.sh`. It used to be a step inside the PHPStan job, which was wrong twice over: a vendored hook drifting is not a finding about the plugin's code, and the comparison ran before the analysis started, so a drift both reported as red PHPStan on two matrix legs and suppressed the analysis that would have told you something real. One consequence of the move: a repository setting both `verify-hook: true` and `skip-phpstan: true` used to get no hook check, because the check lived inside the workflow it was skipping. It now runs, and can fail.
+
+It is a called workflow rather than a job written into `plugin-ci.yml` directly, and that still matters even though no check is skipped on an edit any more. `verify-hook` is off by default, so on most repositories this job *is* skipped — and a skipped job defined in the umbrella publishes its check run under the same name it uses when it runs, so any run that skipped it would land a `skipped` on top of a real verdict. A called workflow cannot: its skip reports as `ci / hook-check` while a run that happened reports as `ci / hook-check / Hook check`. `tests/plugin_ci_invariants_test.sh` requires it of every job in the umbrella that can be skipped — one carrying an `if:`, or one whose `needs:` can be skipped out from under it — so a check added later gets the property without anyone remembering it.
 
 The hook works out for itself which plugin it is in, from the repository root git reports, so the same file works unmodified in every plugin. Where it cannot find a `plugins/` directory above it — any repository that is not a Matomo plugin — it prints a line saying so and exits 0.
 
@@ -417,7 +439,7 @@ Tracking `@main` is the default for Matomo plugin repositories, and it is what m
 
 Pin to a tag where a repository needs to hold a check steady — for example while a plugin is mid-migration to a new Matomo major version and cannot yet take an updated check.
 
-Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml` and `plugin-min-php-lint.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml`, `plugin-min-php-lint.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
+Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml` and `plugin-min-php-lint.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml`, `plugin-min-php-lint.yml`, `plugin-hook-check.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
 
 ## Contributing
 
