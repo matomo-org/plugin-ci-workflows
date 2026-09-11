@@ -4,14 +4,13 @@
 #   workflow-ref   the run's GITHUB_WORKFLOW_REF, owner/repo/path@ref
 #   checkout-root  directory the caller repository is checked out in
 #
-# plugin-ci.yml owns the group and runs two lanes, so a push supersedes a push while a description
-# edit only supersedes an edit. A caller-level group spans both actions instead, and a called
-# workflow cannot override it: concurrency governs the run, and the run belongs to the caller. So
-# an `edited` run -- which does none of the code checks -- cancels the push's analysis and puts
-# nothing in its place, which is how UsersFlow#135 came to report two red PHPStan checks that had
-# never analysed a file. GitHub raises no deadlock error for it either, because the caller's group
-# never matches the static prefix used here. A red check explained by nothing is the only symptom,
-# which is why this is asserted rather than left to the README.
+# plugin-ci.yml owns the group, one lane per pull request, and a called workflow cannot override a
+# caller's: concurrency governs the run, and the run belongs to the caller. A caller-level group
+# therefore replaces the umbrella's silently -- it supersedes on a key the umbrella knows nothing
+# about, and GitHub raises no deadlock error either, because the caller's group never matches the
+# static prefix used here. UsersFlow#135 is what that looks like: two red PHPStan checks that had
+# never analysed a file. A red check explained by nothing is the only symptom, which is why this is
+# asserted rather than left to the README.
 #
 # Every plugin ships matomo-ai-checklist.yml carrying exactly such a block, rightly so while that
 # file stands alone, and the fleet migration renames it to ci.yml. Whether the block was deleted on
@@ -97,20 +96,18 @@ named = ' and '.join(offenders)
 # interleaves them in the order they arrive.
 print(
     f"::error file={caller_path}::Delete the concurrency block on {named}."
-    " Plugins CI declares the group itself, in two lanes; one caller-level group spans both"
-    " actions, so a description edit either cancels a push's analysis or queues ahead of it.",
+    " Plugins CI declares the group itself, and a called workflow cannot override a caller's,"
+    " so yours silently replaces it and supersedes runs on a key it knows nothing about.",
     flush=True,
 )
 print(f"""
 {caller_path} declares its own concurrency on {named}.
 
-Delete it. Plugins CI declares the group itself, in two lanes: a push supersedes an earlier push,
-while a description edit only supersedes an earlier edit. A caller-level group spans both actions,
-and this workflow cannot override it -- concurrency governs the run, and the run is yours. An
-`edited` run does none of the code checks, so with cancel-in-progress it cancels the push's
-analysis and replaces it with nothing -- checks that report red having never analysed a file, and
-nothing on the pull request to say why. Without cancel-in-progress the edit queues behind the
-analysis instead, and the checklist verdict waits on a run it has nothing to do with.
+Delete it. Plugins CI declares the group itself, one lane per pull request, and this workflow
+cannot override yours -- concurrency governs the run, and the run is yours. So your group replaces
+the umbrella's entirely, superseding or queueing runs on a key it knows nothing about, and GitHub
+raises no deadlock error to say so. UsersFlow#135 is what that looks like from the outside: checks
+reporting red having never analysed a file, and nothing on the pull request to explain it.
 
 If the block arrived by renaming matomo-ai-checklist.yml to ci.yml, deleting it is the whole fix:
 that file needs it while it stands alone, and Plugins CI replaces it. If another job in this file

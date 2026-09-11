@@ -2,24 +2,27 @@
 # Invariants for .github/workflows/plugin-ci.yml, the umbrella every plugin calls.
 # Usage: bash tests/plugin_ci_invariants_test.sh
 #
-# The umbrella subscribes to the `edited` pull request action so the checklist gate re-runs when a
-# description is fixed. Every other check should ignore that action rather than re-analyse an
-# unchanged tree -- and should do so by default, so a check added later is safe when its author
-# writes nothing. That is a property of the file, not of anyone remembering, which is what this
-# enforces.
+# The property these protect: every run of this workflow on a commit checks the same things, so no
+# run can supersede another while having checked less.
 #
-# Ignoring it also has to cost nothing, which is why a check here must be a called workflow. A
-# skipped job still publishes a check run, and one written inline publishes it under the same
-# name in both lanes, so an edited run's `skipped` lands on top of the code run's verdict and a
-# skipped required check counts as a passing one.
+# It is worth stating why, because the obvious shortcut breaks it. The umbrella subscribes to the
+# `edited` pull request action so the checklist gate re-runs when a description is fixed, and it is
+# tempting to skip the code checks on that action since an edit changes no file. But a run whose
+# checks are all skipped concludes `success`, and GitHub resolves a commit's verdict from the
+# newest check suite per workflow, ordered by suite CREATION time -- so the edited run's green
+# suite replaces the code run's verdict, even while the code run is still going, and even when it
+# later fails. Measured on a probe; nine of the fleet's migration pull requests had a red license
+# check hidden that way.
+#
+# Hence: no job may condition itself on github.event.action. Conditioning on an INPUT is fine, and
+# is not the same thing -- an input is fixed for the commit, so every run makes the same decision.
+# The second rule, that a job carrying any `if:` must be a called workflow, covers the remaining
+# legitimate skips: a called workflow's skip reports as `<caller job>` while a real run reports as
+# `<caller job>/<job name>`, so the two can never collide by name.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKFLOW="$ROOT/.github/workflows/plugin-ci.yml"
-
-# Jobs allowed to run on a description edit. Adding a name here is the opt-in, and it should be
-# a deliberate, reviewed act -- which is the point of it living in a test rather than a comment.
-export EDITED_CONSUMERS="ai-checklist caller-concurrency"
 
 # Jobs that are not plugin checks and so carry no skip- input. The concurrency guard asserts the
 # caller's half of a contract it can always satisfy by deleting a block, so it never needs a way
@@ -55,7 +58,6 @@ python3 - "$WORKFLOW" <<'PY'
 import os, re, sys, yaml
 
 workflow_path = sys.argv[1]
-edited_consumers = set(os.environ['EDITED_CONSUMERS'].split())
 guard_jobs = set(os.environ['GUARD_JOBS'].split())
 opt_in_jobs = dict(pair.split(':') for pair in os.environ['OPT_IN_JOBS'].split())
 hook_script = os.environ['HOOK_SCRIPT']
@@ -82,6 +84,17 @@ def check(description, condition):
         failures.append(description)
 
 
+def conditions_on_event_action(job):
+    """Rule one: does this job run in some runs of a commit and not others?"""
+    return 'github.event.action' in ''.join(str((job or {}).get('if', '')).split())
+
+
+def can_be_skipped(job):
+    """Rule two's trigger. `needs:` counts -- a job whose dependency is skipped is skipped too."""
+    job = job or {}
+    return bool(job.get('if')) or bool(job.get('needs'))
+
+
 def called_workflow_file(job):
     """The workflow in this repository that a job calls, or '' when it calls none."""
     uses = str((job or {}).get('uses', ''))
@@ -93,17 +106,17 @@ def called_workflow_file(job):
 check("the umbrella is a reusable workflow", 'workflow_call' in triggers)
 check("it declares at least one job", bool(jobs))
 
-# An `edited` run skips every code check, so sharing one concurrency group with a push's run means
-# it cancels analysis and puts nothing in its place. The group has to discriminate on the action.
+# One lane. Splitting it by event action was the previous answer to an edited run cancelling the
+# analysis, and it traded that for the worse failure described at the top of this file. With every
+# run doing the whole check set, a run that supersedes another is telling the truth.
 concurrency = doc.get('concurrency') or {}
-# Whitespace-insensitive, so the assertions pin the expression's meaning and not one spelling of
-# it: `action=='edited'` behaves identically and should not be a failure.
+# Whitespace-insensitive, so the assertions pin the expression's meaning and not one spelling of it.
 group = str(concurrency.get('group', ''))
 group_squashed = ''.join(group.split())
 check("the umbrella declares a concurrency group", bool(group))
 check(
-    "the concurrency group separates edited runs from code runs",
-    "github.event.action=='edited'" in group_squashed,
+    "the concurrency group does not split runs by event action",
+    'github.event.action' not in group_squashed,
 )
 # github.workflow resolves to the caller's workflow name here, so a group built from it matches a
 # caller's own group and GitHub kills the run for a concurrency deadlock rather than running it.
@@ -124,9 +137,9 @@ check(
     concurrency.get('cancel-in-progress') is True,
 )
 
-# The lanes above are defeated by a caller declaring a group of its own, silently: it spans both
-# actions, a called workflow cannot override it, and the name never matches the static prefix, so
-# no deadlock error is raised. Deleting the job that catches that would restore the silence.
+# The lane above is defeated by a caller declaring a group of its own, silently: a called workflow
+# cannot override it, and the name never matches the static prefix, so no deadlock error is raised.
+# Deleting the job that catches that would restore the silence.
 for name in sorted(guard_jobs):
     steps = (jobs.get(name) or {}).get('steps') or []
     runs_guard = any(
@@ -136,63 +149,42 @@ for name in sorted(guard_jobs):
     )
     check(f"{name} runs the caller concurrency guard", runs_guard)
 
-# Every job either ignores `edited` or is a declared consumer of it.
+# The two rules that keep every run of a commit equivalent. See the top of this file for why.
 for name, job in jobs.items():
     condition = str(job.get('if', ''))
-    ignores_edited = "github.event.action != 'edited'" in condition
 
-    # A job that can be skipped at all has to be a called workflow, whatever it is conditioned
-    # on. A skipped job still publishes a check run, and one defined in this file publishes it
-    # under the same name whether it ran or was skipped -- so a run that skips it drops a
-    # `skipped` on top of whatever an earlier run of the same commit concluded, silently,
-    # because a skipped required check counts as a passing one. A called workflow cannot: its
-    # skip reports as `<caller job>` and a run that happened as `<caller job>/<job name>`. Both
-    # halves seen on plugin-LogViewer b0506a2b, where `ci / Hook check` went success and then
-    # skipped on one commit while `ci / phpcs / PHPCS` came through untouched.
+    # Rule one. A job conditioned on the event action runs in some runs of a commit and not
+    # others, and the run that skipped it still concludes and still supersedes.
+    check(
+        f"{name} does not condition itself on the event action",
+        not conditions_on_event_action(job),
+    )
+
+    # Rule two. A job that can be skipped at all -- on an input, or on the event name -- has to be
+    # a called workflow. A skipped job still publishes a check run, and one defined in this file
+    # publishes it under the same name whether it ran or was skipped, so the skip lands on top of
+    # whatever an earlier run concluded and a skipped required check counts as a passing one. A
+    # called workflow cannot: its skip reports as `<caller job>` and a real run as
+    # `<caller job>/<job name>`. Seen on plugin-LogViewer b0506a2b, where `ci / Hook check` went
+    # success and then skipped on one commit while `ci / phpcs / PHPCS` came through untouched.
     #
-    # Exempt on carrying no `if:` rather than on being a declared edited consumer: consuming the
-    # edited action is not what makes an inline job safe, never being skipped is, and the two
-    # come apart as soon as a consumer is conditioned on anything at all.
-    if condition:
+    # `needs:` counts too: a job whose dependency is skipped is skipped with it, and inline it
+    # publishes that skip under the name it uses when it runs. No job here declares one today, so
+    # this is a guard on the shape rather than on the current file.
+    #
+    # Exempt only on being unskippable, which is what actually makes an inline job safe.
+    if can_be_skipped(job):
         check(
             f"{name} is a called workflow, so skipping it cannot overwrite a real verdict",
             bool(job.get('uses')),
         )
 
-    if name in edited_consumers:
-        check(
-            f"{name} is a declared consumer of the edited action",
-            not ignores_edited,
-        )
-        job_concurrency = job.get('concurrency') or {}
-        job_group = ''.join(str(job_concurrency.get('group', '')).split())
-        if name in guard_jobs:
-            # A guard reads a file the commit fixes, so both lanes' runs reach the same verdict
-            # and a lane would trade twenty seconds of runner time for a cancelled job in the
-            # run that lost -- a check in a state nothing on the pull request explains.
-            check(f"{name} takes no lane of its own", not job_group)
-        else:
-            # Running in both lanes means racing itself on one commit, and the loser's verdict
-            # sticks if it lands last. Its own lane has to span both, so it must NOT discriminate
-            # on the action the way the workflow-level group does.
-            check(
-                f"{name} has its own concurrency lane spanning both workflow lanes",
-                bool(job_group) and 'github.event.action' not in job_group,
-            )
-            check(
-                f"{name}'s lane supersedes rather than queues",
-                job_concurrency.get('cancel-in-progress') is True,
-            )
-    else:
-        check(
-            f"{name} ignores the edited action",
-            ignores_edited,
-        )
-
-# A consumer named in the allowlist but absent from the workflow means the list has gone stale,
-# and a stale allowlist quietly widens what is permitted.
-for name in sorted(edited_consumers - set(jobs)):
-    check(f"declared edited consumer {name} still exists in the workflow", False)
+    # A job-level group can supersede on a different key from the workflow-level one, which is how
+    # two runs of a commit end up disagreeing again by a side door. One lane governs all of them.
+    check(
+        f"{name} declares no concurrency group of its own",
+        not (job.get('concurrency') or {}),
+    )
 
 for name in sorted(guard_jobs - set(jobs)):
     check(f"declared guard job {name} still exists in the workflow", False)
@@ -275,7 +267,7 @@ check(
 hook_with = ''.join(str(((jobs.get('hook-check') or {}).get('with') or {}).get('workflows-ref', '')).split())
 check(
     "hook-check forwards workflows-ref to the called workflow",
-    'inputs.workflows-ref' in hook_with,
+    re.search(r'(?<![!\w.-])inputs\.workflows-ref(?![\w-])', hook_with) is not None,
 )
 
 for name in sorted(pull_request_only):
@@ -292,6 +284,32 @@ for name in sorted(pull_request_only):
 for name, spec in inputs.items():
     if name.startswith('skip-'):
         check(f"{name} defaults to running the check", spec.get('default') is False)
+
+# The rules above only ever meet a document that complies, so an inverted or dead version of
+# either would pass in silence. These drive them in both directions, the way the sibling guard
+# tests drive theirs.
+for label, job, expected in [
+    ("an edited-action condition", {'if': "${{ !inputs.skip-phpcs && github.event.action != 'edited' }}"}, True),
+    ("an action condition with other spacing", {'if': "${{ github.event.action=='edited' }}"}, True),
+    ("an input-only condition", {'if': '${{ !inputs.skip-phpcs }}'}, False),
+    ("an event-name condition", {'if': "${{ github.event_name == 'pull_request' }}"}, False),
+    ("no condition at all", {}, False),
+]:
+    check(
+        f"rule one flags {label}" if expected else f"rule one passes {label}",
+        conditions_on_event_action(job) is expected,
+    )
+
+for label, job, expected in [
+    ("a job carrying an if:", {'if': '${{ inputs.verify-hook }}'}, True),
+    ("a job carrying only needs:", {'needs': ['phpcs']}, True),
+    ("a job carrying both", {'if': '${{ inputs.verify-hook }}', 'needs': ['phpcs']}, True),
+    ("an unconditional job", {'runs-on': 'ubuntu-24.04'}, False),
+]:
+    check(
+        f"rule two catches {label}" if expected else f"rule two exempts {label}",
+        can_be_skipped(job) is expected,
+    )
 
 print()
 print(f"{tests} tests, {len(failures)} failures")

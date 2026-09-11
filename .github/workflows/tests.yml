@@ -44,8 +44,8 @@ jobs:
         run: bash tests/plugin_ci_invariants_test.sh
 
       # Runs in this job rather than one of its own so it lands inside a check `main` already
-      # requires, and because it asserts the other half of the same contract: the umbrella's two
-      # lanes here, and the caller declaring no group that would span them.
+      # requires, and because it asserts the other half of the same contract: the umbrella owning
+      # the concurrency group here, and the caller declaring none that would replace it.
       - name: Check the caller concurrency guard
         run: bash tests/caller_concurrency_test.sh
 

@@ -98,69 +98,65 @@ permissions:
   contents: read
   pull-requests: read
 
-# Two lanes, not one. An `edited` run does none of the code checks below, so letting it supersede a
-# push's run cancels analysis and replaces it with nothing -- seen on UsersFlow#135, where a
-# description edit 46 seconds after the push killed both PHPStan jobs mid-checkout and left the
-# check red for a reason nothing on the pull request explained. Discriminating on the action keeps
-# push-supersedes-push while an edit only ever supersedes another edit.
+# One lane. This was briefly two -- a `-code` lane and an `-edited` one -- because a description
+# edit re-ran the workflow while skipping every check below, so letting it supersede a push's run
+# cancelled the analysis and replaced it with nothing (UsersFlow#135). Splitting the lanes stopped
+# the cancellation but not the damage: a run whose checks are all skipped concludes `success`, and
+# GitHub resolves a commit's overall verdict from the newest check suite per workflow, by suite
+# CREATION time. So the edited run's green suite replaced the code run's verdict wholesale --
+# measured on a probe: the pull request read "All checks have passed" 16 seconds after the edit,
+# while the analysis was still running, and stayed green when it failed two minutes later. Nine of
+# the fleet's migration pull requests had a red license check hidden that way.
 #
-# It lives here rather than in each caller so the fleet gets it without a pull request per plugin.
+# The fix is to stop skipping (see the jobs below), which removes the reason for two lanes: every
+# run does the whole check set, so any run superseding another is telling the truth. The cost is
+# one extra run of these checks per description edit, about three minutes of runner; the test
+# matrix lives in matomo-tests.yml, which does not subscribe to `edited`, so it is untouched.
+#
 # Static prefix, for the same reason plugin-codex-review.yml uses one: in a reusable workflow
 # ${{ github.workflow }} resolves to the CALLER's workflow name, so a group built from it collides
 # with a caller group of the same name and GitHub kills the run with "a deadlock was detected for
 # concurrency group ...". Callers declare no concurrency of their own -- which the caller-concurrency
-# job below asserts, because a caller-level group silently defeats all of this: it spans both
-# actions, a called workflow cannot override it, and the group never matches this static prefix, so
-# GitHub raises no deadlock error to say so.
+# job below asserts, because a caller-level group silently defeats all of this: a called workflow
+# cannot override it, and the group never matches this static prefix, so GitHub raises no deadlock
+# error to say so.
 concurrency:
-  group: plugin-ci-shared-${{ github.event.pull_request.number || github.run_id }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
+  group: plugin-ci-shared-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
-# The caller subscribes to `edited` so the checklist gate re-runs when a description is fixed.
-# Consuming that event is opt *in*, per job: a check that does not name `edited` in its `if:`
-# ignores it, so a check added here later re-analyses nothing on a description edit unless someone
-# decides it should. tests/plugin_ci_invariants_test.sh holds the line, because the safe behaviour
-# here is the one you get by writing nothing, and a convention nobody checks is not a default.
+# The caller subscribes to `edited` so the checklist gate re-runs when a description is fixed, and
+# every job below runs on that event like any other. No job may condition itself on
+# github.event.action, and tests/plugin_ci_invariants_test.sh fails the build if one does: the
+# moment a job runs in some runs of a commit and not others, that commit has two runs disagreeing
+# about what was checked, and the newer one wins whether or not it checked anything.
 #
-# Opting in today: ai-checklist, which reads the description and nothing else, and
-# caller-concurrency, which reads a workflow file and must survive the lane an offending caller
-# cancelled.
+# Skipping on an input (skip-phpcs, verify-hook) is fine and is not the same thing -- an input is
+# fixed for the commit, so every run of it makes the same decision and no run can contradict
+# another.
 jobs:
-  # Running in both lanes means it can race itself, and here that changes the answer: a push and a
-  # description edit produce two checklist runs against the same commit, an edit changes no commit,
-  # and the status a pull request shows is whichever check run of that name finished last. Under
-  # runner contention that can be the one that read the *old* description -- red, with nothing left
-  # to re-trigger it. Its own lane spanning both means any checklist run supersedes any other, so
-  # the verdict on show is always the newest description's. The group cannot deadlock against the
-  # workflow it calls, because plugin-ai-checklist.yml declares no concurrency of its own -- which
-  # the invariants assert of every workflow called from here, rather than leaving it to this line.
+  # It used to carry a concurrency lane of its own, to span the two workflow-level lanes and stop a
+  # stale checklist verdict landing last. With one lane that is what the workflow-level group
+  # already does, and a second group here would only add a way for the two to disagree.
   ai-checklist:
     # pull_request only, because the gate reads the pull request's description and there is none on
     # a push or a dispatch. Callers subscribe to those so one badge on this workflow can report the
-    # default branch, and without this the gate would fail every such run.
+    # default branch, and without this the gate would fail every such run. Conditioning on the
+    # event NAME is narrower than conditioning on the event ACTION, which every run of a pull
+    # request carries, but it is not unconditionally safe: a caller subscribing to both
+    # `pull_request` and `push: branches: ['**.x-dev']` puts two runs on one commit when the pull
+    # request's own head branch matches that filter -- a forward-merge from 5.x-dev, say -- and the
+    # push run skips this gate. Unmeasured, and it needs the caller's filter to match a head
+    # branch, so it is recorded rather than worked around.
     if: ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request' }}
-    concurrency:
-      group: plugin-ci-checklist-${{ github.event.pull_request.number || github.run_id }}
-      cancel-in-progress: true
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ai-checklist.yml@main
     permissions:
       actions: read
       pull-requests: read
 
-  # The workflow-level lanes above are worth nothing if the caller declares a group of its own: one
-  # caller-level group spans both actions, this workflow cannot override it, and its name never
-  # matches the static prefix above, so GitHub raises no deadlock error either. Nothing on the pull
-  # request would say why the analysis vanished, which is why the caller's side of the contract is
-  # checked rather than only written in the README.
-  #
-  # It runs in both lanes deliberately. The run this exists to catch is the one an offending
-  # caller's group cancelled, so a job conditioned out of the `edited` lane would go down with it
-  # and report nothing.
-  #
-  # And unlike the checklist gate it takes no lane of its own. Its verdict is fixed by the commit,
-  # so the two runs read the same file and agree, and deduplicating them would buy about twenty
-  # seconds at the price of a cancelled `Caller concurrency` job in the run that lost -- a check in
-  # a state nothing on the pull request explains, which is the failure this whole file is about.
+  # The lane above is worth nothing if the caller declares a group of its own: this workflow cannot
+  # override it, and its name never matches the static prefix above, so GitHub raises no deadlock
+  # error either. Nothing on the pull request would say why the analysis vanished, which is why the
+  # caller's side of the contract is checked rather than only written in the README.
   #
   # No skip- input, unlike every check here: the way out is to delete the offending block, so a
   # caller never needs the guard turned off, and a switch for it is the hole it exists to close.
@@ -213,10 +209,8 @@ jobs:
   # analysis meant a drifted hook both reported as red PHPStan and suppressed the analysis that
   # would have said something real. Opt in through verify-hook, so there is no skip- input: a
   # plugin turns it off by not turning it on.
-  #
-  # It ignores `edited` like the other checks -- a description edit changes no file on disk.
   hook-check:
-    if: ${{ inputs.verify-hook && github.event.action != 'edited' }}
+    if: ${{ inputs.verify-hook }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-hook-check.yml@main
     permissions:
       contents: read
@@ -224,7 +218,7 @@ jobs:
       workflows-ref: ${{ inputs.workflows-ref }}
 
   phpcs:
-    if: ${{ !inputs.skip-phpcs && github.event.action != 'edited' }}
+    if: ${{ !inputs.skip-phpcs }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-phpcs.yml@main
     permissions:
       contents: read
@@ -234,7 +228,7 @@ jobs:
       scripts-ref: ${{ inputs.scripts-ref }}
 
   phpstan:
-    if: ${{ !inputs.skip-phpstan && github.event.action != 'edited' }}
+    if: ${{ !inputs.skip-phpstan }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-phpstan.yml@main
     permissions:
       contents: read
@@ -249,7 +243,7 @@ jobs:
       TESTS_ACCESS_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN }}
 
   license-check:
-    if: ${{ !inputs.skip-license-check && github.event.action != 'edited' }}
+    if: ${{ !inputs.skip-license-check }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-license-check.yml@main
     permissions:
       contents: read
