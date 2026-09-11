@@ -31,3 +31,5 @@ jobs:
     timeout-minutes: 5
     steps:
       - run: echo "ok"
+
+# touch to fire push + synchronize together
