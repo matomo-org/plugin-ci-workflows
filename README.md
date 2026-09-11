@@ -33,6 +33,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
+| [`plugin-hook-check.yml`](#hook-check) | Reusable workflow | Fails when a plugin's vendored pre-push hook has drifted from the copy here |
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
@@ -181,6 +182,23 @@ jobs:
 ```
 
 The check script lives at `scripts/bash/license_check.sh` and is covered by `tests/license_check_test.sh`, which runs on every pull request to this repository.
+
+### Hook check
+
+Fails when the plugin's vendored `.git-hooks-matomo/pre-push` differs from the canonical copy in this repository, so a copy taken once cannot drift unnoticed. Called from [Plugins CI](#plugins-ci) through `verify-hook`, which is off by default; see [Keeping a plugin's copy in sync](#keeping-a-plugins-copy-in-sync) for what to do before turning it on.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `workflows-ref` | no | `main` | Ref of this repository to take `hooks/pre-push` and `check_hook_sync.sh` from. When pinning the workflow to a SHA, pass the same SHA here. |
+
+```yaml
+name: Hook check
+on: pull_request
+
+jobs:
+  hook-check:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-hook-check.yml@main
+```
 
 ### AI checklist
 
@@ -339,9 +357,11 @@ The cost of a copy per repository is drift, and those copies currently sit at se
 cp path/to/plugin-ci-workflows/hooks/pre-push .git-hooks-matomo/pre-push
 ```
 
-Then set `verify-hook: true` on that plugin's [Plugins CI](#plugins-ci) caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning. A plugin that has not migrated to Plugins CI cannot have this check: `plugin-phpstan.yml` used to carry it and no longer does, because a drifted hook reporting as red PHPStan was the problem.
+Then set `verify-hook: true` on that plugin's [Plugins CI](#plugins-ci) caller, which fails the build when the two differ, so the copy cannot drift again unnoticed. Set it only after syncing: the check is a hard failure, not a warning. The check reports as `ci / hook-check / Hook check`, which is the string to use if the repository requires it in branch protection — a required context that stops being reported does not fail, it waits forever. A plugin that has not migrated to Plugins CI cannot have this check: `plugin-phpstan.yml` used to carry it and no longer does, because a drifted hook reporting as red PHPStan was the problem.
 
-The comparison is its own `hook-check` job, running `scripts/bash/check_hook_sync.sh`. It used to be a step inside the PHPStan job, which was wrong twice over: a vendored hook drifting is not a finding about the plugin's code, and the comparison ran before the analysis started, so a drift both reported as red PHPStan on two matrix legs and suppressed the analysis that would have told you something real. One consequence of the move: a repository setting both `verify-hook: true` and `skip-phpstan: true` used to get no hook check, because the check lived inside the workflow it was skipping. It now runs, and can fail.
+The comparison is its own check, [`plugin-hook-check.yml`](.github/workflows/plugin-hook-check.yml), running `scripts/bash/check_hook_sync.sh`. It used to be a step inside the PHPStan job, which was wrong twice over: a vendored hook drifting is not a finding about the plugin's code, and the comparison ran before the analysis started, so a drift both reported as red PHPStan on two matrix legs and suppressed the analysis that would have told you something real. One consequence of the move: a repository setting both `verify-hook: true` and `skip-phpstan: true` used to get no hook check, because the check lived inside the workflow it was skipping. It now runs, and can fail.
+
+It is a called workflow rather than a job written into `plugin-ci.yml` directly, and that is load-bearing. A skipped job still publishes a check run, and a job defined in the umbrella publishes it under the same name whether it ran or was skipped — so a description edit, which skips every code check, lands a `skipped` on top of whatever the code run concluded, and a skipped required check counts as a passing one. A called workflow cannot do that: its skip reports as `ci / hook-check` while a run that happened reports as `ci / hook-check / Hook check`. `tests/plugin_ci_invariants_test.sh` requires it of every job in the umbrella carrying an `if:` — that is, every job that can be skipped — so a check added later gets the property without anyone remembering it.
 
 The hook works out for itself which plugin it is in, from the repository root git reports, so the same file works unmodified in every plugin. Where it cannot find a `plugins/` directory above it — any repository that is not a Matomo plugin — it prints a line saying so and exits 0.
 
@@ -391,7 +411,7 @@ Tracking `@main` is the default for Matomo plugin repositories, and it is what m
 
 Pin to a tag where a repository needs to hold a check steady — for example while a plugin is mid-migration to a new Matomo major version and cannot yet take an updated check.
 
-Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml` and `plugin-phpstan.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
+Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml` and `plugin-phpstan.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml`, `plugin-hook-check.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
 
 ## Contributing
 

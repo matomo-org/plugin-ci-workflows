@@ -7,6 +7,11 @@
 # unchanged tree -- and should do so by default, so a check added later is safe when its author
 # writes nothing. That is a property of the file, not of anyone remembering, which is what this
 # enforces.
+#
+# Ignoring it also has to cost nothing, which is why a check here must be a called workflow. A
+# skipped job still publishes a check run, and one written inline publishes it under the same
+# name in both lanes, so an edited run's `skipped` lands on top of the code run's verdict and a
+# skipped required check counts as a passing one.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -77,6 +82,14 @@ def check(description, condition):
         failures.append(description)
 
 
+def called_workflow_file(job):
+    """The workflow in this repository that a job calls, or '' when it calls none."""
+    uses = str((job or {}).get('uses', ''))
+    if 'plugin-ci-workflows/.github/workflows/' not in uses:
+        return ''
+    return uses.split('@')[0].split('/.github/workflows/')[-1]
+
+
 check("the umbrella is a reusable workflow", 'workflow_call' in triggers)
 check("it declares at least one job", bool(jobs))
 
@@ -127,6 +140,25 @@ for name in sorted(guard_jobs):
 for name, job in jobs.items():
     condition = str(job.get('if', ''))
     ignores_edited = "github.event.action != 'edited'" in condition
+
+    # A job that can be skipped at all has to be a called workflow, whatever it is conditioned
+    # on. A skipped job still publishes a check run, and one defined in this file publishes it
+    # under the same name whether it ran or was skipped -- so a run that skips it drops a
+    # `skipped` on top of whatever an earlier run of the same commit concluded, silently,
+    # because a skipped required check counts as a passing one. A called workflow cannot: its
+    # skip reports as `<caller job>` and a run that happened as `<caller job>/<job name>`. Both
+    # halves seen on plugin-LogViewer b0506a2b, where `ci / Hook check` went success and then
+    # skipped on one commit while `ci / phpcs / PHPCS` came through untouched.
+    #
+    # Exempt on carrying no `if:` rather than on being a declared edited consumer: consuming the
+    # edited action is not what makes an inline job safe, never being skipped is, and the two
+    # come apart as soon as a consumer is conditioned on anything at all.
+    if condition:
+        check(
+            f"{name} is a called workflow, so skipping it cannot overwrite a real verdict",
+            bool(job.get('uses')),
+        )
+
     if name in edited_consumers:
         check(
             f"{name} is a declared consumer of the edited action",
@@ -169,11 +201,7 @@ for name in sorted(guard_jobs - set(jobs)):
 # group would claim it against the umbrella's -- deadlocking where the names match, and spanning
 # both actions where they do not. Today none of them declares one, and that is exactly the kind of
 # fact this file exists to stop being a comment.
-called_locally = sorted({
-    str(job.get('uses', '')).split('@')[0].split('/.github/workflows/')[-1]
-    for job in jobs.values()
-    if 'plugin-ci-workflows/.github/workflows/' in str(job.get('uses', ''))
-})
+called_locally = sorted({f for f in (called_workflow_file(job) for job in jobs.values()) if f})
 for called in called_locally:
     path = os.path.join(os.path.dirname(workflow_path), called)
     if not os.path.isfile(path):
@@ -221,15 +249,33 @@ for name, input_name in sorted(opt_in_jobs.items()):
 
 
 # Keyed on the job by name rather than looped over every opt-in job, since a second opt-in job
-# would have nothing to do with this script.
-hook_steps = [
-    step
-    for step in ((jobs.get('hook-check') or {}).get('steps') or [])
-    if isinstance(step, dict)
-]
+# would have nothing to do with this script. The steps live in the called workflow now, so follow
+# the `uses:` to them: asserting against the umbrella job would pass vacuously, and an empty list
+# fails this closed if the call goes missing.
+hook_called = called_workflow_file(jobs.get('hook-check'))
+hook_path = os.path.join(os.path.dirname(workflow_path), hook_called) if hook_called else ''
+hook_steps = []
+if hook_path and os.path.isfile(hook_path):
+    with open(hook_path) as handle:
+        hook_doc = yaml.safe_load(handle) or {}
+    for hook_job in (hook_doc.get('jobs') or {}).values():
+        hook_steps.extend(
+            step for step in ((hook_job or {}).get('steps') or []) if isinstance(step, dict)
+        )
 check(
     f"hook-check runs {hook_script}",
     any(hook_script in str(step.get('run', '')) for step in hook_steps),
+)
+
+# And the umbrella's `with:` block is the only thing carrying a caller's workflows-ref pin into
+# that workflow, which defaults it to main. Lose the line and the check silently compares a
+# plugin's vendored hook against main's canonical copy rather than the pinned one -- so a plugin
+# that pinned the ref precisely to hold an older hook steady goes red against a copy it
+# deliberately did not take. The seam is new: the ref used to be inline in this file.
+hook_with = ''.join(str(((jobs.get('hook-check') or {}).get('with') or {}).get('workflows-ref', '')).split())
+check(
+    "hook-check forwards workflows-ref to the called workflow",
+    'inputs.workflows-ref' in hook_with,
 )
 
 for name in sorted(pull_request_only):

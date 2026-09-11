@@ -1,0 +1,55 @@
+name: Hook check
+
+# Fails when a plugin's vendored .git-hooks-matomo/pre-push differs from the canonical copy here.
+#
+# A called workflow rather than a job inside plugin-ci.yml, for a reason written where the
+# caller can act on it: see the note above `hook-check` in plugin-ci.yml.
+
+on:
+  workflow_call:
+    inputs:
+      workflows-ref:
+        description: "Ref of matomo-org/plugin-ci-workflows to take the canonical hook and the comparison script from. This is this repository, so the workflow SHA is the right value when pinning."
+        required: false
+        type: string
+        default: 'main'
+
+# The job only reads the repository; everything else stays at none so any caller
+# with default workflow permissions can use this without granting scopes.
+permissions:
+  contents: read
+
+jobs:
+  hook-check:
+    name: Hook check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      # Unique so it cannot collide with a directory the caller tracks.
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          sparse-checkout: .git-hooks-matomo
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      - name: Check the pre-push hook matches the canonical copy
+        run: |
+          # $WORKFLOWS_DIR is the caller's workflows-ref, which this repository's own README
+          # encourages pinning. A pin predating this script would otherwise leave bash exiting 127
+          # with no annotation -- a red check that analysed nothing and explains nothing.
+          if [ ! -f "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" ]; then
+            echo "::error::workflows-ref does not carry scripts/bash/check_hook_sync.sh. Move that pin forward, or turn verify-hook off."
+            exit 1
+          fi
+
+          bash "$WORKFLOWS_DIR/scripts/bash/check_hook_sync.sh" "$WORKFLOWS_DIR/hooks/pre-push" .git-hooks-matomo/pre-push
