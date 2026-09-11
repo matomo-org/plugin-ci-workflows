@@ -37,11 +37,12 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
+| [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
 ### Plugins CI
 
-Runs PHPCS, PHPStan, the license check and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
+Runs PHPCS, PHPStan, the license check, the minimum PHP lint and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
 
 ```yaml
 name: Plugins CI
@@ -71,7 +72,7 @@ jobs:
 
 The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs the same way on all three.
 
-Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the two that take a PHP version are named `phpcs-php-version` and `phpstan-php-version`.
+Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check`, `skip-min-php-lint` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the three that take a PHP version are named `phpcs-php-version`, `phpstan-php-version` and `min-php-lint-php-version`.
 
 The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description, and **every check runs on that event like any other**. Skipping the code checks on an edit is the obvious economy and it is the one thing this workflow must not do: a run whose checks are all skipped concludes `success`, and GitHub resolves a commit's verdict from the newest check suite per workflow, ordered by suite *creation* time — so the edited run's green suite replaces the code run's verdict, while the analysis is still running, and still after it fails. Nine of the fleet's migration pull requests had a red license check hidden that way before this was found. `tests/plugin_ci_invariants_test.sh` fails the build if any job conditions itself on `github.event.action`.
 
@@ -299,6 +300,31 @@ Refs into our own organisations — the review actions and the agent skills — 
 
 The security model, the trust boundaries and the review prompt are documented in `review/README.md` in the review actions repository.
 
+### Minimum PHP lint
+
+`matomo-scoper` prefixes a plugin's dependencies but does not downgrade them — it keeps attributes deliberately and ships no rector pass — so the syntax in `vendor/prefixed` is whatever composer resolved. Nothing else proves that resolution matched the plugin's floor: a file is only parsed when something loads it, so the tests reach whichever prefixed files they happen to exercise, and PHPStan need not reach them at all — GoogleAnalyticsImporter puts `vendor/` under `excludePaths.analyse` precisely so the prefixed tree does not drown its report. This parses every file, at the floor.
+
+The floor is derived, not pinned, and it is the **lowest** of the two manifests that mean something: `config.platform.php` in `composer.json`, which is what composer solved for and so bounds the syntax the tree may contain, and `require.php` in `plugin.json`, which is the lowest PHP a user can actually reach because Matomo gates activation on it. When neither is declared the Matomo major's floor applies.
+
+Lowest rather than first-found, and OAuth2 is why. It declares `>=8.1.0` in `plugin.json` while its composer platform is `8.2.0`, and `platform-check` is off in that tree — so Matomo will happily activate it on PHP 8.1 and load code resolved for 8.2, with nothing to stop it. Parsing at 8.2 cannot see that; parsing at 8.1 reports it, and that red is a true positive. The remedy is a choice the maintainer makes: lower the platform and re-resolve, or raise `plugin.json` to what the tree really needs. Branches differ too — ApiReference declares `>=7.4` on `5.x-dev` and `>=8.1` on `6.x-dev` — so a hardcoded version is wrong on one of them whatever it says.
+
+When it fails, the fix is composer-side. Re-running the scoper re-prefixes the same code and produces the same failure; align `config.platform.php` with the floor and re-resolve.
+
+**What it catches, and what it cannot.** `php -l` reports what the parser rejects, so at an 8.x floor it catches syntax the older 8.x does not know. At a 7.2 or 7.4 floor it is blinder than the paragraph above implies: `#[Attr]` written on one line is a `#` comment to PHP 7, so the parser accepts it silently, and only a multi-line attribute argument list — where the continuation is no longer commented out — produces an error. So the attribute case that motivates this check is caught on the 8.x branches and, on the 5.x ones, only in its multi-line form. Nothing short of a real static parse would close that, and this check is deliberately not one.
+
+Running it costs nothing on a plugin with no scoped dependencies: the job checks for the directory before it installs anything, so it finishes in seconds without setting up PHP.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `lint-path` | no | `vendor/prefixed` | Directory to parse. Skipped when absent |
+| `php-version` | no | derived | Override the floor derived from `composer.json` and `plugin.json`. A `major.minor` version such as `8.1`, or a shared alias |
+| `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the alias resolver |
+| `workflows-ref` | no | `main` | Ref of this repository for the plugin floor resolver |
+
+There is no per-file ignore list, so one vendored file that legitimately targets a newer PHP fails the whole job. The intended escape hatch is `min-php-lint-php-version`, which lowers the bar for the whole tree, or `skip-min-php-lint` to stand the check down entirely — both deliberate and both visible in the caller, which a silent per-file exemption would not be.
+
+It runs as part of [Plugins CI](#plugins-ci), so a plugin calling that gets it already; `skip-min-php-lint` opts out. Call it directly only if you are not using the umbrella.
+
 ### Branch sweep
 
 GitHub only ever runs `schedule` from the default branch's copy of a workflow file. So the moment a plugin's default flips from `5.x-dev` to `6.x-dev`, the older line stops getting a weekly build and nothing announces it — the dashboard badge simply keeps showing an ageing run. This dispatches that build from inside the plugin repository, on the repository's own token: `workflow_dispatch` is a documented exception to the rule that GITHUB_TOKEN-triggered events create no workflow run, so no PAT and no cross-repository App is involved.
@@ -413,7 +439,7 @@ Tracking `@main` is the default for Matomo plugin repositories, and it is what m
 
 Pin to a tag where a repository needs to hold a check steady — for example while a plugin is mid-migration to a new Matomo major version and cannot yet take an updated check.
 
-Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml` and `plugin-phpstan.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml`, `plugin-hook-check.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
+Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml` and `plugin-min-php-lint.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml`, `plugin-min-php-lint.yml`, `plugin-hook-check.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
 
 ## Contributing
 
