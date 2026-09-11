@@ -38,27 +38,31 @@ def load(name):
         sys.exit(1)
 
 
-# A constraint is a list of comparisons separated by whitespace, commas or `||`. Splitting on
-# those first is what keeps the version parse anchored: matching a bare \d+ anywhere in the string
-# also finds the 1 in `6.0.0-b1`, which would read as a floor of 1.0.
-_SEPARATORS = re.compile(r'\s*(?:\|\||,|\s)\s*')
-# Anchored at the token, so a pre-release suffix after the major.minor is ignored rather than
-# scanned. `v` prefixes appear in the wild ('v8.1').
-_TOKEN = re.compile(r'^(<=|>=|<|>|\^|~|!=|=)?\s*v?(\d+)(?:\.(\d+))?')
+# Operator and version are scanned together rather than the string being split first. Splitting on
+# whitespace orphans the operator -- `< 8.0` becomes `<` and `8.0`, and the orphan reads as a
+# floor, which is the very bug this function exists to remove, in a new shape. Composer also
+# accepts a single `|` for OR, which a `||`-only split misses entirely.
+#
+# Anchoring each match at a separator is what keeps the scan off digits inside a pre-release
+# suffix: the `1` of `6.0.0-b1` is preceded by `-`, which is not a separator, so it is never a
+# candidate. A bare `\d+` search would read it as a floor of 1.0. `v` prefixes appear in the wild.
+_BOUND = re.compile(r'(?:^|[\s,|(])\s*(<=|>=|<|>|!=|\^|~|=)?\s*v?(\d+)(?:\.(\d+))?')
 
 
 def bounds_of(constraint):
     """Every version token in a constraint, as (operator, major, minor).
 
-    Tokens carrying no version at all -- '*', 'dev-main', '||' -- are dropped rather than guessed
-    at.
+    Tokens carrying no version at all -- '*', 'dev-main' -- are dropped rather than guessed at.
     """
-    found = []
-    for token in _SEPARATORS.split(str(constraint or '')):
-        match = _TOKEN.match(token)
-        if match:
-            found.append((match.group(1) or '', int(match.group(2)), int(match.group(3) or 0)))
-    return found
+    return [
+        (match.group(1) or '', int(match.group(2)), int(match.group(3) or 0))
+        for match in _BOUND.finditer(str(constraint or ''))
+    ]
+
+
+def is_lower_bound(operator):
+    """`<`, `<=` and `!=` say nothing about how low a constraint reaches."""
+    return not operator.startswith('<') and operator != '!='
 
 
 def floor_of(constraint):
@@ -73,7 +77,7 @@ def floor_of(constraint):
     prevent. So: drop the upper bounds, and take the minimum of what is left rather than the first.
     """
     lower = [(major, minor) for operator, major, minor in bounds_of(constraint)
-             if not operator.startswith('<')]
+             if is_lower_bound(operator)]
     if not lower:
         return None
     major, minor = min(lower)
@@ -130,7 +134,7 @@ matomo = plugin_require.get('matomo') or plugin_require.get('piwik') or ''
 # SearchEngineKeywordsPerformance among them -- are exactly the population that reaches this line,
 # because they declare no require.php. Matching only `>=` failed the job with no remedy but an
 # opt-out. Upper bounds are dropped so the '<6.0.0-b1' half never becomes the answer.
-lower = [major for operator, major, _ in bounds_of(matomo) if not operator.startswith('<')]
+lower = [major for operator, major, _ in bounds_of(matomo) if is_lower_bound(operator)]
 if lower:
     oldest = min(lower)
     alias = f"matomo{oldest}_min_php"

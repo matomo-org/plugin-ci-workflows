@@ -85,6 +85,20 @@ resolves "a union takes its lowest branch, low written first" \
   '{"require":{"php":"^7.4 || ^8.0"}}' '7.4'
 resolves "an upper bound alone is no floor at all" \
   '{"require":{"php":"<8.0"}}' ''
+# Composer allows a space after the operator and a single `|` for OR. A tokeniser that split the
+# string before reading it orphaned the operator -- `< 8.0` became `<` and `8.0`, and the orphan
+# read as a floor -- and missed the single-pipe union entirely. Both are the original defect in a
+# new shape, so they are pinned rather than left to the implementation.
+resolves "a spaced upper bound is still not a floor" \
+  '{"require":{"php":"< 8.0"}}' ''
+resolves "a spaced inclusive upper bound is still not a floor" \
+  '{"require":{"php":"<= 8.0"}}' ''
+resolves "an exclusion is not a floor" \
+  '{"require":{"php":"!= 8.0"}}' ''
+resolves "a single-pipe union takes its lowest branch" \
+  '{"require":{"php":"^8.0|^7.4"}}' '7.4'
+resolves "spaced operators keep their bounds" \
+  '{"require":{"php":">= 7.4 < 9"}}' '7.4'
 resolves "a caret range floors at the version it names" \
   '{"require":{"php":"^8.1"}}' '8.1'
 # A hand-written manifest carries a caret or a tilde, not the generator's `>=`. Matching only
