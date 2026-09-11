@@ -1,0 +1,33 @@
+name: X-dev head probe
+
+# TEMPORARY. A caller subscribes to both `pull_request` and `push: branches: ['**.x-dev']`. When a
+# pull request's own HEAD branch matches that filter -- a forward-merge from 5.x-dev, say -- one
+# commit gets two runs of the same workflow, and the push one skips the checklist gate. This
+# measures whether the push run's green suite then hides the pull request run's red one.
+# Delete with the branch.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - '**.x-dev'
+
+permissions:
+  contents: read
+
+jobs:
+  checklist:
+    # Mimics ai-checklist: pull_request only, and red.
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail the way a checklist gate fails
+        run: exit 1
+
+  code:
+    # Mimics a code check: runs on both events, passes.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "ok"
