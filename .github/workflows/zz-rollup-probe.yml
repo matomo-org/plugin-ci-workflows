@@ -1,0 +1,35 @@
+name: Rollup ordering probe
+
+# TEMPORARY. Determines whether GitHub's status check rollup supersedes a check suite by
+# creation time or by completion time, which decides whether an edit landing mid-analysis can
+# hide a failure that has not happened yet. Delete this file with the branch.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+# Deliberately no concurrency group: the two runs must both survive.
+
+jobs:
+  code-check:
+    # Mimics a code check -- ignores `edited`, and runs long enough that an edit can land while
+    # it is still going, so this run is CREATED first but COMPLETES last, and fails.
+    if: ${{ github.event.action != 'edited' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Take a while, then fail
+        run: |
+          sleep 150
+          exit 1
+
+  checklist:
+    # Mimics the checklist gate -- runs in both lanes, fast, passes. It is what lets the edited
+    # run conclude success while the code check is still running.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "ok"
