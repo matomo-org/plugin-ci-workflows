@@ -22,10 +22,11 @@ def parse_args():
 def update_date(changelog, version, release_date):
     version_line = re.compile(
         rf"^(?P<prefix>\s*(?:#{{1,6}}\s+|[-*+]\s+)?)(?P<emphasis>_{{0,2}})"
-        rf"{re.escape(version)}(?P=emphasis)(?P<rest>.*)$"
+        rf"{re.escape(version)}(?![0-9.])(?P=emphasis)(?P<rest>.*)$"
     )
 
-    lines = changelog.read_text(encoding="utf-8").splitlines(keepends=True)
+    with changelog.open("r", encoding="utf-8", newline="") as changelog_file:
+        lines = changelog_file.read().splitlines(keepends=True)
     updated_lines = list(lines)
 
     for index, line in enumerate(lines):
@@ -88,7 +89,8 @@ def main():
         return 0
 
     if changed:
-        changelog.write_text("".join(updated_lines), encoding="utf-8")
+        with changelog.open("w", encoding="utf-8", newline="") as changelog_file:
+            changelog_file.write("".join(updated_lines))
         print(f"Updated changelog entry for {args.version} to {args.release_date}.")
     else:
         print(f"Changelog entry for {args.version} already has release date {args.release_date}.")

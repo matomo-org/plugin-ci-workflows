@@ -190,8 +190,14 @@ jobs:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-release.yml@main
 ```
 
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `script-ref` | no | `main` | Ref of this repository to take the release helper from. When pinning the workflow to a SHA, pass the same SHA here. |
+
 The workflow refuses to move an existing tag. If the shared workflow is pinned to a commit or tag,
-pass the same ref as its `script-ref` input so the release script is pinned with it.
+pass the same ref as its `script-ref` input so the release script is pinned with it. The protected
+`N.x-prod` branch must also allow `github-actions[bot]` to push the changelog-date commit; the
+`contents: write` permission does not bypass branch protection rules.
 
 ### License check
 

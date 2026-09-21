@@ -16,7 +16,7 @@ on:
         default: 'main'
 
 permissions:
-  contents: write
+  contents: write # commit the changelog date, create the tag, and publish the release
 
 concurrency:
   group: plugin-release-${{ github.repository }}-${{ github.ref }}
@@ -54,6 +54,11 @@ jobs:
             exit 1
           fi
 
+          if [[ -z "$plugin_name" || "$plugin_name" == *$'\n'* || "$plugin_name" == *$'\r'* ]]; then
+            echo "plugin.json contains an invalid plugin name"
+            exit 1
+          fi
+
           if [[ ! "$GITHUB_REF_NAME" =~ ^([0-9]+)\.x-prod$ ]]; then
             echo "Unsupported release branch: $GITHUB_REF_NAME"
             exit 1
@@ -70,12 +75,15 @@ jobs:
             echo "plugin_name=$plugin_name"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Configure authenticated git remote and fetch tags
+      - name: Fetch tags with authenticated git
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}"
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
           git fetch --tags --force origin
 
       - name: Check that the release tag is unused
@@ -91,10 +99,15 @@ jobs:
       - name: Add release date to changelog
         id: changelog
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.metadata.outputs.version }}
           SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
           RELEASE_DATE=$(date -u +%F)
           cp "$SCRIPT_CHECKOUT/scripts/python/update_changelog_date.py" "$RUNNER_TEMP/"
           rm -rf "$SCRIPT_CHECKOUT"
@@ -116,9 +129,14 @@ jobs:
 
       - name: Create release tag
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.metadata.outputs.version }}
         run: |
           set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
           git tag "$VERSION"
           git push origin "refs/tags/$VERSION"
 
@@ -130,6 +148,6 @@ jobs:
           body: |
             Released on ${{ steps.changelog.outputs.release_date }}.
 
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for the changes in this release.
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.metadata.outputs.version }}/CHANGELOG.md) for the changes in this release.
           prerelease: false
           token: ${{ github.token }}

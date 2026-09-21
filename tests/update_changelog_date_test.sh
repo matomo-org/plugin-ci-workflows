@@ -19,6 +19,10 @@ assert_contains() {
 printf '## Changelog\n\n6.0.2 - 2026-09-20\n' > "$WORK/plain.md"
 python3 "$SCRIPT" "$WORK/plain.md" 6.0.2 2026-09-21
 assert_contains '6.0.2 - 2026-09-21' "$WORK/plain.md"
+if python3 "$SCRIPT" --check "$WORK/plain.md" 6.0.2 2026-09-20; then
+    echo 'A stale changelog date must fail validation' >&2
+    exit 1
+fi
 
 printf '## Changelog\n\n### 6.0.2\n' > "$WORK/heading.md"
 python3 "$SCRIPT" "$WORK/heading.md" 6.0.2 2026-09-21
@@ -28,6 +32,24 @@ printf '## Changelog\n\n* __6.0.2__ - 2026-09-20\n' > "$WORK/marked.md"
 python3 "$SCRIPT" --check "$WORK/marked.md" 6.0.2 2026-09-20
 python3 "$SCRIPT" "$WORK/marked.md" 6.0.2 2026-09-21
 assert_contains '* __6.0.2__ - 2026-09-21' "$WORK/marked.md"
+
+printf '## Changelog\n\n## 6.0.20 - 2026-09-20\n\n## 6.0.2 - 2026-09-19\n' > "$WORK/prefix.md"
+python3 "$SCRIPT" "$WORK/prefix.md" 6.0.2 2026-09-21
+python3 "$SCRIPT" --check "$WORK/prefix.md" 6.0.2 2026-09-21
+assert_contains '## 6.0.20 - 2026-09-20' "$WORK/prefix.md"
+assert_contains '## 6.0.2 - 2026-09-21' "$WORK/prefix.md"
+
+printf '## Changelog\r\n\r\n6.0.2 - 2026-09-20\r\n' > "$WORK/crlf.md"
+python3 "$SCRIPT" "$WORK/crlf.md" 6.0.2 2026-09-21
+python3 - "$WORK/crlf.md" <<'PY'
+from pathlib import Path
+import sys
+
+content = Path(sys.argv[1]).read_bytes()
+assert b"6.0.2 - 2026-09-21\r\n" in content
+assert b"\r\n" in content
+assert b"\n" not in content.replace(b"\r\n", b"")
+PY
 
 if python3 "$SCRIPT" --check "$WORK/plain.md" 9.9.9 2026-09-21; then
     echo 'Missing changelog entries must fail' >&2
