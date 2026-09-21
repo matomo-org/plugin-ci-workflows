@@ -194,10 +194,15 @@ jobs:
 | --- | --- | --- | --- |
 | `script-ref` | no | `main` | Ref of this repository to take the release helper from. When pinning the workflow to a SHA, pass the same SHA here. |
 
-The workflow refuses to move an existing tag. If the shared workflow is pinned to a commit or tag,
-pass the same ref as its `script-ref` input so the release script is pinned with it. The protected
-`N.x-prod` branch must also allow `github-actions[bot]` to push the changelog-date commit; the
-`contents: write` permission does not bypass branch protection rules.
+The workflow refuses to move an existing tag to another commit. If the shared workflow is pinned to a commit or tag,
+pass the same ref as its `script-ref` input so the release script is pinned with it. A rerun can
+resume safely when the existing tag points at the current commit; a tag pointing elsewhere still
+fails closed. The protected `N.x-prod` branch must also allow `github-actions[bot]` to push the
+changelog-date commit; the `contents: write` permission does not bypass branch protection rules.
+The caller must not declare workflow-level concurrency or concurrency on the job that calls this
+workflow, because a caller's group replaces the reusable workflow's group. Releases are explicitly
+not marked as GitHub's repository-wide Latest because 5.x and 6.x production lines are released in
+parallel.
 
 ### License check
 

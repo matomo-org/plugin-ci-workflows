@@ -1,16 +1,16 @@
 #!/bin/bash
-# Fails when the workflow that called plugin-ci.yml declares a `concurrency` block of its own.
-# Usage: check_caller_concurrency.sh <workflow-ref> <checkout-root>
+# Fails when the workflow that called a reusable workflow declares a `concurrency` block of its
+# own.
+# Usage: check_caller_concurrency.sh <workflow-ref> <checkout-root> [called-workflow]
 #   workflow-ref   the run's GITHUB_WORKFLOW_REF, owner/repo/path@ref
 #   checkout-root  directory the caller repository is checked out in
+#   called-workflow optional repository-relative reusable workflow path to check for; defaults to
+#                  plugin-ci-workflows/.github/workflows/plugin-ci.yml
 #
-# plugin-ci.yml owns the group, one lane per pull request, and a called workflow cannot override a
-# caller's: concurrency governs the run, and the run belongs to the caller. A caller-level group
-# therefore replaces the umbrella's silently -- it supersedes on a key the umbrella knows nothing
-# about, and GitHub raises no deadlock error either, because the caller's group never matches the
-# static prefix used here. UsersFlow#135 is what that looks like: two red PHPStan checks that had
-# never analysed a file. A red check explained by nothing is the only symptom, which is why this is
-# asserted rather than left to the README.
+# A called workflow cannot override a caller's concurrency: concurrency governs the run, and the
+# run belongs to the caller. A caller-level group therefore replaces the called workflow's silently
+# and GitHub raises no deadlock error either. A red check explained by nothing is the only symptom,
+# which is why this is asserted rather than left to the README.
 #
 # Every plugin ships matomo-ai-checklist.yml carrying exactly such a block, rightly so while that
 # file stands alone, and the fleet migration renames it to ci.yml. Whether the block was deleted on
@@ -19,7 +19,7 @@ set -u
 
 WORKFLOW_REF="${1:-}"
 CHECKOUT_ROOT="${2:-}"
-UMBRELLA='plugin-ci-workflows/.github/workflows/plugin-ci.yml'
+UMBRELLA="${3:-plugin-ci-workflows/.github/workflows/plugin-ci.yml}"
 
 if [ -z "$WORKFLOW_REF" ] || [ -z "$CHECKOUT_ROOT" ]; then
   echo "Usage: $0 <workflow-ref> <checkout-root>" >&2
@@ -85,7 +85,7 @@ for name, job in (doc.get('jobs') or {}).items():
     if not isinstance(job, dict) or not job.get('concurrency'):
         continue
     if umbrella in str(job.get('uses', '')):
-        offenders.append(f"the job '{name}', which calls Plugins CI")
+        offenders.append(f"the job '{name}', which calls the reusable workflow")
 
 if not offenders:
     print(f"ok - {caller_path} declares no concurrency of its own")
@@ -96,22 +96,22 @@ named = ' and '.join(offenders)
 # interleaves them in the order they arrive.
 print(
     f"::error file={caller_path}::Delete the concurrency block on {named}."
-    " Plugins CI declares the group itself, and a called workflow cannot override a caller's,"
+    " The reusable workflow declares the group itself, and a called workflow cannot override a caller's,"
     " so yours silently replaces it and supersedes runs on a key it knows nothing about.",
     flush=True,
 )
 print(f"""
 {caller_path} declares its own concurrency on {named}.
 
-Delete it. Plugins CI declares the group itself, one lane per pull request, and this workflow
-cannot override yours -- concurrency governs the run, and the run is yours. So your group replaces
-the umbrella's entirely, superseding or queueing runs on a key it knows nothing about, and GitHub
-raises no deadlock error to say so. UsersFlow#135 is what that looks like from the outside: checks
-reporting red having never analysed a file, and nothing on the pull request to explain it.
+Delete it. The reusable workflow declares the group itself, one lane per pull request, and this
+workflow cannot override yours -- concurrency governs the run, and the run is yours. So your group
+replaces the called workflow's entirely, superseding or queueing runs on a key it knows nothing
+about, and GitHub raises no deadlock error to say so. Checks can report red having never analysed a
+file, with nothing on the pull request to explain it.
 
 If the block arrived by renaming matomo-ai-checklist.yml to ci.yml, deleting it is the whole fix:
-that file needs it while it stands alone, and Plugins CI replaces it. If another job in this file
-needs a lane of its own, give that job its own workflow file.
+that file needs it while it stands alone, and the reusable workflow replaces it. If another job in
+this file needs a lane of its own, give that job its own workflow file.
 """, file=sys.stderr)
 sys.exit(1)
 PY

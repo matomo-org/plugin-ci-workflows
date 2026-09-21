@@ -59,6 +59,9 @@ jobs:
       - name: Check the caller concurrency guard
         run: bash tests/caller_concurrency_test.sh
 
+      - name: Check the plugin release workflow invariants
+        run: bash tests/plugin_release_invariants_test.sh
+
       - name: Check the pre-push hook sync check
         run: bash tests/hook_sync_test.sh
 

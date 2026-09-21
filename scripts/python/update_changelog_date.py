@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import argparse
 import re
 import sys
@@ -7,7 +5,10 @@ from datetime import date
 from pathlib import Path
 
 
-DATE_PATTERN = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
+DATE_PATTERN = re.compile(
+    r"(?P<iso>(?<!\d)\d{4}-\d{2}-\d{2}(?!\d))"
+    r"|(?P<slash>(?<!\d)\d{2}/\d{2}/\d{4}(?!\d))"
+)
 
 
 def parse_args():
@@ -21,8 +22,8 @@ def parse_args():
 
 def update_date(changelog, version, release_date):
     version_line = re.compile(
-        rf"^(?P<prefix>\s*(?:#{{1,6}}\s+|[-*+]\s+)?)(?P<emphasis>_{{0,2}})"
-        rf"{re.escape(version)}(?![0-9.])(?P=emphasis)(?P<rest>.*)$"
+        rf"^(?P<prefix>\s*(?:#{{1,6}}\s+|[-*+]\s+)?)(?P<emphasis>_{{0,2}}|\*{{0,2}})"
+        rf"{re.escape(version)}(?![0-9.]|[-+][A-Za-z0-9])(?P=emphasis)(?P<rest>.*)$"
     )
 
     with changelog.open("r", encoding="utf-8", newline="") as changelog_file:
@@ -38,9 +39,12 @@ def update_date(changelog, version, release_date):
         rest = match.group("rest")
         date_match = DATE_PATTERN.search(rest)
         if date_match:
+            replacement_date = release_date
+            if date_match.group("slash"):
+                replacement_date = date.fromisoformat(release_date).strftime("%d/%m/%Y")
             updated_rest = (
                 rest[:date_match.start()]
-                + release_date
+                + replacement_date
                 + rest[date_match.end():]
             )
         else:
@@ -55,6 +59,7 @@ def update_date(changelog, version, release_date):
         )
         line_ending = line[len(content):]
         updated_lines[index] = updated_content + line_ending
+        # The first matching heading is the authoritative entry in newest-first changelogs.
         changed = updated_lines != lines
         return changed, updated_lines
 

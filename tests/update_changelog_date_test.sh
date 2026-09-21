@@ -33,6 +33,16 @@ python3 "$SCRIPT" --check "$WORK/marked.md" 6.0.2 2026-09-20
 python3 "$SCRIPT" "$WORK/marked.md" 6.0.2 2026-09-21
 assert_contains '* __6.0.2__ - 2026-09-21' "$WORK/marked.md"
 
+printf '## Changelog\n\n* **6.0.2** - 20/09/2026\n' > "$WORK/slash-date.md"
+python3 "$SCRIPT" "$WORK/slash-date.md" 6.0.2 2026-09-21
+python3 "$SCRIPT" --check "$WORK/slash-date.md" 6.0.2 2026-09-21
+assert_contains '* **6.0.2** - 21/09/2026' "$WORK/slash-date.md"
+
+printf '## Changelog\n\n### 6.0.2-rc1\n\n### 6.0.2\n' > "$WORK/prerelease.md"
+python3 "$SCRIPT" "$WORK/prerelease.md" 6.0.2 2026-09-21
+assert_contains '### 6.0.2-rc1' "$WORK/prerelease.md"
+assert_contains '### 6.0.2 - 2026-09-21' "$WORK/prerelease.md"
+
 printf '## Changelog\n\n## 6.0.20 - 2026-09-20\n\n## 6.0.2 - 2026-09-19\n' > "$WORK/prefix.md"
 python3 "$SCRIPT" "$WORK/prefix.md" 6.0.2 2026-09-21
 python3 "$SCRIPT" --check "$WORK/prefix.md" 6.0.2 2026-09-21
