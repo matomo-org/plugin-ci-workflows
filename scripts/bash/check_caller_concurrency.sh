@@ -103,11 +103,10 @@ print(
 print(f"""
 {caller_path} declares its own concurrency on {named}.
 
-Delete it. The reusable workflow declares the group itself, one lane per pull request, and this
-workflow cannot override yours -- concurrency governs the run, and the run is yours. So your group
-replaces the called workflow's entirely, superseding or queueing runs on a key it knows nothing
-about, and GitHub raises no deadlock error to say so. Checks can report red having never analysed a
-file, with nothing on the pull request to explain it.
+Delete it. The reusable workflow declares the group itself, and this workflow cannot override yours --
+concurrency governs the run, and the run is yours. So your group replaces the called workflow's entirely,
+superseding or queueing runs on a key it knows nothing about, and GitHub raises no deadlock error to say
+so. Checks can report red having never analysed a file, with nothing on the pull request to explain it.
 
 If the block arrived by renaming matomo-ai-checklist.yml to ci.yml, deleting it is the whole fix:
 that file needs it while it stands alone, and the reusable workflow replaces it. If another job in

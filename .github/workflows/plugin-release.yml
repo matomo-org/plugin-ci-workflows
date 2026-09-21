@@ -10,7 +10,7 @@ on:
   workflow_call:
     inputs:
       script-ref:
-        description: "Ref of matomo-org/plugin-ci-workflows to take the release script from"
+        description: "Ref of matomo-org/plugin-ci-workflows to take the release script from. This is this repository, so the workflow SHA is the right value when pinning."
         required: false
         type: string
         default: 'main'
@@ -26,6 +26,7 @@ jobs:
   release:
     name: Build release
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,75 +52,43 @@ jobs:
             "$WORKFLOW_REF" "$GITHUB_WORKSPACE" \
             "plugin-ci-workflows/.github/workflows/plugin-release.yml"
 
-      - name: Read and validate plugin metadata
-        id: metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          version=$(python3 -c 'import json; print(json.load(open("plugin.json"))["version"])')
-          plugin_name=$(python3 -c 'import json; print(json.load(open("plugin.json"))["name"])')
-
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "plugin.json contains a non-stable release version: $version"
-            exit 1
-          fi
-
-          if [[ -z "$plugin_name" || "$plugin_name" == *$'\n'* || "$plugin_name" == *$'\r'* ]]; then
-            echo "plugin.json contains an invalid plugin name"
-            exit 1
-          fi
-
-          if [[ ! "$GITHUB_REF_NAME" =~ ^([0-9]+)\.x-prod$ ]]; then
-            echo "Unsupported release branch: $GITHUB_REF_NAME"
-            exit 1
-          fi
-          expected_major="${BASH_REMATCH[1]}"
-
-          if [[ "$version" != "$expected_major."* ]]; then
-            echo "Version $version does not belong on $GITHUB_REF_NAME"
-            exit 1
-          fi
-
-          {
-            echo "version=$version"
-            echo "plugin_name=$plugin_name"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Check the release tag
-        id: tag
-        shell: bash
+      - name: Fetch current production branch
         env:
-          VERSION: ${{ steps.metadata.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
-          if tag_commit=$(git rev-parse --verify "refs/tags/$VERSION^{commit}" 2>/dev/null); then
-            head_commit=$(git rev-parse HEAD)
-            if [[ "$tag_commit" != "$head_commit" ]]; then
-              echo "A tag for $VERSION already exists on a different commit. Refusing to move or rebuild it."
-              exit 1
-            fi
-            echo "A tag for $VERSION already points at HEAD; the release can be safely resumed."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            tag_timestamp=$(git show -s --format=%ct "refs/tags/$VERSION^{commit}")
-            echo "release_date=$(date -u -d "@$tag_timestamp" +%F)" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "release_date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
-          fi
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth_header"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
+          git fetch --no-tags origin \
+            "refs/heads/$GITHUB_REF_NAME:refs/remotes/origin/$GITHUB_REF_NAME"
+
+      - name: Prepare release
+        id: prepare
+        env:
+          SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$SCRIPT_CHECKOUT/scripts/bash/prepare_plugin_release.sh" plugin.json "$GITHUB_REF_NAME"
 
       - name: Add release date to changelog
         id: changelog
+        if: steps.prepare.outputs.release_needed == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          RELEASE_DATE: ${{ steps.tag.outputs.release_date }}
-          TAG_EXISTS: ${{ steps.tag.outputs.exists }}
-          VERSION: ${{ steps.metadata.outputs.version }}
+          RELEASE_DATE: ${{ steps.prepare.outputs.release_date }}
+          TAG_EXISTS: ${{ steps.prepare.outputs.tag_exists }}
+          VERSION: ${{ steps.prepare.outputs.version }}
           SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
         shell: bash
         run: |
           set -euo pipefail
           auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth_header"
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=http.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
@@ -146,10 +115,11 @@ jobs:
           echo "release_date=$RELEASE_DATE" >> "$GITHUB_OUTPUT"
 
       - name: Create release tag
+        if: steps.prepare.outputs.release_needed == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TAG_EXISTS: ${{ steps.tag.outputs.exists }}
-          VERSION: ${{ steps.metadata.outputs.version }}
+          TAG_EXISTS: ${{ steps.prepare.outputs.tag_exists }}
+          VERSION: ${{ steps.prepare.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -157,6 +127,7 @@ jobs:
             echo "Reusing existing tag $VERSION."
           else
             auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+            echo "::add-mask::$auth_header"
             export GIT_CONFIG_COUNT=1
             export GIT_CONFIG_KEY_0=http.extraheader
             export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
@@ -165,11 +136,12 @@ jobs:
           fi
 
       - name: Create GitHub release
+        if: steps.prepare.outputs.release_needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          PLUGIN_NAME: ${{ steps.metadata.outputs.plugin_name }}
+          PLUGIN_NAME: ${{ steps.prepare.outputs.plugin_name }}
           RELEASE_DATE: ${{ steps.changelog.outputs.release_date }}
-          VERSION: ${{ steps.metadata.outputs.version }}
+          VERSION: ${{ steps.prepare.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
@@ -187,7 +159,7 @@ jobs:
               --field "body=$(cat "$release_notes")" \
               --field draft=false \
               --field prerelease=false \
-              --field make_latest=false >/dev/null
+              --raw-field make_latest=false >/dev/null
           else
             gh release create "$VERSION" \
               --repo "$GITHUB_REPOSITORY" \

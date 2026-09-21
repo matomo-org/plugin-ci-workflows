@@ -195,10 +195,18 @@ jobs:
 | `script-ref` | no | `main` | Ref of this repository to take the release helper from. When pinning the workflow to a SHA, pass the same SHA here. |
 
 The workflow refuses to move an existing tag to another commit. If the shared workflow is pinned to a commit or tag,
-pass the same ref as its `script-ref` input so the release script is pinned with it. A rerun can
-resume safely when the existing tag points at the current commit; a tag pointing elsewhere still
-fails closed. The protected `N.x-prod` branch must also allow `github-actions[bot]` to push the
-changelog-date commit; the `contents: write` permission does not bypass branch protection rules.
+pass the same ref as its `script-ref` input so the release script is pinned with it. A run resumes when the existing
+tag is the current commit, and it also recovers a tag created by an earlier partial run when the tag is the current
+production branch tip. If the tag is behind the production branch, the workflow exits successfully because the
+version was already released and `plugin.json` has not been bumped yet.
+
+Do not use GitHub's **Re-run failed jobs** for a run that has already pushed its changelog-date commit: GitHub reruns
+the original commit, so the job cannot safely push that commit again. Use **Run workflow** to dispatch a fresh run from
+the current `N.x-prod` branch tip instead. The workflow fails with that instruction if it detects that the branch
+advanced after the original run. Other tag/branch histories fail closed rather than moving or rebuilding a tag.
+
+The protected `N.x-prod` branch must also allow `github-actions[bot]` to push the changelog-date commit; the
+`contents: write` permission does not bypass branch protection rules.
 The caller must not declare workflow-level concurrency or concurrency on the job that calls this
 workflow, because a caller's group replaces the reusable workflow's group. Releases are explicitly
 not marked as GitHub's repository-wide Latest because 5.x and 6.x production lines are released in

@@ -28,6 +28,14 @@ printf '## Changelog\n\n### 6.0.2\n' > "$WORK/heading.md"
 python3 "$SCRIPT" "$WORK/heading.md" 6.0.2 2026-09-21
 assert_contains '### 6.0.2 - 2026-09-21' "$WORK/heading.md"
 
+printf '## Changelog\n\n## 6.0.2 (unreleased)\n' > "$WORK/unreleased.md"
+python3 "$SCRIPT" "$WORK/unreleased.md" 6.0.2 2026-09-21
+assert_contains '## 6.0.2 - 2026-09-21' "$WORK/unreleased.md"
+
+printf '## Changelog\n\n## Version 6.0.2\n' > "$WORK/version-label.md"
+python3 "$SCRIPT" "$WORK/version-label.md" 6.0.2 2026-09-21
+assert_contains '## Version 6.0.2 - 2026-09-21' "$WORK/version-label.md"
+
 printf '## Changelog\n\n* __6.0.2__ - 2026-09-20\n' > "$WORK/marked.md"
 python3 "$SCRIPT" --check "$WORK/marked.md" 6.0.2 2026-09-20
 python3 "$SCRIPT" "$WORK/marked.md" 6.0.2 2026-09-21
@@ -37,6 +45,16 @@ printf '## Changelog\n\n* **6.0.2** - 20/09/2026\n' > "$WORK/slash-date.md"
 python3 "$SCRIPT" "$WORK/slash-date.md" 6.0.2 2026-09-21
 python3 "$SCRIPT" --check "$WORK/slash-date.md" 6.0.2 2026-09-21
 assert_contains '* **6.0.2** - 21/09/2026' "$WORK/slash-date.md"
+[[ "$(python3 "$SCRIPT" --read-date "$WORK/slash-date.md" 6.0.2)" == '2026-09-21' ]]
+
+printf '## Changelog\n\n* **6.0.2** - 09/20/2026\n' > "$WORK/us-slash-date.md"
+python3 "$SCRIPT" "$WORK/us-slash-date.md" 6.0.2 2026-09-21
+assert_contains '* **6.0.2** - 09/21/2026' "$WORK/us-slash-date.md"
+[[ "$(python3 "$SCRIPT" --read-date "$WORK/us-slash-date.md" 6.0.2)" == '2026-09-21' ]]
+
+printf '## Changelog\n\n* 6.0.2 - see PR 2026-01-01 backport\n' > "$WORK/embedded-date.md"
+python3 "$SCRIPT" "$WORK/embedded-date.md" 6.0.2 2026-09-21
+assert_contains '* 6.0.2 - 2026-09-21 - see PR 2026-01-01 backport' "$WORK/embedded-date.md"
 
 printf '## Changelog\n\n### 6.0.2-rc1\n\n### 6.0.2\n' > "$WORK/prerelease.md"
 python3 "$SCRIPT" "$WORK/prerelease.md" 6.0.2 2026-09-21
