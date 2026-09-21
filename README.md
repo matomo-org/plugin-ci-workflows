@@ -172,6 +172,12 @@ that `CHANGELOG.md` contains that version, adds or corrects its UTC release date
 date before creating the matching Git tag and GitHub Release. The tag is also the signal consumed by
 the Matomo Marketplace for distributed plugins.
 
+The changelog entry must start at the beginning of a line with the bare version, optionally prefixed
+by a Markdown heading or list marker, `Version `, or `_`/`**` emphasis. A trailing ` - YYYY-MM-DD`,
+` - DD/MM/YYYY`, ` - MM/DD/YYYY`, or `(unreleased)`/`(not yet released)`/a parenthesized date is supported. Keep-a-Changelog
+bracketed versions such as `[6.0.2]` are not recognised. Ambiguous slash dates are interpreted
+day-first.
+
 ```yaml
 name: Release plugin
 
@@ -197,8 +203,9 @@ jobs:
 The workflow refuses to move an existing tag to another commit. If the shared workflow is pinned to a commit or tag,
 pass the same ref as its `script-ref` input so the release script is pinned with it. A run resumes when the existing
 tag is the current commit, and it also recovers a tag created by an earlier partial run when the tag is the current
-production branch tip. If the tag is behind the production branch, the workflow exits successfully because the
-version was already released and `plugin.json` has not been bumped yet.
+production branch tip. If the tag is behind the production branch, the workflow does not mutate the branch or tag
+because the version was already released and `plugin.json` has not been bumped yet; it still verifies or creates the
+corresponding GitHub Release so a tag-push/release-publication partial failure can recover.
 
 Do not use GitHub's **Re-run failed jobs** for a run that has already pushed its changelog-date commit: GitHub reruns
 the original commit, so the job cannot safely push that commit again. Use **Run workflow** to dispatch a fresh run from

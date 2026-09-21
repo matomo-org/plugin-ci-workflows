@@ -41,6 +41,7 @@ new_repo "$WORK/new"
 run_prepare "$WORK/new" "$WORK/new-output"
 assert_output 'tag_exists=false' "$WORK/new-output"
 assert_output 'release_needed=true' "$WORK/new-output"
+assert_output 'publish_release=true' "$WORK/new-output"
 assert_output 'version=5.0.0' "$WORK/new-output"
 assert_output 'plugin_name=TestPlugin' "$WORK/new-output"
 
@@ -52,11 +53,39 @@ if (cd "$WORK/invalid-version" && GITHUB_OUTPUT="$WORK/invalid-version-output" b
 fi
 grep -Fq 'does not belong on 5.x-prod' "$WORK/invalid-version-error"
 
+new_repo "$WORK/non-stable"
+printf '{"name":"TestPlugin","version":"5.0.0-rc1"}\n' > "$WORK/non-stable/plugin.json"
+if (cd "$WORK/non-stable" && GITHUB_OUTPUT="$WORK/non-stable-output" bash "$SCRIPT" plugin.json 5.x-prod) > "$WORK/non-stable-error" 2>&1; then
+    echo 'A prerelease version must fail validation' >&2
+    exit 1
+fi
+grep -Fq 'non-stable release version' "$WORK/non-stable-error"
+
+new_repo "$WORK/missing-metadata"
+mv "$WORK/missing-metadata/plugin.json" "$WORK/missing-metadata/plugin.json.backup"
+if (cd "$WORK/missing-metadata" && GITHUB_OUTPUT="$WORK/missing-metadata-output" bash "$SCRIPT" plugin.json 5.x-prod) > "$WORK/missing-metadata-error" 2>&1; then
+    echo 'A missing plugin.json must fail validation' >&2
+    exit 1
+fi
+grep -Fq 'Could not read plugin.json' "$WORK/missing-metadata-error"
+
 new_repo "$WORK/resume"
 git -C "$WORK/resume" tag 5.0.0
 run_prepare "$WORK/resume" "$WORK/resume-output"
 assert_output 'tag_exists=true' "$WORK/resume-output"
-assert_output 'release_needed=true' "$WORK/resume-output"
+assert_output 'release_needed=false' "$WORK/resume-output"
+assert_output 'publish_release=true' "$WORK/resume-output"
+
+new_repo "$WORK/missing-tag-date"
+printf '## Changelog\n\n* 5.0.0\n' > "$WORK/missing-tag-date/CHANGELOG.md"
+git -C "$WORK/missing-tag-date" add CHANGELOG.md
+git -C "$WORK/missing-tag-date" commit -q -m 'remove release date'
+git -C "$WORK/missing-tag-date" tag 5.0.0
+if (cd "$WORK/missing-tag-date" && GITHUB_OUTPUT="$WORK/missing-tag-date-output" bash "$SCRIPT" plugin.json 5.x-prod) > "$WORK/missing-tag-date-error" 2>&1; then
+    echo 'A tagged changelog without a date must fail validation' >&2
+    exit 1
+fi
+grep -Fq 'readable release date' "$WORK/missing-tag-date-error"
 
 new_repo "$WORK/already-released"
 printf 'later change\n' >> "$WORK/already-released/CHANGELOG.md"
@@ -67,6 +96,7 @@ git -C "$WORK/already-released" tag 5.0.0 HEAD~1
 run_prepare "$WORK/already-released" "$WORK/already-released-output"
 assert_output 'tag_exists=true' "$WORK/already-released-output"
 assert_output 'release_needed=false' "$WORK/already-released-output"
+assert_output 'publish_release=true' "$WORK/already-released-output"
 
 new_repo "$WORK/recover"
 printf 'release date\n' >> "$WORK/recover/CHANGELOG.md"
@@ -78,7 +108,8 @@ git -C "$WORK/recover" tag 5.0.0 "$RECOVERY_COMMIT"
 git -C "$WORK/recover" checkout -q --detach HEAD~1
 run_prepare "$WORK/recover" "$WORK/recover-output"
 assert_output 'tag_exists=true' "$WORK/recover-output"
-assert_output 'release_needed=true' "$WORK/recover-output"
+assert_output 'release_needed=false' "$WORK/recover-output"
+assert_output 'publish_release=true' "$WORK/recover-output"
 [[ "$(git -C "$WORK/recover" rev-parse HEAD)" == "$RECOVERY_COMMIT" ]]
 
 new_repo "$WORK/advanced"

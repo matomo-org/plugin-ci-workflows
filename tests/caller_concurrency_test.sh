@@ -162,7 +162,9 @@ release_output="$(bash "$GUARD" \
   "$RELEASE_ROOT" \
   'plugin-ci-workflows/.github/workflows/plugin-release.yml' 2>&1)"
 release_status=$?
-if [ "$release_status" = 1 ] && [[ "$release_output" == *"::error file=.github/workflows/release.yml::"* ]]; then
+if [ "$release_status" = 1 ] \
+    && [[ "$release_output" == *"::error file=.github/workflows/release.yml::"* ]] \
+    && [[ "$release_output" == *"plugin-release.yml declares"* ]]; then
   echo "ok - a custom called workflow path is checked"
 else
   echo "FAIL - a custom called workflow path is checked (exit $release_status)"

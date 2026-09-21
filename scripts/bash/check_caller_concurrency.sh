@@ -22,7 +22,7 @@ CHECKOUT_ROOT="${2:-}"
 UMBRELLA="${3:-plugin-ci-workflows/.github/workflows/plugin-ci.yml}"
 
 if [ -z "$WORKFLOW_REF" ] || [ -z "$CHECKOUT_ROOT" ]; then
-  echo "Usage: $0 <workflow-ref> <checkout-root>" >&2
+  echo "Usage: $0 <workflow-ref> <checkout-root> [called-workflow]" >&2
   exit 1
 fi
 
@@ -61,6 +61,7 @@ python3 - "$CALLER_FILE" "$CALLER_PATH" "$UMBRELLA" <<'PY'
 import sys, yaml
 
 caller_file, caller_path, umbrella = sys.argv[1], sys.argv[2], sys.argv[3]
+called_name = umbrella.rsplit('/', 1)[-1]
 
 # Fail closed on a caller that does not parse, and say so: an uncaught traceback exits non-zero
 # too, but it reads as a broken guard rather than a broken workflow.
@@ -96,15 +97,15 @@ named = ' and '.join(offenders)
 # interleaves them in the order they arrive.
 print(
     f"::error file={caller_path}::Delete the concurrency block on {named}."
-    " The reusable workflow declares the group itself, and a called workflow cannot override a caller's,"
+    f" The reusable workflow {called_name} declares the group itself, and a called workflow cannot override a caller's,"
     " so yours silently replaces it and supersedes runs on a key it knows nothing about.",
     flush=True,
 )
 print(f"""
 {caller_path} declares its own concurrency on {named}.
 
-Delete it. The reusable workflow declares the group itself, and this workflow cannot override yours --
-concurrency governs the run, and the run is yours. So your group replaces the called workflow's entirely,
+Delete it. The reusable workflow {called_name} declares the group itself, and this workflow cannot
+override yours -- concurrency governs the run, and the run is yours. So your group replaces the called workflow's entirely,
 superseding or queueing runs on a key it knows nothing about, and GitHub raises no deadlock error to say
 so. Checks can report red having never analysed a file, with nothing on the pull request to explain it.
 

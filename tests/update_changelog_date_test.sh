@@ -32,6 +32,16 @@ printf '## Changelog\n\n## 6.0.2 (unreleased)\n' > "$WORK/unreleased.md"
 python3 "$SCRIPT" "$WORK/unreleased.md" 6.0.2 2026-09-21
 assert_contains '## 6.0.2 - 2026-09-21' "$WORK/unreleased.md"
 
+printf '## Changelog\n\n## 6.0.2 (not yet released)\n' > "$WORK/not-yet-released.md"
+python3 "$SCRIPT" "$WORK/not-yet-released.md" 6.0.2 2026-09-21
+assert_contains '## 6.0.2 - 2026-09-21' "$WORK/not-yet-released.md"
+
+printf '## Changelog\n\n## 6.0.2 (2026-09-20)\n' > "$WORK/parenthesized-date.md"
+python3 "$SCRIPT" "$WORK/parenthesized-date.md" 6.0.2 2026-09-21
+python3 "$SCRIPT" --check "$WORK/parenthesized-date.md" 6.0.2 2026-09-21
+assert_contains '## 6.0.2 (2026-09-21)' "$WORK/parenthesized-date.md"
+[[ "$(python3 "$SCRIPT" --read-date "$WORK/parenthesized-date.md" 6.0.2)" == '2026-09-21' ]]
+
 printf '## Changelog\n\n## Version 6.0.2\n' > "$WORK/version-label.md"
 python3 "$SCRIPT" "$WORK/version-label.md" 6.0.2 2026-09-21
 assert_contains '## Version 6.0.2 - 2026-09-21' "$WORK/version-label.md"

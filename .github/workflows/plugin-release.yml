@@ -75,15 +75,24 @@ jobs:
           set -euo pipefail
           bash "$SCRIPT_CHECKOUT/scripts/bash/prepare_plugin_release.sh" plugin.json "$GITHUB_REF_NAME"
 
+      - name: Stage release scripts
+        env:
+          SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$SCRIPT_CHECKOUT/scripts/python/update_changelog_date.py" "$RUNNER_TEMP/"
+          cp "$SCRIPT_CHECKOUT/scripts/bash/create_plugin_release_tag.sh" "$RUNNER_TEMP/"
+          cp "$SCRIPT_CHECKOUT/scripts/bash/publish_plugin_release.sh" "$RUNNER_TEMP/"
+          # Keep the shared checkout out of the plugin repository before git records the release.
+          rm -rf "$SCRIPT_CHECKOUT"
+
       - name: Add release date to changelog
-        id: changelog
         if: steps.prepare.outputs.release_needed == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_DATE: ${{ steps.prepare.outputs.release_date }}
-          TAG_EXISTS: ${{ steps.prepare.outputs.tag_exists }}
           VERSION: ${{ steps.prepare.outputs.version }}
-          SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
         shell: bash
         run: |
           set -euo pipefail
@@ -92,79 +101,43 @@ jobs:
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=http.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
-          cp "$SCRIPT_CHECKOUT/scripts/python/update_changelog_date.py" "$RUNNER_TEMP/"
-          # Keep the shared checkout out of the plugin repository before git records the release.
-          rm -rf "$SCRIPT_CHECKOUT"
 
-          if [[ "$TAG_EXISTS" == true ]]; then
-            python3 "$RUNNER_TEMP/update_changelog_date.py" \
-              --check CHANGELOG.md "$VERSION" "$RELEASE_DATE"
-          else
-            python3 "$RUNNER_TEMP/update_changelog_date.py" \
-              CHANGELOG.md "$VERSION" "$RELEASE_DATE"
+          python3 "$RUNNER_TEMP/update_changelog_date.py" \
+            CHANGELOG.md "$VERSION" "$RELEASE_DATE"
 
-            if ! git diff --quiet -- CHANGELOG.md; then
-              git config user.email "github-actions[bot]@users.noreply.github.com"
-              git config user.name "github-actions[bot]"
-              git add -- CHANGELOG.md
-              git commit -m "Add release date for $VERSION"
-              git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
-            fi
+          if ! git diff --quiet -- CHANGELOG.md; then
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git config user.name "github-actions[bot]"
+            git add -- CHANGELOG.md
+            git commit -m "Add release date for $VERSION"
+            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
           fi
-
-          echo "release_date=$RELEASE_DATE" >> "$GITHUB_OUTPUT"
 
       - name: Create release tag
         if: steps.prepare.outputs.release_needed == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          TAG_EXISTS: ${{ steps.prepare.outputs.tag_exists }}
           VERSION: ${{ steps.prepare.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$TAG_EXISTS" == true ]]; then
-            echo "Reusing existing tag $VERSION."
-          else
-            auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
-            echo "::add-mask::$auth_header"
-            export GIT_CONFIG_COUNT=1
-            export GIT_CONFIG_KEY_0=http.extraheader
-            export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
-            git tag "$VERSION"
-            git push origin "refs/tags/$VERSION"
-          fi
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth_header"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
+          bash "$RUNNER_TEMP/create_plugin_release_tag.sh" "$VERSION" "$GITHUB_REF_NAME"
 
       - name: Create GitHub release
-        if: steps.prepare.outputs.release_needed == 'true'
+        if: steps.prepare.outputs.publish_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           PLUGIN_NAME: ${{ steps.prepare.outputs.plugin_name }}
-          RELEASE_DATE: ${{ steps.changelog.outputs.release_date }}
+          RELEASE_DATE: ${{ steps.prepare.outputs.release_date }}
           VERSION: ${{ steps.prepare.outputs.version }}
+          PUBLISH_SCRIPT: ${{ runner.temp }}/publish_plugin_release.sh
         shell: bash
         run: |
           set -euo pipefail
-          release_notes="$RUNNER_TEMP/release-notes.md"
-          {
-            printf 'Released on %s.\n\n' "$RELEASE_DATE"
-            printf 'See [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md) for the changes in this release.\n' \
-              "$GITHUB_REPOSITORY" "$VERSION"
-          } > "$release_notes"
-
-          if release_id=$(gh release view "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId 2>/dev/null); then
-            gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$release_id" \
-              --field "name=$PLUGIN_NAME $VERSION" \
-              --field "body=$(cat "$release_notes")" \
-              --field draft=false \
-              --field prerelease=false \
-              --raw-field make_latest=false >/dev/null
-          else
-            gh release create "$VERSION" \
-              --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --title "$PLUGIN_NAME $VERSION" \
-              --notes-file "$release_notes" \
-              --latest=false
-          fi
+          bash "$PUBLISH_SCRIPT" "$PLUGIN_NAME" "$VERSION" "$RELEASE_DATE"

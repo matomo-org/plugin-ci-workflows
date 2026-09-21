@@ -9,7 +9,10 @@ DATE_PATTERN = re.compile(
     r"(?P<iso>(?<!\d)\d{4}-\d{2}-\d{2}(?!\d))"
     r"|(?P<slash>(?<!\d)\d{2}/\d{2}/\d{4}(?!\d))"
 )
-UNRELEASED_PATTERN = re.compile(r"^(?P<prefix>\s*(?:-\s*)?)(?:\(?unreleased\)?)(?P<suffix>.*)$", re.IGNORECASE)
+UNRELEASED_PATTERN = re.compile(
+    r"^(?P<prefix>\s*(?:-\s*)?)(?:\(?unreleased\)?|\(?not\s+yet\s+released\)?)(?P<suffix>.*)$",
+    re.IGNORECASE,
+)
 
 
 def parse_args():
@@ -37,6 +40,7 @@ def date_from_match(date_match, release_date=None):
     old_date = date_match.group("slash")
     first, second, year = (int(part) for part in old_date.split("/"))
 
+    # Ambiguous slash dates use day-first, matching Matomo's existing changelog convention.
     if second > 12 and first <= 12:
         month, day = first, second
     else:
@@ -58,7 +62,7 @@ def read_date(changelog, version):
             if not match:
                 continue
             rest = match.group("rest")
-            date_match = DATE_PATTERN.match(rest.lstrip(" -"))
+            date_match = DATE_PATTERN.match(rest.lstrip(" -(["))
             if not date_match:
                 break
             return date_from_match(date_match)
@@ -79,9 +83,9 @@ def update_date(changelog, version, release_date):
             continue
 
         rest = match.group("rest")
-        date_match = DATE_PATTERN.match(rest.lstrip(" -"))
+        date_match = DATE_PATTERN.match(rest.lstrip(" -(["))
         if date_match:
-            date_offset = len(rest) - len(rest.lstrip(" -"))
+            date_offset = len(rest) - len(rest.lstrip(" -(["))
             replacement_date = release_date
             if date_match.group("slash"):
                 replacement_date = date_from_match(date_match, release_date)

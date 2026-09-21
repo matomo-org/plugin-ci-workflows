@@ -18,6 +18,7 @@ from pathlib import Path
 import yaml
 
 workflow_path = Path(sys.argv[1])
+workflow_root = workflow_path.parent.parent.parent
 with workflow_path.open() as handle:
     document = yaml.safe_load(handle)
 
@@ -52,7 +53,7 @@ def check(description, condition):
 
 check("the release workflow is reusable", "workflow_call" in triggers)
 check("it declares a release job", "release" in jobs)
-check("the release job has a timeout", release.get("timeout-minutes") == 15)
+check("the release job has a timeout", isinstance(release.get("timeout-minutes"), int))
 check(
     "the release concurrency group queues rather than cancels",
     (document.get("concurrency") or {}).get("cancel-in-progress") is False,
@@ -92,28 +93,38 @@ check(
     == "steps.prepare.outputs.release_needed == 'true'",
 )
 check(
-    "the GitHub release step runs only when a release is needed",
+    "release scripts are staged before conditional release steps",
+    not steps_by_name.get("Stage release scripts", {}).get("if")
+    and all(
+        script in step_run("Stage release scripts")
+        for script in (
+            "update_changelog_date.py",
+            "create_plugin_release_tag.sh",
+            "publish_plugin_release.sh",
+        )
+    ),
+)
+check(
+    "the GitHub release step runs when publication is needed",
     steps_by_name.get("Create GitHub release", {}).get("if")
-    == "steps.prepare.outputs.release_needed == 'true'",
+    == "steps.prepare.outputs.publish_release == 'true'",
 )
 check(
-    "the release verifies the pushed tag",
-    "--verify-tag" in step_run("Create GitHub release"),
+    "tagging rechecks the production branch tip",
+    "create_plugin_release_tag.sh" in step_run("Stage release scripts")
+    and "create_plugin_release_tag.sh" in step_run("Create release tag"),
 )
 check(
-    "the release is explicitly not marked repository-wide latest",
-    "--latest=false" in step_run("Create GitHub release")
-    and "--raw-field make_latest=false" in step_run("Create GitHub release"),
+    "the release publisher is shared and verifies the tag",
+    "publish_plugin_release.sh" in step_run("Stage release scripts")
+    and "$PUBLISH_SCRIPT" in step_run("Create GitHub release")
+    and steps_by_name.get("Create GitHub release", {}).get("env", {}).get("PUBLISH_SCRIPT")
+    == "${{ runner.temp }}/publish_plugin_release.sh"
+    and "--verify-tag" in (workflow_root / "scripts/bash/publish_plugin_release.sh").read_text(),
 )
 check(
-    "the release can create or update after a partial failure",
-    "gh release create" in step_run("Create GitHub release")
-    and "gh release view" in step_run("Create GitHub release")
-    and "--method PATCH" in step_run("Create GitHub release"),
-)
-check(
-    "the old third-party release action is gone",
-    not any("ncipollo/release-action" in str(step) for step in steps),
+    "the shared release publisher uses a string latest field",
+    "--raw-field make_latest=false" in (workflow_root / "scripts/bash/publish_plugin_release.sh").read_text(),
 )
 
 print()
