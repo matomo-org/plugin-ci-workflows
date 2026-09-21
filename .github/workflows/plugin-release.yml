@@ -1,0 +1,135 @@
+# Creates a tagged GitHub release for a plugin version prepared on a production branch.
+#
+# The caller owns the push and workflow_dispatch triggers. The version in plugin.json is
+# authoritative. CHANGELOG.md is checked for the same version and its release date is added or
+# corrected before the tag is created.
+
+name: Plugin release
+
+on:
+  workflow_call:
+    inputs:
+      script-ref:
+        description: "Ref of matomo-org/plugin-ci-workflows to take the release script from"
+        required: false
+        type: string
+        default: 'main'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plugin-release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the release script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.script-ref }}
+          path: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+
+      - name: Read and validate plugin metadata
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version=$(python3 -c 'import json; print(json.load(open("plugin.json"))["version"])')
+          plugin_name=$(python3 -c 'import json; print(json.load(open("plugin.json"))["name"])')
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "plugin.json contains a non-stable release version: $version"
+            exit 1
+          fi
+
+          if [[ ! "$GITHUB_REF_NAME" =~ ^([0-9]+)\.x-prod$ ]]; then
+            echo "Unsupported release branch: $GITHUB_REF_NAME"
+            exit 1
+          fi
+          expected_major="${BASH_REMATCH[1]}"
+
+          if [[ "$version" != "$expected_major."* ]]; then
+            echo "Version $version does not belong on $GITHUB_REF_NAME"
+            exit 1
+          fi
+
+          {
+            echo "version=$version"
+            echo "plugin_name=$plugin_name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure authenticated git remote and fetch tags
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}"
+          git fetch --tags --force origin
+
+      - name: Check that the release tag is unused
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse --verify "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "A tag for $VERSION already exists. Refusing to move or rebuild it."
+            exit 1
+          fi
+
+      - name: Add release date to changelog
+        id: changelog
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+          SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          RELEASE_DATE=$(date -u +%F)
+          cp "$SCRIPT_CHECKOUT/scripts/python/update_changelog_date.py" "$RUNNER_TEMP/"
+          rm -rf "$SCRIPT_CHECKOUT"
+
+          python3 "$RUNNER_TEMP/update_changelog_date.py" \
+            CHANGELOG.md "$VERSION" "$RELEASE_DATE"
+          python3 "$RUNNER_TEMP/update_changelog_date.py" \
+            --check CHANGELOG.md "$VERSION" "$RELEASE_DATE"
+
+          if ! git diff --quiet -- CHANGELOG.md; then
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git config user.name "github-actions[bot]"
+            git add -- CHANGELOG.md
+            git commit -m "Add release date for $VERSION"
+            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
+          fi
+
+          echo "release_date=$RELEASE_DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tag
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          git tag "$VERSION"
+          git push origin "refs/tags/$VERSION"
+
+      - name: Create GitHub release
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd
+        with:
+          tag: ${{ steps.metadata.outputs.version }}
+          name: ${{ steps.metadata.outputs.plugin_name }} ${{ steps.metadata.outputs.version }}
+          body: |
+            Released on ${{ steps.changelog.outputs.release_date }}.
+
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for the changes in this release.
+          prerelease: false
+          token: ${{ github.token }}

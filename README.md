@@ -35,6 +35,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
 | [`plugin-hook-check.yml`](#hook-check) | Reusable workflow | Fails when a plugin's vendored pre-push hook has drifted from the copy here |
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
+| [`plugin-release.yml`](#plugin-release) | Reusable workflow | Tags and publishes a plugin version prepared on a production branch |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
@@ -162,6 +163,35 @@ A plugin that guards a newer core API behind `class_exists` can put the resultin
 This workflow checks out two repositories. The shared helpers that Matomo core CI uses as well — `checkout_matomo.sh`, `checkout_dependent_plugins.sh` and `resolve_php_version.sh` — stay in [`github-action-tests`](https://github.com/matomo-org/github-action-tests) and come from `scripts-ref`. The plugin-only pieces, `hooks/pre-push` and `artifacts/bootstrap-phpstan.php`, live here and come from `workflows-ref`.
 
 A reusable workflow does not bring its own repository into the caller's workspace, which is why this repository has to be checked out explicitly even though the workflow is defined in it.
+
+### Plugin release
+
+Creates a stable plugin release from a protected `N.x-prod` branch. The caller owns the triggers and
+the `contents: write` permission; the reusable workflow reads the version from `plugin.json`, checks
+that `CHANGELOG.md` contains that version, adds or corrects its UTC release date, then commits that
+date before creating the matching Git tag and GitHub Release. The tag is also the signal consumed by
+the Matomo Marketplace for distributed plugins.
+
+```yaml
+name: Release plugin
+
+on:
+  push:
+    branches:
+      - 5.x-prod
+      - 6.x-prod
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-release.yml@main
+```
+
+The workflow refuses to move an existing tag. If the shared workflow is pinned to a commit or tag,
+pass the same ref as its `script-ref` input so the release script is pinned with it.
 
 ### License check
 
