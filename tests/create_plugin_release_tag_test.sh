@@ -36,7 +36,10 @@ if (cd "$REPO" && bash "$SCRIPT" 5.0.0 5.x-prod) > "$WORK/stale.out" 2>&1; then
     exit 1
 fi
 grep -Fq 'Refusing to tag a stale commit' "$WORK/stale.out"
-! git -C "$REPO" rev-parse --verify refs/tags/5.0.0 >/dev/null 2>&1
+if git -C "$REPO" rev-parse --verify refs/tags/5.0.0 >/dev/null 2>&1; then
+    echo 'A stale local commit must not create a tag' >&2
+    exit 1
+fi
 
 git -C "$REPO" checkout -q --detach refs/remotes/origin/5.x-prod
 (cd "$REPO" && bash "$SCRIPT" 5.0.0 5.x-prod)

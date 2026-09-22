@@ -19,7 +19,7 @@ error() {
     exit 1
 }
 
-if ! metadata=$(python3 - "$PLUGIN_JSON" <<'PY'
+if ! metadata=$(python3 - "$PLUGIN_JSON" 2>&1 <<'PY'
 import json
 import sys
 
@@ -43,7 +43,6 @@ if not name or "\n" in name or "\r" in name:
 print(version)
 print(name)
 PY
-  2>&1
 ); then
     error "$metadata"
 fi

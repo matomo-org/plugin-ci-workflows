@@ -60,7 +60,10 @@ grep -Fq -- '--raw-field make_latest=false' "$WORK/existing.log"
 
 run_publisher not-found "$WORK/not-found.log"
 test -f "$WORK/created-not-found"
-! grep -Fq -- '--method PATCH' "$WORK/not-found.log"
+if grep -Fq -- '--method PATCH' "$WORK/not-found.log"; then
+    echo 'A newly created release must not use PATCH' >&2
+    exit 1
+fi
 
 if run_publisher server-error "$WORK/server-error.log" > "$WORK/server-error.out" 2>&1; then
     echo 'A GitHub API error must fail instead of creating a release' >&2
