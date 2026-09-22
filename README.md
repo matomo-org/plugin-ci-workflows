@@ -35,6 +35,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
 | [`plugin-hook-check.yml`](#hook-check) | Reusable workflow | Fails when a plugin's vendored pre-push hook has drifted from the copy here |
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
+| [`plugin-release.yml`](#plugin-release) | Reusable workflow | Tags and publishes a plugin version prepared on a production branch |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
@@ -163,6 +164,61 @@ A plugin that guards a newer core API behind `class_exists` can put the resultin
 This workflow checks out two repositories. The shared helpers that Matomo core CI uses as well — `checkout_matomo.sh`, `checkout_dependent_plugins.sh` and `resolve_php_version.sh` — stay in [`github-action-tests`](https://github.com/matomo-org/github-action-tests) and come from `scripts-ref`. The plugin-only pieces, `hooks/pre-push` and `artifacts/bootstrap-phpstan.php`, live here and come from `workflows-ref`.
 
 A reusable workflow does not bring its own repository into the caller's workspace, which is why this repository has to be checked out explicitly even though the workflow is defined in it.
+
+### Plugin release
+
+Creates a stable plugin release from a protected `N.x-prod` branch. The caller owns the triggers and
+the `contents: write` permission; the reusable workflow reads the version from `plugin.json`, checks
+that `CHANGELOG.md` contains that version, adds or corrects its UTC release date, then commits that
+date before creating the matching Git tag and GitHub Release. The tag is also the signal consumed by
+the Matomo Marketplace for distributed plugins.
+
+The changelog entry must start at the beginning of a line with the bare version, optionally prefixed
+by a Markdown heading or list marker, `Version `, or `_`/`**` emphasis. A trailing ` - YYYY-MM-DD`,
+` - DD/MM/YYYY`, ` - MM/DD/YYYY`, or `(unreleased)`/`(not yet released)`/a parenthesized date is supported. Keep-a-Changelog
+bracketed versions such as `[6.0.2]` are not recognised. Ambiguous slash dates are interpreted
+day-first.
+
+```yaml
+name: Release plugin
+
+on:
+  push:
+    branches:
+      - 5.x-prod
+      - 6.x-prod
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-release.yml@main
+```
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `script-ref` | no | `main` | Ref of this repository to take the release helper from. When pinning the workflow to a SHA, pass the same SHA here. |
+
+The workflow refuses to move an existing tag to another commit. If the shared workflow is pinned to a commit or tag,
+pass the same ref as its `script-ref` input so the release script is pinned with it. A run resumes when the existing
+tag is the current commit, and it also recovers a tag created by an earlier partial run when the tag is the current
+production branch tip. If the tag is behind the production branch, the workflow does not mutate the branch or tag
+because the version was already released and `plugin.json` has not been bumped yet; it still verifies or creates the
+corresponding GitHub Release so a tag-push/release-publication partial failure can recover.
+
+Do not use GitHub's **Re-run failed jobs** for a run that has already pushed its changelog-date commit: GitHub reruns
+the original commit, so the job cannot safely push that commit again. Use **Run workflow** to dispatch a fresh run from
+the current `N.x-prod` branch tip instead. The workflow fails with that instruction if it detects that the branch
+advanced after the original run. Other tag/branch histories fail closed rather than moving or rebuilding a tag.
+
+The protected `N.x-prod` branch must also allow `github-actions[bot]` to push the changelog-date commit; the
+`contents: write` permission does not bypass branch protection rules.
+The caller must not declare workflow-level concurrency or concurrency on the job that calls this
+workflow, because a caller's group replaces the reusable workflow's group. Releases are explicitly
+not marked as GitHub's repository-wide Latest because 5.x and 6.x production lines are released in
+parallel.
 
 ### License check
 

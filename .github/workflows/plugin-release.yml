@@ -1,0 +1,143 @@
+# Creates a tagged GitHub release for a plugin version prepared on a production branch.
+#
+# The caller owns the push and workflow_dispatch triggers. The version in plugin.json is
+# authoritative. CHANGELOG.md is checked for the same version and its release date is added or
+# corrected before the tag is created.
+
+name: Plugin release
+
+on:
+  workflow_call:
+    inputs:
+      script-ref:
+        description: "Ref of matomo-org/plugin-ci-workflows to take the release script from. This is this repository, so the workflow SHA is the right value when pinning."
+        required: false
+        type: string
+        default: 'main'
+
+permissions:
+  contents: write # commit the changelog date, create the tag, and publish the release
+
+concurrency:
+  group: plugin-release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the release script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.script-ref }}
+          path: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+          persist-credentials: false
+
+      - name: Check caller concurrency
+        env:
+          SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$SCRIPT_CHECKOUT/scripts/bash/check_caller_concurrency.sh" \
+            "$WORKFLOW_REF" "$GITHUB_WORKSPACE" \
+            "plugin-ci-workflows/.github/workflows/plugin-release.yml"
+
+      - name: Fetch current production branch
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth_header"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
+          git fetch --no-tags origin \
+            "refs/heads/$GITHUB_REF_NAME:refs/remotes/origin/$GITHUB_REF_NAME"
+
+      - name: Prepare release
+        id: prepare
+        env:
+          SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$SCRIPT_CHECKOUT/scripts/bash/prepare_plugin_release.sh" plugin.json "$GITHUB_REF_NAME"
+
+      - name: Stage release scripts
+        env:
+          SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$SCRIPT_CHECKOUT/scripts/python/update_changelog_date.py" "$RUNNER_TEMP/"
+          cp "$SCRIPT_CHECKOUT/scripts/bash/create_plugin_release_tag.sh" "$RUNNER_TEMP/"
+          cp "$SCRIPT_CHECKOUT/scripts/bash/publish_plugin_release.sh" "$RUNNER_TEMP/"
+          # Keep the shared checkout out of the plugin repository before git records the release.
+          rm -rf "$SCRIPT_CHECKOUT"
+
+      - name: Add release date to changelog
+        if: steps.prepare.outputs.release_needed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_DATE: ${{ steps.prepare.outputs.release_date }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth_header"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
+
+          python3 "$RUNNER_TEMP/update_changelog_date.py" \
+            CHANGELOG.md "$VERSION" "$RELEASE_DATE"
+
+          if ! git diff --quiet -- CHANGELOG.md; then
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git config user.name "github-actions[bot]"
+            git add -- CHANGELOG.md
+            git commit -m "Add release date for $VERSION"
+            git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
+          fi
+
+      - name: Create release tag
+        if: steps.prepare.outputs.release_needed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth_header"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
+          bash "$RUNNER_TEMP/create_plugin_release_tag.sh" "$VERSION" "$GITHUB_REF_NAME"
+
+      - name: Create GitHub release
+        if: steps.prepare.outputs.publish_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PLUGIN_NAME: ${{ steps.prepare.outputs.plugin_name }}
+          RELEASE_DATE: ${{ steps.prepare.outputs.release_date }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+          PUBLISH_SCRIPT: ${{ runner.temp }}/publish_plugin_release.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$PUBLISH_SCRIPT" "$PLUGIN_NAME" "$VERSION" "$RELEASE_DATE"
