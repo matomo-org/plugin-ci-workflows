@@ -364,6 +364,7 @@ scanned=${#files[@]}
 
 sanitize_scan_input() {
   local file="$1"
+  # shellcheck disable=SC2094 # python only reads the name for its extension; nothing writes $file.
   LC_ALL=C python3 -c '
 import re
 import sys

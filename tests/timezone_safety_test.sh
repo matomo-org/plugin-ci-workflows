@@ -97,6 +97,7 @@ PHP
 check 'empty, null, and false period timezones are errors' 1 '3 error(s)' "$dir"
 
 dir=$(new_repo nested-arguments)
+# shellcheck disable=SC2016 # the $ is literal PHP fixture source.
 echo 'Period\Factory::build($period, [$date, $fallback][0]);' > "$dir/src/Source.php"
 check 'nested array arguments do not hide missing timezones' 0 '1 warning(s)' "$dir"
 
@@ -176,6 +177,7 @@ echo "<?php \$query = \"SELECT * FROM visits\"; \$label = 'timezone-safety-ignor
 check 'comment markers in strings are not suppressions' 1 '1 error(s)' "$dir"
 
 dir=$(new_repo duplicate-database-clock)
+# shellcheck disable=SC2016 # the $ is literal PHP fixture source.
 echo '<?php $query = "SELECT NOW(), CURRENT_TIMESTAMP";' > "$dir/src/Source.php"
 check 'overlapping database-clock rules report one finding per line' 1 '1 error(s)' "$dir"
 
@@ -220,6 +222,7 @@ SQL
 check 'lowercase SQL schema clock defaults are reported for review' 1 'database server-clock' "$dir"
 
 dir=$(new_repo non-utf8)
+# shellcheck disable=SC2016 # the $ is literal PHP fixture source.
 printf '<?php\n\$invalid = "\351";\n\$query = "NOW()";\n' > "$dir/src/Source.php"
 check 'non-UTF-8 source is still scanned' 1 'database server-clock' "$dir"
 
@@ -366,6 +369,7 @@ git -C "$dir" config user.email test@example.invalid
 git -C "$dir" config user.name 'Timezone test'
 git -C "$dir" add .
 git -C "$dir" commit -qm initial
+# shellcheck disable=SC2016 # the $ is literal PHP fixture source.
 sed -i '/\$oldFinding/i\$newFinding = "NOW()";' "$dir/src/Source.php"
 git -C "$dir" add .
 git -C "$dir" commit -qm insertion
@@ -530,6 +534,7 @@ fi
 
 dir=$(new_repo replacement-with-suppression)
 echo '<?php' > "$dir/src/Source.php"
+# shellcheck disable=SC2016 # the $ is literal PHP fixture source.
 echo '$query = "SELECT 1";' >> "$dir/src/Source.php"
 git -C "$dir" init -q
 git -C "$dir" config user.email test@example.invalid
