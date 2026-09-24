@@ -896,11 +896,14 @@ sql_clock_call = re.compile(r"(?<![A-Za-z0-9_$>:.])(?:NOW|CURDATE|SYSDATE|CURTIM
 
 # Any other clock name in a PHP string is only SQL when it shares an expression with SQL: one
 # literal, which may span lines, or literals joined by `.`. Punctuation that ends an operand list
-# ends the expression.
+# ends the expression, except inside a call or cast opened after it started.
 sql_expression = []
+sql_depth = 0
 
 
 def end_sql_expression():
+    global sql_depth
+    sql_depth = 0
     expression = " ".join(text[start:end] for start, end in sql_expression)
     clock = sql_clock if sql_keyword.search(expression) or sql_clause.search(expression) else sql_clock_call
     # The whole expression is context: adding SQL to one literal makes a clock in another SQL.
@@ -994,7 +997,11 @@ while position < len(text):
     if comment_end != position:
         position = comment_end
         continue
-    if character in ";,()[]{}=?:":
+    if sql_expression and character in "([":
+        sql_depth += 1
+    elif sql_depth and character in ")]":
+        sql_depth -= 1
+    elif character in ";{}" or (not sql_depth and character in ",()[]=?:"):
         end_sql_expression()
     check_call(position)
     position += 1

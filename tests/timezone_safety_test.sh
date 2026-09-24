@@ -272,6 +272,16 @@ $sql = "select idvisit from log_visit where visit_last_action_time > current_dat
 PHP
 check 'clock names in prose are not SQL, but lowercase SQL clauses are' 1 '1 error(s)' "$dir"
 
+dir=$(new_repo sql-around-calls)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$insert = "INSERT INTO t (a, ts) VALUES (" . (int) $a . ", CURRENT_TIMESTAMP)";
+$select = "select x from t where b = " . $db->quote($x) . "
+    and c < now()";
+$db->query('SELECT a FROM t WHERE b = ?', ['current_date']);
+PHP
+check 'a call or cast inside a concatenated SQL expression does not split it' 1 '2 error(s)' "$dir"
+
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
