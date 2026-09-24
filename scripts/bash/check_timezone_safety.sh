@@ -101,7 +101,7 @@ cleanup() {
 trap cleanup EXIT
 
 report() {
-  local severity="$1" file="$2" line="$3" message="$4" end_line="${5:-$3}"
+  local severity="$1" file="$2" line="$3" message="$4" end_line="${5:-$3}" dependency_line="${6:-0}"
   local annotation_line="$line" changed=0 candidate changed_line_key previous_line previous_changed=0
   local annotation_file annotation_message
   annotation_file=$(escape_annotation "$file")
@@ -124,6 +124,11 @@ report() {
         break
       fi
     done
+  fi
+  # The use or namespace line that decides which class a call names.
+  if [ "$changed" -eq 0 ] && [ "$dependency_line" -gt 0 ] \
+    && [ -n "${changed_lines["$file:$dependency_line"]+set}" ]; then
+    changed=1
   fi
   if is_inline_comment_ignore "$(sed -n "${line}p" -- "$file")" \
     && { [ "$changed" -eq 0 ] || [ -n "${changed_lines["$file:$line"]+set}" ]; }; then
@@ -600,85 +605,97 @@ def parse_arguments(open_position):
     return None
 
 
-def imported_aliases(qualified_name):
-    aliases = set()
-    for import_statement in re.findall(r"^\s*use\s+([^;{}]+);", text, re.MULTILINE):
-        for imported_name in import_statement.split(","):
-            parts = re.split(r"\s+as\s+", imported_name.strip(), maxsplit=1, flags=re.IGNORECASE)
-            name = parts[0].strip().lstrip("\\")
-            if name == qualified_name:
-                aliases.add(parts[1].strip() if len(parts) == 2 else name.rsplit("\\", 1)[-1])
-    return aliases
+name_pattern = r"\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*"
+matomo_classes = {"piwik\\period\\factory", "piwik\\date", "piwik\\period\\range"}
+namespaces = [
+    (match.start(), (match.group(1) or "").strip("\\"), line_number(match.start()), {})
+    for match in re.finditer(r"(?m)^[ \t]*namespace(?:[ \t]+(" + name_pattern + r"))?[ \t]*[;{]", text)
+]
+declares_namespace = bool(namespaces)
+namespaces = namespaces or [(0, "", 0, {})]
 
 
-factory_aliases = {"Period\\Factory", "Piwik\\Period\\Factory", "\\Piwik\\Period\\Factory"}
-if re.search(r"^\s*namespace\s+Piwik\\Period\s*[;{]", text, re.MULTILINE):
-    factory_aliases.add("Factory")
-for imported_alias in re.findall(
-    r"^\s*use\s+Piwik\\Period\\Factory(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;",
-    text,
-    re.MULTILINE,
-):
-    factory_aliases.add(imported_alias or "Factory")
-factory_aliases |= imported_aliases("Piwik\\Period\\Factory")
-for grouped_import in re.findall(
-    r"^\s*use\s+\\?Piwik\\Period\\\{([^}]+)\}\s*;",
-    text,
-    re.MULTILINE,
-):
-    for imported_name in grouped_import.split(","):
-        parts = re.split(r"\s+as\s+", imported_name.strip(), maxsplit=1, flags=re.IGNORECASE)
-        if parts[0].strip() == "Factory":
-            factory_aliases.add(parts[1].strip() if len(parts) == 2 else "Factory")
+def namespace_at(position):
+    current = namespaces[0]
+    for namespace in namespaces:
+        if namespace[0] <= position:
+            current = namespace
+    return current
 
-date_aliases = {"Date", "Piwik\\Date", "\\Piwik\\Date"}
-date_aliases |= imported_aliases("Piwik\\Date")
-for imported_alias in re.findall(
-    r"^\s*use\s+Piwik\\Date(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;",
-    text,
-    re.MULTILINE,
-):
-    date_aliases.add(imported_alias or "Date")
 
-patterns = []
-for factory_alias in sorted(factory_aliases):
-    escaped_alias = re.escape(factory_alias)
-    boundary = r"(?<![A-Za-z0-9_\\])"
-    patterns.append(
-        (re.compile(boundary + escaped_alias + r"::makePeriodFromQueryParams\b"), "make_period")
-    )
-    patterns.append(
-        (re.compile(boundary + escaped_alias + r"::build\b"), "build")
-    )
-for date_alias in sorted(date_aliases):
-    boundary = r"(?<![A-Za-z0-9_\\])"
-    patterns.append(
-        (re.compile(boundary + re.escape(date_alias) + r"::factory\b(?!InTimezone)"), "date")
-    )
-    patterns.append(
-        (re.compile(boundary + re.escape(date_alias) + r"::(?:today|yesterday(?:SameTime)?)\b"), "date_marker")
-    )
-range_aliases = {"Period\\Range", "Piwik\\Period\\Range", "\\Piwik\\Period\\Range"}
-if re.search(r"^\s*namespace\s+Piwik\\Period\s*[;{]", text, re.MULTILINE):
-    range_aliases.add("Range")
-for imported_alias in re.findall(
-    r"^\s*use\s+Piwik\\Period\\Range(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;",
-    text,
-    re.MULTILINE,
-):
-    range_aliases.add(imported_alias or "Range")
-range_aliases |= imported_aliases("Piwik\\Period\\Range")
-for grouped_import in re.findall(
-    r"^\s*use\s+\\?Piwik\\Period\\\{([^}]+)\}\s*;",
-    text,
-    re.MULTILINE,
-):
-    for imported_name in grouped_import.split(","):
-        parts = re.split(r"\s+as\s+", imported_name.strip(), maxsplit=1, flags=re.IGNORECASE)
-        if parts[0].strip() == "Range":
-            range_aliases.add(parts[1].strip() if len(parts) == 2 else "Range")
-for range_alias in sorted(range_aliases):
-    patterns.append((re.compile(r"new\s+" + re.escape(range_alias) + r"\b"), "range"))
+def add_import(imports, name, alias, position):
+    name = name.strip().strip("\\")
+    if not re.fullmatch(name_pattern, name):
+        return
+    alias = alias.strip() if alias else name.rsplit("\\", 1)[-1]
+    imports[alias.lower()] = (name, line_number(position))
+
+
+for statement in re.finditer(r"(?m)^[ \t]*use[ \t]+(?!function\b|const\b)([^;]+);", text):
+    imports = namespace_at(statement.start())[3]
+    body = statement.group(1)
+    group = re.fullmatch(r"\s*(" + name_pattern + r")\\\s*\{([^}]*)\}\s*", body)
+    if group:
+        prefix = group.group(1).strip("\\")
+        entries = group.group(2)
+        entries_start = statement.start(1) + group.start(2)
+    else:
+        prefix = ""
+        entries = body
+        entries_start = statement.start(1)
+    for entry in re.finditer(r"[^,]+", entries):
+        if not entry.group().strip() or re.match(r"\s*(?:function|const)\s", entry.group()):
+            continue
+        parts = re.split(r"\s+as\s+", entry.group().strip(), maxsplit=1, flags=re.IGNORECASE)
+        name = prefix + "\\" + parts[0] if prefix else parts[0]
+        add_import(imports, name, parts[1] if len(parts) == 2 else None, entries_start + entry.start())
+
+
+# PHP resolves a class name through the imports and namespace in force where it is written. Returns
+# the fully qualified name and the line it depends on, so an edit to that line counts as a change.
+def resolve(name, position):
+    if name.startswith("\\"):
+        return name[1:], 0
+    namespace_start, namespace_name, namespace_line, imports = namespace_at(position)
+    first, _, rest = name.partition("\\")
+    if first.lower() == "namespace" and rest:
+        return (namespace_name + "\\" + rest).strip("\\"), namespace_line
+    if first.lower() in imports:
+        imported, import_line = imports[first.lower()]
+        return imported + ("\\" + rest if rest else ""), import_line
+    # A snippet with no namespace at all is read as Matomo code, so Date and Period\Factory keep
+    # meaning Matomo's classes there; plugin sources always declare one.
+    if not declares_namespace and ("piwik\\" + name).lower() in matomo_classes:
+        return "Piwik\\" + name, 0
+    return (namespace_name + "\\" + name).strip("\\"), namespace_line
+
+
+static_calls = {
+    "piwik\\period\\factory": {"makePeriodFromQueryParams": "make_period", "build": "build"},
+    "piwik\\date": {
+        "factory": "date",
+        "today": "date_marker",
+        "yesterday": "date_marker",
+        "yesterdaySameTime": "date_marker",
+    },
+}
+static_call_pattern = re.compile(r"(?<![A-Za-z0-9_\\$>:])(" + name_pattern + r")::([A-Za-z_][A-Za-z0-9_]*)\b")
+new_range_pattern = re.compile(r"(?<![A-Za-z0-9_\\$>:])new\s+(" + name_pattern + r")(?![A-Za-z0-9_\\])")
+
+
+def call_at(position):
+    match = new_range_pattern.match(text, position)
+    if match:
+        qualified_name, dependency_line = resolve(match.group(1), position)
+        if qualified_name.lower() == "piwik\\period\\range":
+            return "range", match.end(), dependency_line
+        return None
+    match = static_call_pattern.match(text, position)
+    if not match:
+        return None
+    qualified_name, dependency_line = resolve(match.group(1), position)
+    kind = static_calls.get(qualified_name.lower(), {}).get(match.group(2))
+    return (kind, match.end(), dependency_line) if kind else None
 
 
 def argument_value(arguments, index, names):
@@ -733,14 +750,69 @@ sql_clock = re.compile(
 )
 
 
-# Lowercase clock names are only SQL when the same literal holds SQL, which may span lines.
-def report_sql_clocks(start, end):
-    literal = text[start:end]
-    if not sql_keyword.search(literal):
+# Lowercase clock names are only SQL when they share an expression with SQL: one literal, which may
+# span lines, or literals joined by `.`. Punctuation that ends an operand list ends the expression.
+sql_expression = []
+
+
+def end_sql_expression():
+    if any(sql_keyword.search(text[start:end]) for start, end in sql_expression):
+        for start, end in sql_expression:
+            for clock in sql_clock.finditer(text, start, end):
+                line = line_number(clock.start())
+                print(f"error\t{line}\t{line}\t0\tA database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.")
+    sql_expression.clear()
+
+
+def check_call(position):
+    call = call_at(position)
+    if not call:
         return
-    for clock in sql_clock.finditer(literal):
-        line = line_number(start + clock.start())
-        print(f"error\t{line}\t{line}\tA database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.")
+    kind, open_position, dependency_line = call
+    while open_position < len(text) and text[open_position].isspace():
+        open_position += 1
+    if open_position >= len(text) or text[open_position] != "(":
+        return
+    parsed_arguments = parse_arguments(open_position)
+    if parsed_arguments is None:
+        return
+    arguments, closing_position = parsed_arguments
+
+    severity = None
+    message = None
+    timezone = argument_value(arguments, 0, {"timezone"})
+    normalized_timezone = strip_argument_comments(timezone).lower() if timezone is not None else None
+    if kind == "make_period" and normalized_timezone in ("''", '""', "null", "false"):
+        severity = "error"
+        message = "A period is being constructed with an empty timezone; resolve the website timezone explicitly."
+    elif kind == "date":
+        first_value = argument_value(arguments, 0, {"date", "dateString", "date_string"})
+        first_argument = strip_argument_comments(first_value).strip("'\"").lower() if first_value is not None else ""
+        timezone = argument_value(arguments, 1, {"timezone"})
+        timezone = strip_argument_comments(timezone).lower() if timezone is not None else ""
+        if (
+            first_argument in relative_dates
+        ) and (argument_value(arguments, 1, {"timezone"}) is None or timezone in ("''", '""', "null", "false")):
+            severity = "warning"
+            message = "Review this relative date for website-timezone handling; calendar-day markers and non-report code may be intentional."
+    elif kind == "date_marker":
+        severity = "warning"
+        message = "Review this relative date for website-timezone handling; calendar-day markers and non-report code may be intentional."
+    elif kind == "build":
+        timezone_value = argument_value(arguments, 2, {"timezone"})
+        timezone = strip_argument_comments(timezone_value).lower() if timezone_value is not None else None
+        if timezone is None or timezone in ("''", '""', "null", "false"):
+            severity = "warning"
+            message = "Review this period construction for an explicit website timezone when the date can be relative."
+    elif kind == "range":
+        timezone_value = argument_value(arguments, 2, {"timezone"})
+        timezone = strip_argument_comments(timezone_value).lower() if timezone_value is not None else None
+        if timezone is None or timezone in ("''", '""', "null", "false"):
+            severity = "warning"
+            message = "Review this date range for an explicit website timezone when the endpoints can be relative."
+
+    if severity:
+        print(f"{severity}\t{line_number(position)}\t{line_number(closing_position)}\t{dependency_line}\t{message}")
 
 
 position = 0
@@ -749,6 +821,7 @@ if first_php_tag > 0 and text[:first_php_tag].strip():
     position = first_php_tag
 while position < len(text):
     if text.startswith("?>", position):
+        end_sql_expression()
         next_php_tag = text.find("<?", position + 2)
         position = len(text) if next_php_tag == -1 else next_php_tag
         continue
@@ -757,72 +830,24 @@ while position < len(text):
         print(f"Unable to find the closing heredoc label in {path}", file=sys.stderr)
         sys.exit(1)
     if heredoc_end != position:
-        report_sql_clocks(position, heredoc_end)
+        sql_expression.append((position, heredoc_end))
         position = heredoc_end
         continue
     character = text[position]
     if character in ("'", '"'):
         literal_end = skip_quoted(position, character)
-        report_sql_clocks(position, literal_end)
+        sql_expression.append((position, literal_end))
         position = literal_end
         continue
     comment_end = skip_comment(position)
     if comment_end != position:
         position = comment_end
         continue
-
-    for pattern, kind in patterns:
-        match = pattern.match(text, position)
-        if not match:
-            continue
-        open_position = match.end()
-        while open_position < len(text) and text[open_position].isspace():
-            open_position += 1
-        if open_position >= len(text) or text[open_position] != "(":
-            break
-        parsed_arguments = parse_arguments(open_position)
-        if parsed_arguments is None:
-            break
-        arguments, closing_position = parsed_arguments
-
-        severity = None
-        message = None
-        timezone = argument_value(arguments, 0, {"timezone"})
-        normalized_timezone = strip_argument_comments(timezone).lower() if timezone is not None else None
-        if kind == "make_period" and normalized_timezone in ("''", '""', "null", "false"):
-            severity = "error"
-            message = "A period is being constructed with an empty timezone; resolve the website timezone explicitly."
-        elif kind == "date":
-            first_value = argument_value(arguments, 0, {"date", "dateString", "date_string"})
-            first_argument = strip_argument_comments(first_value).strip("'\"").lower() if first_value is not None else ""
-            timezone = argument_value(arguments, 1, {"timezone"})
-            timezone = strip_argument_comments(timezone).lower() if timezone is not None else ""
-            if (
-                first_argument in relative_dates
-            ) and (argument_value(arguments, 1, {"timezone"}) is None or timezone in ("''", '""', "null", "false")):
-                severity = "warning"
-                message = "Review this relative date for website-timezone handling; calendar-day markers and non-report code may be intentional."
-        elif kind == "date_marker":
-            severity = "warning"
-            message = "Review this relative date for website-timezone handling; calendar-day markers and non-report code may be intentional."
-        elif kind == "build":
-            timezone_value = argument_value(arguments, 2, {"timezone"})
-            timezone = strip_argument_comments(timezone_value).lower() if timezone_value is not None else None
-            if timezone is None or timezone in ("''", '""', "null", "false"):
-                severity = "warning"
-                message = "Review this period construction for an explicit website timezone when the date can be relative."
-        elif kind == "range":
-            timezone_value = argument_value(arguments, 2, {"timezone"})
-            timezone = strip_argument_comments(timezone_value).lower() if timezone_value is not None else None
-            if timezone is None or timezone in ("''", '""', "null", "false"):
-                severity = "warning"
-                message = "Review this date range for an explicit website timezone when the endpoints can be relative."
-
-        if severity:
-            print(f"{severity}\t{line_number(position)}\t{line_number(closing_position)}\t{message}")
-        break
-
+    if character in ";,()[]{}=?:":
+        end_sql_expression()
+    check_call(position)
     position += 1
+end_sql_expression()
 PY
 }
 
@@ -837,9 +862,9 @@ for file in "${files[@]}"; do
     echo "::error file=$annotation_file::Unable to scan PHP source because the argument-aware parser failed."
     continue
   fi
-  while IFS=$'\t' read -r severity line end_line message; do
+  while IFS=$'\t' read -r severity line end_line dependency_line message; do
     [ -n "$severity" ] || continue
-    report "$severity" "${file#./}" "$line" "$message" "$end_line"
+    report "$severity" "${file#./}" "$line" "$message" "$end_line" "$dependency_line"
   done <<< "$scan_output"
 done
 
@@ -867,11 +892,11 @@ fi
 while IFS= read -r -d '' file; do
   if [[ "$file" == ./.github/workflows/* ]] \
     && grep -Eq 'plugin-(ci|timezone-safety)\.yml' "$file" \
-    && ! grep -Eqi 'TZ=|MYSQL_TIMEZONE|timezone[-_ ]+(test|suite)|timezone_test' "$file"; then
+    && ! grep -Eqi '(^|[^[:alnum:]_])TZ[[:space:]]*[=:]|MYSQL_TIMEZONE|timezone[-_ ]+(test|suite)|timezone_test' "$file"; then
     continue
   fi
   # shellcheck disable=SC2016 # $now is part of the literal source pattern being searched.
-  if grep -Eqi 'timezone|mysql-timezone|Date::\$now|factoryInTimezone|UTC[+-][0-9]+' "$file"; then
+  if grep -Eqi 'timezone|mysql-timezone|Date::\$now|factoryInTimezone|UTC[+-][0-9]+|(^|[^[:alnum:]_])TZ[[:space:]]*[=:]' "$file"; then
     suite_files+=("${file#./}")
   fi
 done < "$suite_listing"

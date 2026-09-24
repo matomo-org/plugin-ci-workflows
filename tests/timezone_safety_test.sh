@@ -138,6 +138,32 @@ cat > "$dir/src/Source.php" <<'PHP'
 PHP
 check 'only Matomo-qualified Factory and Date calls are reviewed' 1 '1 error(s), 0 warning(s)' "$dir"
 
+dir=$(new_repo namespaced-local-classes)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+namespace Piwik\Plugins\Example;
+
+use Vendor\Calendar\Date;
+
+Date::today();
+Period\Factory::makePeriodFromQueryParams('', 'day', $date);
+PHP
+check 'names in a plugin namespace resolve to the plugin, not Matomo' 0 '0 error(s), 0 warning(s)' "$dir"
+
+dir=$(new_repo namespace-aliases)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+namespace Piwik\Plugins\Example;
+
+use Piwik\Period as SitePeriod;
+use Piwik\{Date as MatomoDate, Period\Range};
+
+SitePeriod\Factory::makePeriodFromQueryParams('', 'day', $date);
+MatomoDate::today();
+$range = new Range('day', 'last7');
+PHP
+check 'namespace aliases and Piwik-rooted grouped imports are reviewed' 1 '1 error(s), 2 warning(s)' "$dir"
+
 dir=$(new_repo comma-import)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
@@ -226,6 +252,15 @@ FROM log_visit
 SQL;
 PHP
 check 'lowercase database clocks on SQL continuation lines are reported' 1 '4 error(s)' "$dir"
+
+dir=$(new_repo concatenated-database-clock)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$query = 'SELECT idvisit, '
+    . 'current_date AS day';
+$label = sprintf('Select the %s column', 'current_date');
+PHP
+check 'lowercase database clocks in concatenated SQL are reported' 1 '1 error(s)' "$dir"
 
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
@@ -325,6 +360,34 @@ else
   print_indented "$output"
 fi
 
+dir=$(new_repo import-only-change)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+namespace Piwik\Plugins\Example;
+
+use Vendor\Period\Factory;
+
+Factory::makePeriodFromQueryParams('', 'day', $date);
+PHP
+git -C "$dir" init -q
+git -C "$dir" config user.email test@example.invalid
+git -C "$dir" config user.name 'Timezone test'
+git -C "$dir" add .
+git -C "$dir" commit -qm initial
+sed -i 's/use Vendor\\Period\\Factory;/use Piwik\\Period\\Factory;/' "$dir/src/Source.php"
+git -C "$dir" add .
+git -C "$dir" commit -qm switch-import
+output=$(bash "$SCRIPT" --fail-on-new-findings --base-ref HEAD~1 "$dir" 2>&1)
+actual=$?
+tests=$((tests + 1))
+if [ "$actual" -eq 1 ] && grep -qF 'Timezone finding on a changed production line' <<< "$output"; then
+  echo 'ok - changing only the import makes the call a new finding'
+else
+  failures=$((failures + 1))
+  echo "FAIL - changing only the import makes the call a new finding (exit $actual)"
+  print_indented "$output"
+fi
+
 dir=$(new_repo explicit-empty-timezone)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
@@ -355,6 +418,11 @@ echo "Date::factory('now');" > "$dir/src/Source.php"
 mkdir -p "$dir/tests/Integration"
 echo "class TimezoneTest {}" > "$dir/tests/Integration/TimezoneTest.php"
 check 'a suite is reported but does not suppress findings' 0 'Timezone coverage files:' "$dir"
+
+dir=$(new_repo yaml-tz-workflow)
+mkdir -p "$dir/.github/workflows"
+printf '%s\n' 'jobs:' '  test:' '    env:' '      TZ: Pacific/Auckland' > "$dir/.github/workflows/tests.yml"
+check 'a workflow setting TZ in YAML counts as timezone coverage' 0 '.github/workflows/tests.yml' "$dir"
 
 dir=$(new_repo warning)
 cat > "$dir/src/Source.php" <<'PHP'
