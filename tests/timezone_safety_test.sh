@@ -519,6 +519,29 @@ PHP
   fi
 done
 
+dir=$(new_repo two-findings-one-line)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Piwik\Date;
+use Piwik\Period\Factory;
+
+$today = Date::today(); $period = Factory::build('day', 'today');
+PHP
+check 'different findings on one line are each reported' 0 '2 warning(s)' "$dir"
+
+dir=$(new_repo ignore-inside-multiline-call)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Piwik\Period\Factory;
+
+Factory::makePeriodFromQueryParams(
+    '', // timezone-safety-ignore
+    'day',
+    $date
+);
+PHP
+check 'a suppression on any line of a multi-line call applies to it' 0 '0 error(s)' "$dir"
+
 dir=$(new_repo explicit-empty-timezone)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php

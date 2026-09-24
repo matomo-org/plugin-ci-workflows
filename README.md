@@ -230,7 +230,7 @@ located on changed production lines. `--fail-on-new-findings` makes errors on ch
 lines blocking, which is the mode used by Plugins CI for pull requests. Warnings are advisory by
 default; `--fail-on-warnings` makes selected warnings blocking. Combined with
 `--fail-on-new-findings`, only warnings on changed lines are selected. An intentional finding can be suppressed with a
-`timezone-safety-ignore` comment on its line, or a comment line immediately before an unchanged finding; include a new
+`timezone-safety-ignore` comment on any of its lines, or a comment line immediately before an unchanged finding; include a new
 suppression comment in the same change as a changed finding. The argument-aware PHP scan requires
 `python3` and Bash 4+:
 

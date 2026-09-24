@@ -127,10 +127,12 @@ report() {
       fi
     done
   fi
-  if [ -n "${ignore_comments["$file:$line"]+set}" ] \
-    && { [ "$changed" -eq 0 ] || [ -n "${changed_lines["$file:$line"]+set}" ]; }; then
-    return
-  fi
+  for ((candidate = line; candidate <= end_line; candidate++)); do
+    if [ -n "${ignore_comments["$file:$candidate"]+set}" ] \
+      && { [ "$changed" -eq 0 ] || [ -n "${changed_lines["$file:$candidate"]+set}" ]; }; then
+      return
+    fi
+  done
   if [ "$line" -gt 1 ]; then
     previous_line=$((line - 1))
     if [ "${ignore_comments["$file:$previous_line"]-}" = whole-line ] \
@@ -149,7 +151,7 @@ report() {
     && [ -n "${changed_lines["$file:$dependency_line"]+set}" ]; then
     changed=1
   fi
-  local finding_key="$severity:$file:$line"
+  local finding_key="$severity:$file:$line:$message"
   if [ -n "${reported_findings[$finding_key]+set}" ]; then
     return
   fi
