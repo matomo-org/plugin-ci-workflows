@@ -600,6 +600,17 @@ def parse_arguments(open_position):
     return None
 
 
+def imported_aliases(qualified_name):
+    aliases = set()
+    for import_statement in re.findall(r"^\s*use\s+([^;{}]+);", text, re.MULTILINE):
+        for imported_name in import_statement.split(","):
+            parts = re.split(r"\s+as\s+", imported_name.strip(), maxsplit=1, flags=re.IGNORECASE)
+            name = parts[0].strip().lstrip("\\")
+            if name == qualified_name:
+                aliases.add(parts[1].strip() if len(parts) == 2 else name.rsplit("\\", 1)[-1])
+    return aliases
+
+
 factory_aliases = {"Period\\Factory"}
 if re.search(r"^\s*namespace\s+Piwik\\Period\s*[;{]", text, re.MULTILINE):
     factory_aliases.add("Factory")
@@ -609,15 +620,9 @@ for imported_alias in re.findall(
     re.MULTILINE,
 ):
     factory_aliases.add(imported_alias or "Factory")
-for import_statement in re.findall(r"^\s*use\s+([^;{}]+);", text, re.MULTILINE):
-    for imported_name in import_statement.split(","):
-        parts = re.split(r"\s+as\s+", imported_name.strip(), maxsplit=1, flags=re.IGNORECASE)
-        qualified_name = parts[0].strip()
-        alias = parts[1].strip() if len(parts) == 2 else qualified_name.rsplit("\\", 1)[-1]
-        if qualified_name == "Piwik\\Period\\Factory":
-            factory_aliases.add(alias)
+factory_aliases |= imported_aliases("Piwik\\Period\\Factory")
 for grouped_import in re.findall(
-    r"^\s*use\s+Piwik\\Period\\\{([^}]+)\}\s*;",
+    r"^\s*use\s+\\?Piwik\\Period\\\{([^}]+)\}\s*;",
     text,
     re.MULTILINE,
 ):
@@ -627,13 +632,7 @@ for grouped_import in re.findall(
             factory_aliases.add(parts[1].strip() if len(parts) == 2 else "Factory")
 
 date_aliases = {"Date", "Piwik\\Date"}
-for import_statement in re.findall(r"^\s*use\s+([^;{}]+);", text, re.MULTILINE):
-    for imported_name in import_statement.split(","):
-        parts = re.split(r"\s+as\s+", imported_name.strip(), maxsplit=1, flags=re.IGNORECASE)
-        qualified_name = parts[0].strip()
-        alias = parts[1].strip() if len(parts) == 2 else qualified_name.rsplit("\\", 1)[-1]
-        if qualified_name == "Piwik\\Date":
-            date_aliases.add(alias)
+date_aliases |= imported_aliases("Piwik\\Date")
 for imported_alias in re.findall(
     r"^\s*use\s+Piwik\\Date(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;",
     text,
@@ -668,8 +667,9 @@ for imported_alias in re.findall(
     re.MULTILINE,
 ):
     range_aliases.add(imported_alias or "Range")
+range_aliases |= imported_aliases("Piwik\\Period\\Range")
 for grouped_import in re.findall(
-    r"^\s*use\s+Piwik\\Period\\\{([^}]+)\}\s*;",
+    r"^\s*use\s+\\?Piwik\\Period\\\{([^}]+)\}\s*;",
     text,
     re.MULTILINE,
 ):
@@ -828,7 +828,7 @@ scan_pattern error \
   'A database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.' \
   php
 scan_pattern error \
-  "(^|[^[:alnum:]_\$])(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DEFAULT|ON[[:space:]]+UPDATE)([^[:alnum:]_][^;]*)?(^|[^[:alnum:]_\$>:.])(CURRENT_(DATE|TIMESTAMP|TIME)|LOCALTIME(STAMP)?)([^[:alnum:]_]|$)" \
+  "(^|[^[:alnum:]_\$])(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DEFAULT|ON[[:space:]]+UPDATE|SET|WHERE|VALUES|AND|OR)([^[:alnum:]_][^;]*)?(^|[^[:alnum:]_\$>:.])(CURRENT_(DATE|TIMESTAMP|TIME)|LOCALTIME(STAMP)?)([^[:alnum:]_]|$)" \
   'A database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.' \
   php insensitive
 scan_pattern error \

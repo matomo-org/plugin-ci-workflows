@@ -138,6 +138,26 @@ Factory::makePeriodFromQueryParams('', 'day', $date);
 PHP
 check 'comma-separated Factory imports are reviewed' 1 '1 error(s)' "$dir"
 
+dir=$(new_repo comma-range-import)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Piwik\Period\Range, Piwik\Date;
+
+$range = new Range('day', 'last7');
+PHP
+check 'comma-separated Range imports are reviewed' 0 '1 warning(s)' "$dir"
+
+dir=$(new_repo leading-backslash-imports)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use \Piwik\Period\Factory;
+use \Piwik\Period\{Range as R};
+
+Factory::makePeriodFromQueryParams('', 'day', $date);
+$range = new R('day', 'last7');
+PHP
+check 'leading-backslash imports are reviewed' 1 '1 error(s), 1 warning(s)' "$dir"
+
 dir=$(new_repo database-clock)
 cat > "$dir/src/query.sql" <<'SQL'
 SELECT now() AS created_at;
@@ -181,6 +201,18 @@ dir=$(new_repo duplicate-database-clock)
 echo '<?php $query = "SELECT NOW(), CURRENT_TIMESTAMP";' > "$dir/src/Source.php"
 check 'overlapping database-clock rules report one finding per line' 1 '1 error(s)' "$dir"
 
+dir=$(new_repo multiline-lowercase-database-clock)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$query = "UPDATE log_visit
+    SET visit_last_action_time = current_timestamp
+    WHERE idsite = ?
+    AND visit_first_action_time < current_date";
+$values = "INSERT INTO t (a, b)
+    VALUES (?, localtimestamp)";
+PHP
+check 'lowercase database clocks on SQL continuation lines are reported' 1 '3 error(s)' "$dir"
+
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
@@ -188,6 +220,8 @@ $created = localtime(time(), true);
 $deleted = self::CURRENT_TIME_LIMIT;
 $updatedAt = $row->getLocalTime();
 $defaultFormat = Formats::CURRENT_DATE_FORMAT;
+$ready = $isSet or $current_date;
+self::setCurrentTime($time);
 PHP
 check 'ordinary PHP identifiers are not SQL clock findings' 0 '0 error(s)' "$dir"
 
