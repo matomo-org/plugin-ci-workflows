@@ -89,6 +89,8 @@ declare -A changed_lines=()
 declare -A deletion_points=()
 declare -A reported_findings=()
 declare -A sanitized_files=()
+# file:line => whole-line or trailing, for a timezone-safety-ignore marker in real comment text.
+declare -A ignore_comments=()
 
 cleanup() {
   [ -z "$changed_diff_file" ] || rm -f "$changed_diff_file"
@@ -125,26 +127,27 @@ report() {
       fi
     done
   fi
-  # The use or namespace line that decides which class a call names.
-  if [ "$changed" -eq 0 ] && [ "$dependency_line" -gt 0 ] \
-    && [ -n "${changed_lines["$file:$dependency_line"]+set}" ]; then
-    changed=1
-  fi
-  if is_inline_comment_ignore "$(sed -n "${line}p" -- "$file")" \
+  if [ -n "${ignore_comments["$file:$line"]+set}" ] \
     && { [ "$changed" -eq 0 ] || [ -n "${changed_lines["$file:$line"]+set}" ]; }; then
     return
   fi
   if [ "$line" -gt 1 ]; then
     previous_line=$((line - 1))
-    if is_comment_ignore "$(sed -n "${previous_line}p" -- "$file")" \
+    if [ "${ignore_comments["$file:$previous_line"]-}" = whole-line ] \
       && [ -n "${changed_lines["$file:$previous_line"]+set}" ]; then
       previous_changed=1
     fi
-    if is_comment_ignore "$(sed -n "${previous_line}p" -- "$file")" \
+    if [ "${ignore_comments["$file:$previous_line"]-}" = whole-line ] \
       && { [ -z "${deletion_points["$file:$line"]+set}" ] || [ "$previous_changed" -eq 1 ]; } \
       && { [ "$changed" -eq 0 ] || [ "$previous_changed" -eq 1 ]; }; then
       return
     fi
+  fi
+  # The use or namespace line that decides which class a call names. Checked after the
+  # suppressions, so tidying imports does not revive a finding someone has already reviewed.
+  if [ "$changed" -eq 0 ] && [ "$dependency_line" -gt 0 ] \
+    && [ -n "${changed_lines["$file:$dependency_line"]+set}" ]; then
+    changed=1
   fi
   local finding_key="$severity:$file:$line"
   if [ -n "${reported_findings[$finding_key]+set}" ]; then
@@ -197,15 +200,6 @@ escape_annotation_message() {
   value=${value//$'\r'/%0D}
   value=${value//$'\n'/%0A}
   printf '%s' "$value"
-}
-
-is_comment_ignore() {
-  grep -Eq '^[[:space:]]*(//|#|/\*|\*|--).*timezone-safety-ignore' <<< "$1"
-}
-
-is_inline_comment_ignore() {
-  local line="$1"
-  is_comment_ignore "$line" || grep -Eq '(;|,|\(|\)|\]|\})[[:space:]]*(//|#|--|/\*).*timezone-safety-ignore' <<< "$line"
 }
 
 is_excluded() {
@@ -368,8 +362,8 @@ scan_pattern() {
 scanned=${#files[@]}
 
 sanitize_scan_input() {
-  local file="$1"
-  # shellcheck disable=SC2094 # python only reads the name for its extension; nothing writes $file.
+  local file="$1" ignore_path="$2"
+  # shellcheck disable=SC2016,SC2094 # the $ is Python source; python only reads the name of $file.
   LC_ALL=C python3 -c '
 import re
 import sys
@@ -392,7 +386,38 @@ def heredoc_end(position):
     return line_end + 1 + closing.end()
 
 
+# PHP expands {$...} and ${...} inside double quotes and backticks, and the expression can hold
+# quotes of its own, so the string only ends at a quote outside every interpolation.
+def php_quoted_end(position):
+    quote = text[position]
+    position += 1
+    depth = 0
+    while position < len(text):
+        character = text[position]
+        if depth:
+            if character in ("\x27", "\""):
+                position = php_quoted_end(position)
+                continue
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+        elif character == "\\":
+            position += 2
+            continue
+        elif quote != "\x27" and (text.startswith("{$", position) or text.startswith("${", position)):
+            depth = 1
+            position += 2
+            continue
+        elif character == quote:
+            return position + 1
+        position += 1
+    return position
+
+
 output = []
+comments = []
+comment_start = None
 position = 0
 state = "code"
 quote = None
@@ -402,21 +427,15 @@ if not is_sql:
         output.extend("\n" if character == "\n" else "" for character in text[:first_php_tag])
         position = first_php_tag
 while position < len(text):
-    if state in ("single", "double"):
+    if state == "quoted":
         character = text[position]
-        if is_sql:
-            output.append("\n" if character == "\n" else " ")
-        else:
-            output.append(character)
-        if is_sql and character == quote and position + 1 < len(text) and text[position + 1] == quote:
+        output.append("\n" if character == "\n" else " ")
+        if character == quote and position + 1 < len(text) and text[position + 1] == quote:
             output.append(" ")
             position += 2
             continue
         if character == "\\" and position + 1 < len(text):
-            if is_sql:
-                output.append("\n" if text[position + 1] == "\n" else " ")
-            else:
-                output.append(text[position + 1])
+            output.append("\n" if text[position + 1] == "\n" else " ")
             position += 2
             continue
         if character == quote:
@@ -426,12 +445,14 @@ while position < len(text):
         continue
     if state == "line":
         if text[position] == "\n":
+            comments.append((comment_start, position))
             output.append("\n")
             state = "code"
         position += 1
         continue
     if state == "block":
         if text.startswith("*/", position):
+            comments.append((comment_start, position + 2))
             state = "code"
             position += 2
         else:
@@ -453,33 +474,54 @@ while position < len(text):
         position = heredoc_end_position
         continue
     if text[position] in ("\x27", "\"", "`"):
+        if not is_sql:
+            end = php_quoted_end(position)
+            output.append(text[position:end])
+            position = end
+            continue
         quote = text[position]
-        state = "single" if quote == "\x27" else "double"
+        state = "quoted"
         output.append(text[position])
         position += 1
         continue
     if text.startswith("//", position) or (
         text[position] == "#" and not text.startswith("#[", position)
     ):
+        comment_start = position
         state = "line"
         position += 2 if text.startswith("//", position) else 1
         continue
     if text.startswith("/*", position):
+        comment_start = position
         state = "block"
         position += 2
         continue
     if is_sql and text.startswith("--", position) and (position == 0 or text[position - 1].isspace()):
+        comment_start = position
         state = "line"
         position += 2
         continue
     output.append(text[position])
     position += 1
+if state in ("line", "block"):
+    comments.append((comment_start, len(text)))
 
-sanitized = "".join(output)
-if not is_sql:
-    sanitized = re.sub(r"\b(function|const)([ \t]+)[A-Za-z_][A-Za-z0-9_]*", r"\1\2_", sanitized)
-sys.stdout.buffer.write(sanitized.encode("utf-8"))
-' "$file" < "$file"
+sys.stdout.buffer.write("".join(output).encode("utf-8"))
+
+in_comment = bytearray(len(text))
+for start, end in comments:
+    in_comment[start:end] = b"\x01" * (end - start)
+with open(sys.argv[2], "w") as ignores:
+    line_start = 0
+    for number, line in enumerate(text.split("\n"), 1):
+        if "timezone-safety-ignore" in line:
+            comment = "".join(c for i, c in enumerate(line) if in_comment[line_start + i])
+            if "timezone-safety-ignore" in comment:
+                has_code = any(not in_comment[line_start + i] and not c.isspace() for i, c in enumerate(line))
+                kind = "trailing" if has_code else "whole-line"
+                ignores.write(f"{number}\t{kind}\n")
+        line_start += len(line) + 1
+' "$file" "$ignore_path" < "$file"
 }
 
 sanitized_dir=$(mktemp -d)
@@ -487,14 +529,17 @@ sanitized_index=0
 for file in "${files[@]}"; do
   sanitized_path="$sanitized_dir/$sanitized_index"
   sanitized_index=$((sanitized_index + 1))
-  if ! sanitize_scan_input "$file" > "$sanitized_path"; then
+  if ! sanitize_scan_input "$file" "$sanitized_path.ignores" > "$sanitized_path"; then
     parser_failures=$((parser_failures + 1))
     annotation_file=$(escape_annotation "${file#./}")
     echo "::error file=$annotation_file::Unable to sanitize source before scanning."
-    rm -f "$sanitized_path"
+    rm -f "$sanitized_path" "$sanitized_path.ignores"
     continue
   fi
   sanitized_files["$file"]="$sanitized_path"
+  while IFS=$'\t' read -r ignore_line ignore_kind; do
+    ignore_comments["${file#./}:$ignore_line"]="$ignore_kind"
+  done < "$sanitized_path.ignores"
 done
 
 scan_php_calls() {
@@ -516,13 +561,28 @@ def line_number(position):
     return text.count("\n", 0, position) + 1
 
 
+# Same interpolation rule as the sanitizer's php_quoted_end.
 def skip_quoted(position, quote):
     position += 1
+    depth = 0
     while position < len(text):
-        if text[position] == "\\":
+        character = text[position]
+        if depth:
+            if character in ("'", '"'):
+                position = skip_quoted(position, character)
+                continue
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+        elif character == "\\":
             position += 2
             continue
-        if text[position] == quote:
+        elif quote != "'" and (text.startswith("{$", position) or text.startswith("${", position)):
+            depth = 1
+            position += 2
+            continue
+        elif character == quote:
             return position + 1
         position += 1
     return position
@@ -605,11 +665,38 @@ def parse_arguments(open_position):
     return None
 
 
+# Namespace and use statements only count in code, not in strings, heredocs or comments.
+def code_only():
+    code = list(text)
+    position = 0
+    while position < len(text):
+        if text.startswith("?>", position):
+            next_php_tag = text.find("<?", position + 2)
+            end = len(text) if next_php_tag == -1 else next_php_tag
+        else:
+            end = skip_heredoc(position)
+            if end is None:
+                end = len(text)
+            elif end == position and text[position] in ("'", '"', "`"):
+                end = skip_quoted(position, text[position])
+            elif end == position:
+                end = skip_comment(position)
+        if end == position:
+            position += 1
+            continue
+        for blank in range(position, end):
+            if code[blank] != "\n":
+                code[blank] = " "
+        position = end
+    return "".join(code)
+
+
+code_text = code_only()
 name_pattern = r"\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*"
 matomo_classes = {"piwik\\period\\factory", "piwik\\date", "piwik\\period\\range"}
 namespaces = [
     (match.start(), (match.group(1) or "").strip("\\"), line_number(match.start()), {})
-    for match in re.finditer(r"(?m)^[ \t]*namespace(?:[ \t]+(" + name_pattern + r"))?[ \t]*[;{]", text)
+    for match in re.finditer(r"(?m)^[ \t]*namespace(?:[ \t]+(" + name_pattern + r"))?[ \t]*[;{]", code_text)
 ]
 declares_namespace = bool(namespaces)
 namespaces = namespaces or [(0, "", 0, {})]
@@ -631,7 +718,7 @@ def add_import(imports, name, alias, position):
     imports[alias.lower()] = (name, line_number(position))
 
 
-for statement in re.finditer(r"(?m)^[ \t]*use[ \t]+(?!function\b|const\b)([^;]+);", text):
+for statement in re.finditer(r"(?m)^[ \t]*use[ \t]+(?!function\b|const\b)([^;]+);", code_text):
     imports = namespace_at(statement.start())[3]
     body = statement.group(1)
     group = re.fullmatch(r"\s*(" + name_pattern + r")\\\s*\{([^}]*)\}\s*", body)
@@ -671,12 +758,12 @@ def resolve(name, position):
 
 
 static_calls = {
-    "piwik\\period\\factory": {"makePeriodFromQueryParams": "make_period", "build": "build"},
+    "piwik\\period\\factory": {"makeperiodfromqueryparams": "make_period", "build": "build"},
     "piwik\\date": {
         "factory": "date",
         "today": "date_marker",
         "yesterday": "date_marker",
-        "yesterdaySameTime": "date_marker",
+        "yesterdaysametime": "date_marker",
     },
 }
 static_call_pattern = re.compile(r"(?<![A-Za-z0-9_\\$>:])(" + name_pattern + r")::([A-Za-z_][A-Za-z0-9_]*)\b")
@@ -694,7 +781,7 @@ def call_at(position):
     if not match:
         return None
     qualified_name, dependency_line = resolve(match.group(1), position)
-    kind = static_calls.get(qualified_name.lower(), {}).get(match.group(2))
+    kind = static_calls.get(qualified_name.lower(), {}).get(match.group(2).lower())
     return (kind, match.end(), dependency_line) if kind else None
 
 
@@ -745,22 +832,25 @@ sql_keyword = re.compile(
     re.IGNORECASE,
 )
 sql_clock = re.compile(
-    r"(?<![A-Za-z0-9_$>:.])(?:CURRENT_(?:DATE|TIMESTAMP|TIME)|LOCALTIME(?:STAMP)?)(?![A-Za-z0-9_])",
+    r"(?<![A-Za-z0-9_$>:.])(?:(?:NOW|CURDATE|SYSDATE|CURTIME)\(|(?:CURRENT_(?:DATE|TIMESTAMP|TIME)|LOCALTIME(?:STAMP)?)(?![A-Za-z0-9_]))",
     re.IGNORECASE,
 )
+# Unambiguous on its own: uppercase, and called with nothing or only a precision.
+sql_clock_call = re.compile(r"(?<![A-Za-z0-9_$>:.])(?:NOW|CURDATE|SYSDATE|CURTIME)\(\s*[0-9]*\s*\)")
 
 
-# Lowercase clock names are only SQL when they share an expression with SQL: one literal, which may
-# span lines, or literals joined by `.`. Punctuation that ends an operand list ends the expression.
+# Any other clock name in a PHP string is only SQL when it shares an expression with SQL: one
+# literal, which may span lines, or literals joined by `.`. Punctuation that ends an operand list
+# ends the expression.
 sql_expression = []
 
 
 def end_sql_expression():
-    if any(sql_keyword.search(text[start:end]) for start, end in sql_expression):
-        for start, end in sql_expression:
-            for clock in sql_clock.finditer(text, start, end):
-                line = line_number(clock.start())
-                print(f"error\t{line}\t{line}\t0\tA database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.")
+    clock = sql_clock if any(sql_keyword.search(text[start:end]) for start, end in sql_expression) else sql_clock_call
+    for start, end in sql_expression:
+        for match in clock.finditer(text, start, end):
+            line = line_number(match.start())
+            print(f"error\t{line}\t{line}\t0\tA database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.")
     sql_expression.clear()
 
 
@@ -868,14 +958,6 @@ for file in "${files[@]}"; do
   done <<< "$scan_output"
 done
 
-scan_pattern error \
-  "(^|[^[:alnum:]_\$>:.])(NOW|CURDATE|SYSDATE|CURTIME)\\(" \
-  'A database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.' \
-  php insensitive
-scan_pattern error \
-  "(^|[^[:alnum:]_\$>:.])((CURRENT_(DATE|TIMESTAMP|TIME)|LOCALTIME(STAMP)?)([^[:alnum:]_=\$]|$))" \
-  'A database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.' \
-  php
 scan_pattern error \
   "(^|[^[:alnum:]_])(NOW|CURDATE|SYSDATE|CURTIME|LOCALTIME|LOCALTIMESTAMP)\\(|(^|[^[:alnum:]_])(CURRENT_(DATE|TIMESTAMP|TIME)|LOCALTIME(STAMP)?)([^[:alnum:]_=]|$)" \
   'A database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.' \

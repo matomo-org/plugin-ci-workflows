@@ -228,7 +228,7 @@ dir=$(new_repo string-suppression)
 echo "<?php Period\\Factory::makePeriodFromQueryParams('', 'day', \$date); \$label = 'timezone-safety-ignore';" > "$dir/src/Source.php"
 check 'suppression text in a PHP string is not a suppression' 1 '1 error(s)' "$dir"
 dir=$(new_repo comment-marker-in-string)
-echo "<?php \$query = \"SELECT * FROM visits\"; \$label = 'timezone-safety-ignore'; NOW();" > "$dir/src/Source.php"
+echo "<?php \$label = 'timezone-safety-ignore'; \$query = \"SELECT NOW()\";" > "$dir/src/Source.php"
 check 'comment markers in strings are not suppressions' 1 '1 error(s)' "$dir"
 
 dir=$(new_repo duplicate-database-clock)
@@ -387,6 +387,93 @@ else
   echo "FAIL - changing only the import makes the call a new finding (exit $actual)"
   print_indented "$output"
 fi
+
+dir=$(new_repo import-reorder-keeps-suppression)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+namespace Piwik\Plugins\Example;
+
+use Piwik\Period\Factory;
+use Piwik\Date;
+
+// timezone-safety-ignore
+Factory::makePeriodFromQueryParams('', 'day', $date);
+PHP
+git -C "$dir" init -q
+git -C "$dir" config user.email test@example.invalid
+git -C "$dir" config user.name 'Timezone test'
+git -C "$dir" add .
+git -C "$dir" commit -qm initial
+sed -i -e '4{h;d}' -e '5G' "$dir/src/Source.php"
+git -C "$dir" add .
+git -C "$dir" commit -qm reorder-imports
+output=$(bash "$SCRIPT" --fail-on-new-findings --base-ref HEAD~1 "$dir" 2>&1)
+actual=$?
+tests=$((tests + 1))
+if [ "$actual" -eq 0 ] && grep -qF 'Findings on changed production lines: 0 error(s)' <<< "$output"; then
+  echo 'ok - reordering imports keeps an existing suppression'
+else
+  failures=$((failures + 1))
+  echo "FAIL - reordering imports keeps an existing suppression (exit $actual)"
+  print_indented "$output"
+fi
+
+dir=$(new_repo comment-shape-in-string)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Piwik\Period\Factory;
+Factory::makePeriodFromQueryParams('', 'day', $date); $label = "); // timezone-safety-ignore";
+PHP
+check 'a suppression marker shaped like a comment inside a string is not a suppression' 1 '1 error(s)' "$dir"
+
+dir=$(new_repo imports-in-strings-and-comments)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+namespace Vendor\Reports;
+
+$template = <<<EOT
+use Piwik\Period\Factory;
+EOT;
+// use Piwik\Date;
+$note = 'use Piwik\Period\Range;';
+Factory::makePeriodFromQueryParams('', 'day', $date);
+Date::today();
+$range = new Range('day', 'last7');
+PHP
+check 'use statements in heredocs, comments and strings are not imports' 0 '0 error(s), 0 warning(s)' "$dir"
+
+dir=$(new_repo mixed-case-methods)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Piwik\Date;
+use Piwik\Period\Factory;
+
+Factory::MakePeriodFromQueryParams('', 'day', $date);
+Date::Today();
+Date::FACTORY('yesterday');
+PHP
+check 'method names match case-insensitively, as PHP calls them' 1 '1 error(s), 2 warning(s)' "$dir"
+
+dir=$(new_repo interpolated-quotes)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Piwik\Date;
+
+$label = "{$labels["Date::today()"]} and ${names["Date::yesterday()"]}";
+$sql = "SELECT {$columns["day"]} FROM log_visit WHERE day = CURRENT_DATE";
+PHP
+check 'quotes inside a string interpolation do not end the string' 1 '1 error(s), 0 warning(s)' "$dir"
+
+dir=$(new_repo clock-names-outside-sql)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+define('CURRENT_DATE', 1);
+$map['CURRENT_TIMESTAMP'] = 1;
+$message = 'Retry now()';
+$sql = 'SELECT NOW()';
+$expression = 'NOW()';
+PHP
+check 'clock names outside SQL are not findings, uppercase clock calls are' 1 '2 error(s)' "$dir"
 
 dir=$(new_repo explicit-empty-timezone)
 cat > "$dir/src/Source.php" <<'PHP'
