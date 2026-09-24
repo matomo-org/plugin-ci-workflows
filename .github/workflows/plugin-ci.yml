@@ -41,8 +41,13 @@ on:
         required: false
         type: boolean
         default: false
+      skip-compatibility:
+        description: "Do not compile the plugin's stylesheets and templates against its minimum and maximum Matomo"
+        required: false
+        type: boolean
+        default: false
 
-      # --- pass-through, named per check because three of them take a php-version ---
+      # --- pass-through, named per check because four of them take a php-version ---
       phpcs-php-version:
         description: "PHP version for the PHPCS run. PHPCS needs at least 7.4, so matomo5_min_php is too low."
         required: false
@@ -53,13 +58,18 @@ on:
         required: false
         type: string
         default: 'matomo6_min_php'
+      compatibility-php-version:
+        description: "PHP version for the compatibility runs, used by any matomo-targets entry that sets no php of its own"
+        required: false
+        type: string
+        default: 'matomo6_min_php'
       dependent-plugins:
-        description: "Space-separated repository slugs PHPStan needs checked out, e.g. 'innocraft/plugin-Funnels'"
+        description: "Space-separated repository slugs PHPStan and the compatibility check need checked out, e.g. 'innocraft/plugin-Funnels'"
         required: false
         type: string
         default: ''
       matomo-targets:
-        description: "JSON array of {target, php} objects, one PHPStan run each"
+        description: "JSON array of {target, php} objects, one PHPStan run and one compatibility run each"
         required: false
         type: string
         default: '[{"target": "minimum_required_matomo"}, {"target": "maximum_supported_matomo"}]'
@@ -86,12 +96,12 @@ on:
 
       # --- refs ---
       scripts-ref:
-        description: "Ref of matomo-org/github-action-tests for the shared helper scripts"
+        description: "Ref of matomo-org/github-action-tests for the shared helper scripts and the composite action the compatibility check runs"
         required: false
         type: string
         default: 'main'
       workflows-ref:
-        description: "Ref of this repository for the pre-push hook, the PHPStan bootstrap, the caller concurrency guard and the plugin floor resolver"
+        description: "Ref of this repository for the pre-push hook, the PHPStan bootstrap, the caller concurrency guard, the plugin floor resolver and the compatibility test generator"
         required: false
         type: string
         default: 'main'
@@ -125,7 +135,8 @@ permissions:
 #
 # The fix is to stop skipping (see the jobs below), which removes the reason for two lanes: every
 # run does the whole check set, so any run superseding another is telling the truth. The cost is
-# one extra run of these checks per description edit, about three minutes of runner; the test
+# one extra run of these checks per description edit. The compatibility job is most of that: it
+# installs Matomo against MySQL once per matomo-targets entry and runs PHPUnit. The full test
 # matrix lives in matomo-tests.yml, which does not subscribe to `edited`, so it is untouched.
 #
 # Static prefix, for the same reason plugin-codex-review.yml uses one: in a reusable workflow
@@ -253,6 +264,21 @@ jobs:
       plugin-name: ${{ inputs.plugin-name }}
       dependent-plugins: ${{ inputs.dependent-plugins }}
       php-version: ${{ inputs.phpstan-php-version }}
+      matomo-targets: ${{ inputs.matomo-targets }}
+      scripts-ref: ${{ inputs.scripts-ref }}
+      workflows-ref: ${{ inputs.workflows-ref }}
+    secrets:
+      TESTS_ACCESS_TOKEN: ${{ secrets.TESTS_ACCESS_TOKEN }}
+
+  compatibility:
+    if: ${{ !inputs.skip-compatibility }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-compatibility.yml@main
+    permissions:
+      contents: read
+    with:
+      plugin-name: ${{ inputs.plugin-name }}
+      dependent-plugins: ${{ inputs.dependent-plugins }}
+      php-version: ${{ inputs.compatibility-php-version }}
       matomo-targets: ${{ inputs.matomo-targets }}
       scripts-ref: ${{ inputs.scripts-ref }}
       workflows-ref: ${{ inputs.workflows-ref }}

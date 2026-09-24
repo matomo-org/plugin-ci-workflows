@@ -31,6 +31,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | --- | --- | --- |
 | [`plugin-phpcs.yml`](#phpcs) | Reusable workflow | Checks the plugin against the Matomo coding standards |
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
+| [`plugin-compatibility.yml`](#compatibility-check) | Reusable workflow | Compiles the plugin's stylesheets and templates against the oldest and newest Matomo it supports |
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
 | [`plugin-hook-check.yml`](#hook-check) | Reusable workflow | Fails when a plugin's vendored pre-push hook has drifted from the copy here |
@@ -42,7 +43,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 
 ### Plugins CI
 
-Runs PHPCS, PHPStan, the license check, the minimum PHP lint and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
+Runs PHPCS, PHPStan, the compatibility check, the license check, the minimum PHP lint and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
 
 ```yaml
 name: Plugins CI
@@ -72,11 +73,11 @@ jobs:
 
 The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs the same way on all three.
 
-Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check`, `skip-min-php-lint` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the three that take a PHP version are named `phpcs-php-version`, `phpstan-php-version` and `min-php-lint-php-version`.
+Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-compatibility`, `skip-license-check`, `skip-min-php-lint` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the four that take a PHP version are named `phpcs-php-version`, `phpstan-php-version`, `compatibility-php-version` and `min-php-lint-php-version`. PHPStan and the compatibility check share `dependent-plugins` and `matomo-targets`.
 
 The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description, and **every check runs on that event like any other**. Skipping the code checks on an edit is the obvious economy and it is the one thing this workflow must not do: a run whose checks are all skipped concludes `success`, and GitHub resolves a commit's verdict from the newest check suite per workflow, ordered by suite *creation* time — so the edited run's green suite replaces the code run's verdict, while the analysis is still running, and still after it fails. Nine of the fleet's migration pull requests had a red license check hidden that way before this was found. `tests/plugin_ci_invariants_test.sh` fails the build if any job conditions itself on `github.event.action`.
 
-The price is one extra run of these checks per description edit, around three minutes of runner, and — because one lane means an edit supersedes a run in flight — an edit made while the analysis is still going discards it and starts again. Filling in the AI checklist just after opening a pull request is exactly that shape, so expect the verdict to restart once or twice. The test matrix lives in `matomo-tests.yml`, which does not subscribe to `edited`, so it never re-runs for this.
+The price is one extra run of these checks per description edit. Most of that is the compatibility check, which installs Matomo against MySQL once per `matomo-targets` entry and runs PHPUnit, so an edit costs real runner minutes, billed to the repository's owner when it is private. And because one lane means an edit supersedes a run in flight, an edit made while the analysis is still going discards it and starts again. Filling in the AI checklist just after opening a pull request is exactly that shape, so expect the verdict to restart once or twice. The full test matrix lives in `matomo-tests.yml`, which does not subscribe to `edited`, so it never re-runs for this.
 
 **The caller declares no `concurrency` of its own.** This workflow declares it instead, as one lane per pull request. It was briefly two — a code lane and an edited lane — to stop an edit cancelling an in-flight analysis, as happened on UsersFlow#135. That was the wrong fix for the right problem: it stopped the cancellation and left the masking above. With every run doing the whole check set, one lane is correct, because a run that supersedes another has checked the same things. The [Codex review](#codex-review) wrapper hit two different concurrency failures — a `${{ github.workflow }}` group deadlocking against the caller's, and a group claimed by an unrelated label event — but all of these have the same answer: the group belongs in the workflow that knows what its own runs do, not in each caller.
 
@@ -160,9 +161,49 @@ A plugin that guards a newer core API behind `class_exists` can put the resultin
 
 #### Where the pieces live
 
-This workflow checks out two repositories. The shared helpers that Matomo core CI uses as well — `checkout_matomo.sh`, `checkout_dependent_plugins.sh` and `resolve_php_version.sh` — stay in [`github-action-tests`](https://github.com/matomo-org/github-action-tests) and come from `scripts-ref`. The plugin-only pieces, `hooks/pre-push` and `artifacts/bootstrap-phpstan.php`, live here and come from `workflows-ref`.
+This workflow checks out two repositories. The shared helpers that Matomo core CI uses as well — `checkout_matomo.sh`, `checkout_dependent_plugins.sh` and `resolve_php_version.sh` — stay in [`github-action-tests`](https://github.com/matomo-org/github-action-tests) and come from `scripts-ref`. The plugin-only pieces, `hooks/pre-push`, `artifacts/bootstrap-phpstan.php` and the compatibility check's generator and templates, live here and come from `workflows-ref`.
 
 A reusable workflow does not bring its own repository into the caller's workspace, which is why this repository has to be checked out explicitly even though the workflow is defined in it.
+
+### Compatibility check
+
+Compiles the plugin's stylesheets and Twig templates against a checked-out Matomo, by default twice: against the oldest Matomo the plugin's `plugin.json` supports and against the newest. PHPStan cannot see either kind of dependency on core. A Less mixin or variable, or a Twig function, filter, test or tag, is resolved only when the file is compiled, so a plugin using one its floor does not have yet, or one its ceiling has removed, installs cleanly and then breaks every page that needs it. The minimum leg catches the first, the maximum leg the second.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `plugin-name` | yes | — | Name of the plugin, e.g. `LoginLdap` |
+| `dependent-plugins` | no | `''` | Space-separated repository slugs to check out, e.g. `innocraft/plugin-Funnels` |
+| `php-version` | no | `matomo6_min_php` | PHP for any target that sets no `php` of its own. A literal version, or one of the shared aliases. |
+| `matomo-targets` | no | min and max | JSON array of `{target, php}` objects, one compilation run each |
+| `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests`, whose composite action installs Matomo and runs the tests |
+| `workflows-ref` | no | `main` | Ref of this repository for the test generator and its templates |
+
+`TESTS_ACCESS_TOKEN` is an optional secret, needed only when `dependent-plugins` names a private repository, and passed to the action only when `dependent-plugins` is set. Set `php` per target when the targets span Matomo majors, exactly as for [PHPStan](#phpstan).
+
+```yaml
+name: Compatibility check
+on: pull_request
+
+jobs:
+  compatibility:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-compatibility.yml@main
+    with:
+      plugin-name: MyPlugin
+    secrets: inherit
+```
+
+Each leg runs the `github-action-tests` composite action with `test-type: PluginTests`, a MySQL service and a Matomo install, and hands it `scripts/bash/generate_compatibility_checks.sh` as its setup script. That writes two integration tests into the runner's copy of the plugin — into `Test/Integration` when the plugin has a `Test/` directory, otherwise `tests/Integration`, the same precedence the action uses to decide what PHPUnit runs — and PHPUnit is filtered to those two. Nothing is written to the plugin repository, and the generator fails rather than overwrite a file of the same name that the plugin ships.
+
+- `GeneratedAssetCompilationTest` merges Matomo's stylesheet with the plugin loaded, which compiles the plugin's Less along with core's. A theme plugin is made the active theme first, because a theme's own stylesheet is only merged while it is enabled.
+- `GeneratedTwigCompilationTest` loads every `.twig` file under the plugin's `templates/` through Matomo's Twig environment as `@MyPlugin/<path>`, and is skipped when there are none.
+
+A step after the action, `scripts/bash/check_compatibility_results.sh`, reads PHPUnit's JUnit log and fails the leg unless the asset test ran and the Twig test ran or was skipped, so a leg cannot go green having checked nothing.
+
+**Compilation is all it checks.** Twig resolves an `extends`, `include`, `embed` or `import` of another template, and every variable, when the template is rendered rather than compiled, so a plugin extending a core template that was renamed or removed passes here. The maximum leg covers the ceiling `plugin.json` declares, not whatever Matomo comes after it. PHPUnit loads every test file in the plugin's test directory before `--filter` narrows the run, so an existing test that cannot load on a target, for example one extending a test-framework class that Matomo lacks, fails the leg even though neither check is at fault.
+
+The generator first fails if any `dependent-plugins` entry was not checked out, as PHPStan does. It then deletes every `plugins/*/.git` directory and composer's global `github-oauth` entry, and fails if either is still there, before PHPUnit starts. The action leaves the checkout token in both, and PHPUnit executes the pull request's code.
+
+In [Plugins CI](#plugins-ci) this runs by default and costs a Matomo install per target on every run, `edited` events included. `skip-compatibility` exists for a plugin mid-migration whose declared range cannot be installed yet, not as a way to save the minutes; fix the range in `plugin.json` instead where that is the real problem.
 
 ### License check
 
@@ -439,7 +480,7 @@ Tracking `@main` is the default for Matomo plugin repositories, and it is what m
 
 Pin to a tag where a repository needs to hold a check steady — for example while a plugin is mid-migration to a new Matomo major version and cannot yet take an updated check.
 
-Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml` and `plugin-min-php-lint.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml`, `plugin-min-php-lint.yml`, `plugin-hook-check.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
+Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml`, `plugin-min-php-lint.yml` and `plugin-compatibility.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml`, `plugin-min-php-lint.yml`, `plugin-compatibility.yml`, `plugin-hook-check.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` (`script-ref` for `plugin-license-check.yml`). Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
 
 ## Contributing
 

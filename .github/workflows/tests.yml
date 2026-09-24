@@ -61,6 +61,15 @@ jobs:
       - name: Check the minimum PHP lint
         run: bash tests/min_php_lint_test.sh
 
+      # Last, because it swaps the runner's PHP for the oldest any matomo-targets entry can select,
+      # so that php -l in the test checks the generated files against the real floor.
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: '7.2'
+
+      - name: Check the compatibility test generator
+        run: bash tests/compatibility_checks_test.sh
+
   codex-review-invariants:
     name: Codex review invariants
     runs-on: ubuntu-24.04
