@@ -1,0 +1,100 @@
+name: Timezone safety
+
+on:
+  workflow_call:
+    inputs:
+      plugin-name:
+        description: "Name of the plugin, e.g. LoginLdap"
+        required: true
+        type: string
+      workflows-ref:
+        description: "Ref of matomo-org/plugin-ci-workflows to take the checker from. This is this repository, so the workflow SHA is the right value when pinning."
+        required: false
+        type: string
+        default: 'main'
+      timezone-test-command:
+        description: "Optional targeted timezone regression command. The command receives TZ and MYSQL_TIMEZONE hints set to Pacific/Auckland; it remains responsible for configuring PHP, MySQL, and the test site's timezone."
+        required: false
+        type: string
+        default: ''
+      skip-static-scan:
+        description: "Do not run the timezone safety static scan; useful when the umbrella workflow already provides it."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  timezone-safety:
+    name: Timezone safety static scan (${{ github.event_name }})
+    if: ${{ !inputs.skip-static-scan }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history supplies the PR base branch and push event-before commit, so the check can
+          # fail only on findings added by a change while still printing older findings for cleanup.
+          fetch-depth: 0
+          lfs: false
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      - name: Run timezone safety scan
+        shell: bash
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          WORKFLOWS_REF: ${{ inputs.workflows-ref }}
+        run: |
+          # workflows-ref is often pinned independently from this workflow. A stale pin must fail
+          # closed rather than produce a green job without running the safety scan; callers can
+          # explicitly opt out with skip-timezone-safety while advancing the pin.
+          if [ ! -f "$WORKFLOWS_DIR/scripts/bash/check_timezone_safety.sh" ]; then
+            echo "::error::workflows-ref '$WORKFLOWS_REF' does not carry scripts/bash/check_timezone_safety.sh; update workflows-ref or skip this reusable workflow with skip-static-scan (the Plugins CI umbrella uses skip-timezone-safety)."
+            exit 2
+          fi
+          if [ ! -f "$WORKFLOWS_DIR/scripts/bash/run_timezone_safety_workflow.sh" ]; then
+            echo "::error::workflows-ref '$WORKFLOWS_REF' does not carry scripts/bash/run_timezone_safety_workflow.sh; update workflows-ref or skip this reusable workflow with skip-static-scan (the Plugins CI umbrella uses skip-timezone-safety)."
+            exit 2
+          fi
+          checker="$RUNNER_TEMP/check_timezone_safety.sh"
+          runner="$RUNNER_TEMP/run_timezone_safety_workflow.sh"
+          cp "$WORKFLOWS_DIR/scripts/bash/check_timezone_safety.sh" "$checker"
+          cp "$WORKFLOWS_DIR/scripts/bash/run_timezone_safety_workflow.sh" "$runner"
+          rm -rf "$WORKFLOWS_DIR"
+          bash "$runner" "$checker"
+
+  timezone-regression:
+    name: Timezone regression suite (${{ inputs.plugin-name }})
+    if: ${{ inputs.timezone-test-command != '' }}
+    runs-on: ubuntu-24.04
+    # A caller supplies a targeted command; allow a genuinely long suite without making the
+    # static scan wait for it. Repositories should keep this command focused on timezone cases.
+    timeout-minutes: 90
+    # These environment variables are hints for the caller command; the reusable workflow does
+    # not provision PHP or MySQL, so the command remains responsible for applying them.
+    env:
+      TZ: Pacific/Auckland
+      MYSQL_TIMEZONE: Pacific/Auckland
+      TIMEZONE_TEST_COMMAND: ${{ inputs.timezone-test-command }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          persist-credentials: false
+
+      - name: Run targeted timezone regression suite
+        shell: bash
+        run: bash -eo pipefail -c "$TIMEZONE_TEST_COMMAND"

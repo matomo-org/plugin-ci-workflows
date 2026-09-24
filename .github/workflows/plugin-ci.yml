@@ -41,6 +41,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip-timezone-safety:
+        description: "Do not run the timezone safety static scan"
+        required: false
+        type: boolean
+        default: false
 
       # --- pass-through, named per check because three of them take a php-version ---
       phpcs-php-version:
@@ -91,7 +96,7 @@ on:
         type: string
         default: 'main'
       workflows-ref:
-        description: "Ref of this repository for the pre-push hook, the PHPStan bootstrap, the caller concurrency guard and the plugin floor resolver"
+        description: "Ref of this repository for the timezone checker, pre-push hook, PHPStan bootstrap, caller concurrency guard and plugin floor resolver"
         required: false
         type: string
         default: 'main'
@@ -282,6 +287,15 @@ jobs:
     with:
       fail-on-missing-header: ${{ inputs.fail-on-missing-header }}
       script-ref: ${{ inputs.script-ref }}
+
+  timezone-safety:
+    if: ${{ !inputs.skip-timezone-safety }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
+    permissions:
+      contents: read
+    with:
+      plugin-name: ${{ inputs.plugin-name }}
+      workflows-ref: ${{ inputs.workflows-ref }}
 
 # Codex review is not called from here, and should not be. It runs on `pull_request_target` with
 # secrets available, gated on a label; every check above runs on `pull_request`. Putting both in
