@@ -58,6 +58,15 @@ check 'missing pull request bases fail closed' 2 'unavailable in this checkout' 
 check 'pushes use the previous commit when it is available' 0 "--base-ref $initial_commit --fail-on-new-findings ." "$WORK/repo" \
   BASE_BRANCH= EVENT_BEFORE="$initial_commit" CHECKER_LOG="$WORK/calls"
 
+git clone -q "$WORK/repo" "$WORK/force-pushed"
+git -C "$WORK/force-pushed" config user.email test@example.invalid
+git -C "$WORK/force-pushed" config user.name 'Timezone test'
+git -C "$WORK/force-pushed" commit -q --allow-empty -m 'replaced by a force push'
+force_pushed_commit=$(git -C "$WORK/force-pushed" rev-parse HEAD)
+git -C "$WORK/repo" remote add origin "$WORK/force-pushed"
+check 'pushes fetch a previous commit missing from the checkout' 0 "--base-ref $force_pushed_commit --fail-on-new-findings ." "$WORK/repo" \
+  BASE_BRANCH= EVENT_BEFORE="$force_pushed_commit" CHECKER_LOG="$WORK/calls"
+
 mkdir -p "$WORK/unrelated/src"
 echo '<?php' > "$WORK/unrelated/src/Other.php"
 git -C "$WORK/unrelated" init -q
@@ -66,9 +75,18 @@ git -C "$WORK/unrelated" config user.name 'Timezone test'
 git -C "$WORK/unrelated" add .
 git -C "$WORK/unrelated" commit -qm unrelated
 unrelated_commit=$(git -C "$WORK/unrelated" rev-parse HEAD)
-git -C "$WORK/repo" remote add origin "$WORK/unrelated"
+git -C "$WORK/repo" remote set-url origin "$WORK/unrelated"
+: > "$WORK/calls"
 check 'pushes with unrelated history fall back to advisory mode' 0 'no common history' "$WORK/repo" \
   BASE_BRANCH= EVENT_BEFORE="$unrelated_commit" CHECKER_LOG="$WORK/calls"
+tests=$((tests + 1))
+if [ "$(cat "$WORK/calls")" = '--advisory .' ]; then
+  echo 'ok - the unrelated-history fallback runs only the advisory scan'
+else
+  failures=$((failures + 1))
+  echo 'FAIL - the unrelated-history fallback runs only the advisory scan'
+  while IFS= read -r line; do printf '    %s\n' "$line"; done < "$WORK/calls"
+fi
 
 check 'unavailable push bases fall back to advisory mode' 0 'unavailable; treating this scan as advisory' "$WORK/repo" \
   BASE_BRANCH= EVENT_BEFORE=0000000000000000000000000000000000000001 CHECKER_LOG="$WORK/calls"

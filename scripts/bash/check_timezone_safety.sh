@@ -876,8 +876,14 @@ def strip_argument_comments(value):
     return "".join(output).strip()
 
 
+# Case-sensitive, because prose writes these words in lower or sentence case; lowercase SQL is
+# recognised by its clauses instead.
 sql_keyword = re.compile(
-    r"(?<![A-Za-z0-9_$])(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DEFAULT|SET|WHERE|VALUES|AND|OR)(?![A-Za-z0-9_])",
+    r"(?<![A-Za-z0-9_$])(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DEFAULT|SET|WHERE|VALUES|FROM|AND|OR)(?![A-Za-z0-9_])"
+)
+sql_clause = re.compile(
+    r"(?<![A-Za-z0-9_$])(?:select\s[\s\S]*?\sfrom\s|insert\s+into\s|delete\s+from\s|update\s+[\w`.]+\s+set\s"
+    r"|(?:create|alter)\s+table\s|set\s+[\w`.]+\s*=|where\s+[\w`.]+\s*(?:[=<>!]|in\s*\(|is\s+(?:not\s+)?null|(?:like|between)\s)|values\s*\()",
     re.IGNORECASE,
 )
 sql_clock = re.compile(
@@ -895,7 +901,8 @@ sql_expression = []
 
 
 def end_sql_expression():
-    clock = sql_clock if any(sql_keyword.search(text[start:end]) for start, end in sql_expression) else sql_clock_call
+    expression = " ".join(text[start:end] for start, end in sql_expression)
+    clock = sql_clock if sql_keyword.search(expression) or sql_clause.search(expression) else sql_clock_call
     # The whole expression is context: adding SQL to one literal makes a clock in another SQL.
     context = f"{line_number(sql_expression[0][0])}\t{line_number(sql_expression[-1][1])}" if sql_expression else ""
     for start, end in sql_expression:

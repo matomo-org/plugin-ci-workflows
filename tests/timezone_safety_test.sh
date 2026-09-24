@@ -262,6 +262,16 @@ $label = sprintf('Select the %s column', 'current_date');
 PHP
 check 'lowercase database clocks in concatenated SQL are reported' 1 '1 error(s)' "$dir"
 
+dir=$(new_repo clock-names-in-prose)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$help = 'Show times in localtime or UTC';
+$label = 'Default: localtime';
+$note = 'Select a date, and current_date is used where none is set';
+$sql = "select idvisit from log_visit where visit_last_action_time > current_date";
+PHP
+check 'clock names in prose are not SQL, but lowercase SQL clauses are' 1 '1 error(s)' "$dir"
+
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
