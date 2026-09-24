@@ -129,6 +129,15 @@ Factory::makePeriodFromQueryParams('', 'day', $date);
 PHP
 check 'same-namespace Factory calls are reviewed' 1 '1 error(s)' "$dir"
 
+dir=$(new_repo unrelated-period-namespaces)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+\Vendor\Period\Factory::makePeriodFromQueryParams('', 'day', $date);
+\Vendor\Piwik\Date::today();
+\Piwik\Period\Factory::makePeriodFromQueryParams('', 'day', $date);
+PHP
+check 'only Matomo-qualified Factory and Date calls are reviewed' 1 '1 error(s), 0 warning(s)' "$dir"
+
 dir=$(new_repo comma-import)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
@@ -210,8 +219,13 @@ $query = "UPDATE log_visit
     AND visit_first_action_time < current_date";
 $values = "INSERT INTO t (a, b)
     VALUES (?, localtimestamp)";
+$select = <<<SQL
+SELECT idvisit,
+    current_date AS day
+FROM log_visit
+SQL;
 PHP
-check 'lowercase database clocks on SQL continuation lines are reported' 1 '3 error(s)' "$dir"
+check 'lowercase database clocks on SQL continuation lines are reported' 1 '4 error(s)' "$dir"
 
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
@@ -222,6 +236,8 @@ $updatedAt = $row->getLocalTime();
 $defaultFormat = Formats::CURRENT_DATE_FORMAT;
 $ready = $isSet or $current_date;
 self::setCurrentTime($time);
+$view->set('current_time', time());
+$db->where('current_date', 1);
 PHP
 check 'ordinary PHP identifiers are not SQL clock findings' 0 '0 error(s)' "$dir"
 

@@ -611,7 +611,7 @@ def imported_aliases(qualified_name):
     return aliases
 
 
-factory_aliases = {"Period\\Factory"}
+factory_aliases = {"Period\\Factory", "Piwik\\Period\\Factory", "\\Piwik\\Period\\Factory"}
 if re.search(r"^\s*namespace\s+Piwik\\Period\s*[;{]", text, re.MULTILINE):
     factory_aliases.add("Factory")
 for imported_alias in re.findall(
@@ -631,7 +631,7 @@ for grouped_import in re.findall(
         if parts[0].strip() == "Factory":
             factory_aliases.add(parts[1].strip() if len(parts) == 2 else "Factory")
 
-date_aliases = {"Date", "Piwik\\Date"}
+date_aliases = {"Date", "Piwik\\Date", "\\Piwik\\Date"}
 date_aliases |= imported_aliases("Piwik\\Date")
 for imported_alias in re.findall(
     r"^\s*use\s+Piwik\\Date(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;",
@@ -643,7 +643,7 @@ for imported_alias in re.findall(
 patterns = []
 for factory_alias in sorted(factory_aliases):
     escaped_alias = re.escape(factory_alias)
-    boundary = r"(?<![A-Za-z0-9_])" if "\\" in factory_alias else r"(?<![A-Za-z0-9_\\])"
+    boundary = r"(?<![A-Za-z0-9_\\])"
     patterns.append(
         (re.compile(boundary + escaped_alias + r"::makePeriodFromQueryParams\b"), "make_period")
     )
@@ -651,7 +651,7 @@ for factory_alias in sorted(factory_aliases):
         (re.compile(boundary + escaped_alias + r"::build\b"), "build")
     )
 for date_alias in sorted(date_aliases):
-    boundary = r"(?<![A-Za-z0-9_])" if "\\" in date_alias else r"(?<![A-Za-z0-9_\\])"
+    boundary = r"(?<![A-Za-z0-9_\\])"
     patterns.append(
         (re.compile(boundary + re.escape(date_alias) + r"::factory\b(?!InTimezone)"), "date")
     )
@@ -722,6 +722,27 @@ def strip_argument_comments(value):
         position += 1
     return "".join(output).strip()
 
+
+sql_keyword = re.compile(
+    r"(?<![A-Za-z0-9_$])(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DEFAULT|SET|WHERE|VALUES|AND|OR)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+sql_clock = re.compile(
+    r"(?<![A-Za-z0-9_$>:.])(?:CURRENT_(?:DATE|TIMESTAMP|TIME)|LOCALTIME(?:STAMP)?)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
+
+
+# Lowercase clock names are only SQL when the same literal holds SQL, which may span lines.
+def report_sql_clocks(start, end):
+    literal = text[start:end]
+    if not sql_keyword.search(literal):
+        return
+    for clock in sql_clock.finditer(literal):
+        line = line_number(start + clock.start())
+        print(f"error\t{line}\t{line}\tA database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.")
+
+
 position = 0
 first_php_tag = text.find("<?")
 if first_php_tag > 0 and text[:first_php_tag].strip():
@@ -736,11 +757,14 @@ while position < len(text):
         print(f"Unable to find the closing heredoc label in {path}", file=sys.stderr)
         sys.exit(1)
     if heredoc_end != position:
+        report_sql_clocks(position, heredoc_end)
         position = heredoc_end
         continue
     character = text[position]
     if character in ("'", '"'):
-        position = skip_quoted(position, character)
+        literal_end = skip_quoted(position, character)
+        report_sql_clocks(position, literal_end)
+        position = literal_end
         continue
     comment_end = skip_comment(position)
     if comment_end != position:
@@ -827,10 +851,6 @@ scan_pattern error \
   "(^|[^[:alnum:]_\$>:.])((CURRENT_(DATE|TIMESTAMP|TIME)|LOCALTIME(STAMP)?)([^[:alnum:]_=\$]|$))" \
   'A database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.' \
   php
-scan_pattern error \
-  "(^|[^[:alnum:]_\$])(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DEFAULT|ON[[:space:]]+UPDATE|SET|WHERE|VALUES|AND|OR)([^[:alnum:]_][^;]*)?(^|[^[:alnum:]_\$>:.])(CURRENT_(DATE|TIMESTAMP|TIME)|LOCALTIME(STAMP)?)([^[:alnum:]_]|$)" \
-  'A database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.' \
-  php insensitive
 scan_pattern error \
   "(^|[^[:alnum:]_])(NOW|CURDATE|SYSDATE|CURTIME|LOCALTIME|LOCALTIMESTAMP)\\(|(^|[^[:alnum:]_])(CURRENT_(DATE|TIMESTAMP|TIME)|LOCALTIME(STAMP)?)([^[:alnum:]_=]|$)" \
   'A database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.' \
