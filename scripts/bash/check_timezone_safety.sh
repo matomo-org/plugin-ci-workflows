@@ -735,7 +735,9 @@ for statement in re.finditer(r"(?m)^[ \t]*use[ \t]+(?!function\b|const\b)([^;]+)
             continue
         parts = re.split(r"\s+as\s+", entry.group().strip(), maxsplit=1, flags=re.IGNORECASE)
         name = prefix + "\\" + parts[0] if prefix else parts[0]
-        add_import(imports, name, parts[1] if len(parts) == 2 else None, entries_start + entry.start())
+        # The match starts at the newline after the previous comma in a multi-line list.
+        leading = len(entry.group()) - len(entry.group().lstrip())
+        add_import(imports, name, parts[1] if len(parts) == 2 else None, entries_start + entry.start() + leading)
 
 
 # PHP resolves a class name through the imports and namespace in force where it is written. Returns
@@ -946,6 +948,8 @@ for file in "${files[@]}"; do
     *.php) ;;
     *) continue ;;
   esac
+  # Already counted as a failure by the sanitizer loop.
+  [ -n "${sanitized_files[$file]-}" ] || continue
   if ! scan_output=$(scan_php_calls "$file"); then
     parser_failures=$((parser_failures + 1))
     annotation_file=$(escape_annotation "${file#./}")
@@ -1006,7 +1010,7 @@ if [ "$scanned" -eq 0 ]; then
   exit 2
 fi
 if [ "$parser_failures" -gt 0 ]; then
-  echo "::error::The argument-aware PHP parser failed for $parser_failures source file(s); the timezone scan is incomplete."
+  echo "::error::Source scanning failed for $parser_failures source file(s); the timezone scan is incomplete."
   exit 2
 fi
 if [ "$ADVISORY" -eq 1 ]; then

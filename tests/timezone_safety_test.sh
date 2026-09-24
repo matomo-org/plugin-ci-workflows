@@ -475,6 +475,50 @@ $expression = 'NOW()';
 PHP
 check 'clock names outside SQL are not findings, uppercase clock calls are' 1 '2 error(s)' "$dir"
 
+for edited in Factory Common; do
+  dir=$(new_repo "multiline-import-change-$edited")
+  cat > "$dir/src/Source.php" <<'PHP'
+<?php
+namespace Piwik\Plugins\Example;
+
+use Piwik\{
+    Common,
+    FACTORY_ENTRY,
+};
+
+Factory::makePeriodFromQueryParams('', 'day', $date);
+PHP
+  if [ "$edited" = Factory ]; then
+    sed -i 's/FACTORY_ENTRY/Plugins\\Example\\Factory/' "$dir/src/Source.php"
+  else
+    sed -i 's/FACTORY_ENTRY/Period\\Factory/' "$dir/src/Source.php"
+  fi
+  git -C "$dir" init -q
+  git -C "$dir" config user.email test@example.invalid
+  git -C "$dir" config user.name 'Timezone test'
+  git -C "$dir" add .
+  git -C "$dir" commit -qm initial
+  if [ "$edited" = Factory ]; then
+    sed -i 's/Plugins\\Example\\Factory/Period\\Factory/' "$dir/src/Source.php"
+    expected_exit=1
+  else
+    sed -i 's/^    Common,$/    Common as MatomoCommon,/' "$dir/src/Source.php"
+    expected_exit=0
+  fi
+  git -C "$dir" add .
+  git -C "$dir" commit -qm "edit-$edited"
+  output=$(bash "$SCRIPT" --fail-on-new-findings --base-ref HEAD~1 "$dir" 2>&1)
+  actual=$?
+  tests=$((tests + 1))
+  if [ "$actual" -eq "$expected_exit" ]; then
+    echo "ok - editing the $edited line of a multi-line grouped import is attributed to its own entry"
+  else
+    failures=$((failures + 1))
+    echo "FAIL - editing the $edited line of a multi-line grouped import is attributed to its own entry (exit $actual)"
+    print_indented "$output"
+  fi
+done
+
 dir=$(new_repo explicit-empty-timezone)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
@@ -1044,7 +1088,7 @@ chmod +x "$fake_python/python3"
 output=$(PATH="$fake_python:$PATH" bash "$SCRIPT" "$dir" 2>&1)
 actual=$?
 tests=$((tests + 1))
-if [ "$actual" -eq 2 ] && grep -qF 'argument-aware PHP parser failed' <<< "$output"; then
+if [ "$actual" -eq 2 ] && grep -qF 'Source scanning failed for 1 source file(s)' <<< "$output"; then
   echo 'ok - parser failures fail closed'
 else
   failures=$((failures + 1))

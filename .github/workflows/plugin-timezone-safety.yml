@@ -60,7 +60,8 @@ jobs:
         run: |
           # workflows-ref is often pinned independently from this workflow. A stale pin must fail
           # closed rather than produce a green job without running the safety scan; callers can
-          # explicitly opt out with skip-timezone-safety while advancing the pin.
+          # explicitly opt out with skip-static-scan (skip-timezone-safety in the Plugins CI umbrella)
+          # while advancing the pin.
           if [ ! -f "$WORKFLOWS_DIR/scripts/bash/check_timezone_safety.sh" ]; then
             echo "::error::workflows-ref '$WORKFLOWS_REF' does not carry scripts/bash/check_timezone_safety.sh; update workflows-ref or skip this reusable workflow with skip-static-scan (the Plugins CI umbrella uses skip-timezone-safety)."
             exit 2
