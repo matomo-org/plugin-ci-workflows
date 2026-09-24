@@ -89,6 +89,8 @@ declare -A changed_lines=()
 declare -A deletion_points=()
 declare -A reported_findings=()
 declare -A sanitized_files=()
+# Changed file => its path at the merge base, for comparing how class names resolve there.
+declare -A base_paths=()
 # file:line => whole-line or trailing, for a timezone-safety-ignore marker in real comment text.
 declare -A ignore_comments=()
 
@@ -103,7 +105,8 @@ cleanup() {
 trap cleanup EXIT
 
 report() {
-  local severity="$1" file="$2" line="$3" message="$4" end_line="${5:-$3}" dependency_line="${6:-0}"
+  local severity="$1" file="$2" line="$3" message="$4" end_line="${5:-$3}" context_start="${6:-0}" context_end="${7:-0}"
+  local resolution_changed="${8:-0}"
   local annotation_line="$line" changed=0 candidate changed_line_key previous_line previous_changed=0
   local annotation_file annotation_message
   annotation_file=$(escape_annotation "$file")
@@ -145,13 +148,18 @@ report() {
       return
     fi
   fi
-  # The use or namespace line that decides which class a call names. Checked after the
-  # suppressions, so tidying imports does not revive a finding someone has already reviewed.
-  if [ "$changed" -eq 0 ] && [ "$dependency_line" -gt 0 ] \
-    && [ -n "${changed_lines["$file:$dependency_line"]+set}" ]; then
+  # Context that changes what the finding means: an import that now names a different class, or
+  # the rest of an SQL expression. Checked after the suppressions, which were already reviewed.
+  if [ "$resolution_changed" -eq 1 ]; then
     changed=1
   fi
-  local finding_key="$severity:$file:$line:$message"
+  for ((candidate = context_start; changed == 0 && candidate > 0 && candidate <= context_end; candidate++)); do
+    if [ -n "${changed_lines["$file:$candidate"]+set}" ] \
+      || { [ "$candidate" -gt "$context_start" ] && [ -n "${deletion_points["$file:$candidate"]+set}" ]; }; then
+      changed=1
+    fi
+  done
+  local finding_key="$severity:$file:$line:$end_line:$message"
   if [ -n "${reported_findings[$finding_key]+set}" ]; then
     return
   fi
@@ -219,13 +227,14 @@ if [ -n "$BASE_REF" ]; then
     echo "::error::The timezone check base revision '$BASE_REF' does not exist" >&2
     exit 2
   fi
-  if ! git merge-base "$BASE_REF" HEAD >/dev/null 2>&1; then
+  if ! merge_base=$(git merge-base "$BASE_REF" HEAD 2>/dev/null); then
     echo "::error::The timezone check base revision '$BASE_REF' has no common ancestor with HEAD" >&2
     exit 2
   fi
   changed_diff_file=$(mktemp)
   changed_names_file=$(mktemp)
-  if ! git -c core.quotePath=false diff --no-ext-diff --no-textconv --relative --src-prefix=a/ --dst-prefix=b/ --unified=0 --no-color --diff-filter=ACMRTUXB "$BASE_REF...HEAD" -- '*.php' '*.sql' > "$changed_diff_file"; then
+  # Against the working tree rather than HEAD, because the files scanned are the ones on disk.
+  if ! git -c core.quotePath=false diff --no-ext-diff --no-textconv --relative --src-prefix=a/ --dst-prefix=b/ --unified=0 --no-color --diff-filter=ACMRTUXB "$merge_base" -- '*.php' '*.sql' > "$changed_diff_file"; then
     echo '::error::Unable to build the timezone check changed-line map.' >&2
     exit 2
   fi
@@ -306,16 +315,34 @@ flush_pending_suppression()
       D) deletion_points["$file:$line"]=1 ;;
     esac
   done <<< "$changed_line_output"
-  if ! git -c core.quotePath=false diff --no-ext-diff --no-textconv --relative --name-only -z --diff-filter=ACMRTUXB "$BASE_REF...HEAD" > "$changed_names_file"; then
+  if ! git -c core.quotePath=false diff --no-ext-diff --no-textconv --relative --name-status -z --diff-filter=ACMRTUXB "$merge_base" > "$changed_names_file"; then
     echo '::error::Unable to list changed files for the timezone check.' >&2
     exit 2
   fi
-  while IFS= read -r -d '' file; do
+  while IFS= read -r -d '' change_status && IFS= read -r -d '' file; do
+    base_path="$file"
+    case "$change_status" in
+      R*|C*) IFS= read -r -d '' file ;;
+      A*) base_path='' ;;
+    esac
     [ -f "$file" ] || continue
     is_excluded "./$file" && continue
     case "$file" in
       *.php|*.sql) changed_source_files=$((changed_source_files + 1)) ;;
     esac
+    [ -z "$base_path" ] || base_paths["$file"]="$base_path"
+  done < "$changed_names_file"
+  if ! git -c core.quotePath=false ls-files --others --exclude-standard -z -- '*.php' '*.sql' > "$changed_names_file"; then
+    echo '::error::Unable to list untracked files for the timezone check.' >&2
+    exit 2
+  fi
+  while IFS= read -r -d '' file; do
+    is_excluded "./$file" && continue
+    changed_source_files=$((changed_source_files + 1))
+    line_count=$(wc -l < "$file")
+    for ((line = 1; line <= line_count + 1; line++)); do
+      changed_lines["$file:$line"]=1
+    done
   done < "$changed_names_file"
 fi
 
@@ -545,14 +572,15 @@ for file in "${files[@]}"; do
 done
 
 scan_php_calls() {
-  local file="$1"
-  python3 - "$file" <<'PY'
+  local file="$1" base_file="${2-}"
+  python3 - "$file" "$base_file" <<'PY'
 import re
 import sys
 
-path = sys.argv[1]
+path, base_path = sys.argv[1], sys.argv[2]
 try:
     text = open(path, encoding="utf-8", errors="replace").read()
+    base_text = open(base_path, encoding="utf-8", errors="replace").read() if base_path else None
 except OSError as error:
     print(f"Unable to scan PHP source: {error}", file=sys.stderr)
     sys.exit(1)
@@ -629,7 +657,7 @@ def parse_arguments(open_position):
 
     while position < len(text):
         character = text[position]
-        if character in ("'", '"'):
+        if character in ("'", '"', "`"):
             position = skip_quoted(position, character)
             continue
         heredoc_end = skip_heredoc(position)
@@ -693,72 +721,89 @@ def code_only():
     return "".join(code)
 
 
-code_text = code_only()
 name_pattern = r"\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*"
 matomo_classes = {"piwik\\period\\factory", "piwik\\date", "piwik\\period\\range"}
-namespaces = [
-    (match.start(), (match.group(1) or "").strip("\\"), line_number(match.start()), {})
-    for match in re.finditer(r"(?m)^[ \t]*namespace(?:[ \t]+(" + name_pattern + r"))?[ \t]*[;{]", code_text)
-]
-declares_namespace = bool(namespaces)
-namespaces = namespaces or [(0, "", 0, {})]
 
 
-def namespace_at(position):
-    current = namespaces[0]
-    for namespace in namespaces:
+# Returns each namespace block of the current text as (start, name, imports), and whether it
+# declares any namespace.
+def read_scopes():
+    code_text = code_only()
+    namespaces = [
+        (match.start(), (match.group(1) or "").strip("\\"), {})
+        for match in re.finditer(r"(?m)^[ \t]*namespace(?:[ \t]+(" + name_pattern + r"))?[ \t]*[;{]", code_text)
+    ]
+    declares_namespace = bool(namespaces)
+    namespaces = namespaces or [(0, "", {})]
+    for statement in re.finditer(r"(?m)^[ \t]*use[ \t]+(?!function\b|const\b)([^;]+);", code_text):
+        imports = namespaces[namespace_index(namespaces, statement.start())][2]
+        body = statement.group(1)
+        group = re.fullmatch(r"\s*(" + name_pattern + r")\\\s*\{([^}]*)\}\s*", body)
+        prefix = group.group(1).strip("\\") if group else ""
+        for entry in re.finditer(r"[^,]+", group.group(2) if group else body):
+            if not entry.group().strip() or re.match(r"\s*(?:function|const)\s", entry.group()):
+                continue
+            parts = re.split(r"\s+as\s+", entry.group().strip(), maxsplit=1, flags=re.IGNORECASE)
+            name = (prefix + "\\" + parts[0] if prefix else parts[0]).strip().strip("\\")
+            if not re.fullmatch(name_pattern, name):
+                continue
+            alias = parts[1].strip() if len(parts) == 2 else name.rsplit("\\", 1)[-1]
+            imports[alias.lower()] = name
+    return namespaces, declares_namespace
+
+
+def namespace_index(namespaces, position):
+    current = 0
+    for index, namespace in enumerate(namespaces):
         if namespace[0] <= position:
-            current = namespace
+            current = index
     return current
 
 
-def add_import(imports, name, alias, position):
-    name = name.strip().strip("\\")
-    if not re.fullmatch(name_pattern, name):
-        return
-    alias = alias.strip() if alias else name.rsplit("\\", 1)[-1]
-    imports[alias.lower()] = (name, line_number(position))
+scopes = read_scopes()
+base_scopes = None
+if base_text is not None:
+    # The skip helpers read the global text.
+    text, base_text = base_text, text
+    base_scopes = read_scopes()
+    text, base_text = base_text, text
 
 
-for statement in re.finditer(r"(?m)^[ \t]*use[ \t]+(?!function\b|const\b)([^;]+);", code_text):
-    imports = namespace_at(statement.start())[3]
-    body = statement.group(1)
-    group = re.fullmatch(r"\s*(" + name_pattern + r")\\\s*\{([^}]*)\}\s*", body)
-    if group:
-        prefix = group.group(1).strip("\\")
-        entries = group.group(2)
-        entries_start = statement.start(1) + group.start(2)
-    else:
-        prefix = ""
-        entries = body
-        entries_start = statement.start(1)
-    for entry in re.finditer(r"[^,]+", entries):
-        if not entry.group().strip() or re.match(r"\s*(?:function|const)\s", entry.group()):
-            continue
-        parts = re.split(r"\s+as\s+", entry.group().strip(), maxsplit=1, flags=re.IGNORECASE)
-        name = prefix + "\\" + parts[0] if prefix else parts[0]
-        # The match starts at the newline after the previous comma in a multi-line list.
-        leading = len(entry.group()) - len(entry.group().lstrip())
-        add_import(imports, name, parts[1] if len(parts) == 2 else None, entries_start + entry.start() + leading)
-
-
-# PHP resolves a class name through the imports and namespace in force where it is written. Returns
-# the fully qualified name and the line it depends on, so an edit to that line counts as a change.
-def resolve(name, position):
+# PHP resolves a class name through the imports and namespace in force where it is written.
+def resolve_in(name, namespace, declares_namespace):
     if name.startswith("\\"):
-        return name[1:], 0
-    namespace_start, namespace_name, namespace_line, imports = namespace_at(position)
+        return name[1:]
+    _, namespace_name, imports = namespace
     first, _, rest = name.partition("\\")
     if first.lower() == "namespace" and rest:
-        return (namespace_name + "\\" + rest).strip("\\"), namespace_line
+        return (namespace_name + "\\" + rest).strip("\\")
     if first.lower() in imports:
-        imported, import_line = imports[first.lower()]
-        return imported + ("\\" + rest if rest else ""), import_line
+        return imports[first.lower()] + ("\\" + rest if rest else "")
     # A snippet with no namespace at all is read as Matomo code, so Date and Period\Factory keep
     # meaning Matomo's classes there; plugin sources always declare one.
     if not declares_namespace and ("piwik\\" + name).lower() in matomo_classes:
-        return "Piwik\\" + name, 0
-    return (namespace_name + "\\" + name).strip("\\"), namespace_line
+        return "Piwik\\" + name
+    return (namespace_name + "\\" + name).strip("\\")
+
+
+# Returns the class a name means here, and whether it meant a different one in the base revision.
+# An unchanged call counts as changed only then, so tidying imports leaves old findings alone.
+def resolve(name, position):
+    namespaces, declares_namespace = scopes
+    index = namespace_index(namespaces, position)
+    qualified_name = resolve_in(name, namespaces[index], declares_namespace)
+    if base_scopes is None:
+        return qualified_name, False
+    base_namespaces, base_declares_namespace = base_scopes
+    namespace_name = namespaces[index][1].lower()
+    same_name = [namespace for namespace in base_namespaces if namespace[1].lower() == namespace_name]
+    occurrence = sum(1 for namespace in namespaces[:index] if namespace[1].lower() == namespace_name)
+    if occurrence < len(same_name):
+        base_namespace = same_name[occurrence]
+    else:
+        base_namespace = base_namespaces[min(index, len(base_namespaces) - 1)]
+    base_name = resolve_in(name, base_namespace, base_declares_namespace)
+    return qualified_name, base_name.lower() != qualified_name.lower()
 
 
 static_calls = {
@@ -777,16 +822,16 @@ new_range_pattern = re.compile(r"(?<![A-Za-z0-9_\\$>:])new\s+(" + name_pattern +
 def call_at(position):
     match = new_range_pattern.match(text, position)
     if match:
-        qualified_name, dependency_line = resolve(match.group(1), position)
+        qualified_name, resolution_changed = resolve(match.group(1), position)
         if qualified_name.lower() == "piwik\\period\\range":
-            return "range", match.end(), dependency_line
+            return "range", match.end(), resolution_changed
         return None
     match = static_call_pattern.match(text, position)
     if not match:
         return None
-    qualified_name, dependency_line = resolve(match.group(1), position)
+    qualified_name, resolution_changed = resolve(match.group(1), position)
     kind = static_calls.get(qualified_name.lower(), {}).get(match.group(2).lower())
-    return (kind, match.end(), dependency_line) if kind else None
+    return (kind, match.end(), resolution_changed) if kind else None
 
 
 def argument_value(arguments, index, names):
@@ -851,10 +896,12 @@ sql_expression = []
 
 def end_sql_expression():
     clock = sql_clock if any(sql_keyword.search(text[start:end]) for start, end in sql_expression) else sql_clock_call
+    # The whole expression is context: adding SQL to one literal makes a clock in another SQL.
+    context = f"{line_number(sql_expression[0][0])}\t{line_number(sql_expression[-1][1])}" if sql_expression else ""
     for start, end in sql_expression:
         for match in clock.finditer(text, start, end):
             line = line_number(match.start())
-            print(f"error\t{line}\t{line}\t0\tA database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.")
+            print(f"error\t{line}\t{line}\t{context}\t0\tA database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.")
     sql_expression.clear()
 
 
@@ -862,7 +909,7 @@ def check_call(position):
     call = call_at(position)
     if not call:
         return
-    kind, open_position, dependency_line = call
+    kind, open_position, resolution_changed = call
     while open_position < len(text) and text[open_position].isspace():
         open_position += 1
     if open_position >= len(text) or text[open_position] != "(":
@@ -906,7 +953,7 @@ def check_call(position):
             message = "Review this date range for an explicit website timezone when the endpoints can be relative."
 
     if severity:
-        print(f"{severity}\t{line_number(position)}\t{line_number(closing_position)}\t{dependency_line}\t{message}")
+        print(f"{severity}\t{line_number(position)}\t{line_number(closing_position)}\t0\t0\t{int(resolution_changed)}\t{message}")
 
 
 position = 0
@@ -928,6 +975,9 @@ while position < len(text):
         position = heredoc_end
         continue
     character = text[position]
+    if character == "`":
+        position = skip_quoted(position, character)
+        continue
     if character in ("'", '"'):
         literal_end = skip_quoted(position, character)
         sql_expression.append((position, literal_end))
@@ -952,15 +1002,25 @@ for file in "${files[@]}"; do
   esac
   # Already counted as a failure by the sanitizer loop.
   [ -n "${sanitized_files[$file]-}" ] || continue
-  if ! scan_output=$(scan_php_calls "$file"); then
+  base_file=''
+  if [ -n "${base_paths[${file#./}]-}" ]; then
+    base_file="${sanitized_files[$file]}.base"
+    if ! git show "$merge_base:./${base_paths[${file#./}]}" > "$base_file"; then
+      parser_failures=$((parser_failures + 1))
+      annotation_file=$(escape_annotation "${file#./}")
+      echo "::error file=$annotation_file::Unable to read this file at the base revision."
+      continue
+    fi
+  fi
+  if ! scan_output=$(scan_php_calls "$file" "$base_file"); then
     parser_failures=$((parser_failures + 1))
     annotation_file=$(escape_annotation "${file#./}")
     echo "::error file=$annotation_file::Unable to scan PHP source because the argument-aware parser failed."
     continue
   fi
-  while IFS=$'\t' read -r severity line end_line dependency_line message; do
+  while IFS=$'\t' read -r severity line end_line context_start context_end resolution_changed message; do
     [ -n "$severity" ] || continue
-    report "$severity" "${file#./}" "$line" "$message" "$end_line" "$dependency_line"
+    report "$severity" "${file#./}" "$line" "$message" "$end_line" "$context_start" "$context_end" "$resolution_changed"
   done <<< "$scan_output"
 done
 

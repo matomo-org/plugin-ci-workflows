@@ -542,6 +542,115 @@ Factory::makePeriodFromQueryParams(
 PHP
 check 'a suppression on any line of a multi-line call applies to it' 0 '0 error(s)' "$dir"
 
+commit_all() {
+  git -C "$1" init -q
+  git -C "$1" config user.email test@example.invalid
+  git -C "$1" config user.name 'Timezone test'
+  git -C "$1" add .
+  git -C "$1" commit -qm "${2:-initial}"
+}
+
+check_against_base() {
+  local description="$1" expected_exit="$2" base_ref="$3" dir="$4" output actual
+  output=$(bash "$SCRIPT" --fail-on-new-findings --base-ref "$base_ref" "$dir" 2>&1)
+  actual=$?
+  tests=$((tests + 1))
+  if [ "$actual" -eq "$expected_exit" ]; then
+    echo "ok - $description"
+  else
+    failures=$((failures + 1))
+    echo "FAIL - $description (exit $actual, expected $expected_exit)"
+    print_indented "$output"
+  fi
+}
+
+dir=$(new_repo sql-context-change)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$query = 'label, '
+    . 'current_date';
+PHP
+commit_all "$dir"
+sed -i "s/'label, '/'SELECT label, '/" "$dir/src/Source.php"
+commit_all "$dir" edit
+check_against_base 'adding SQL to one literal of an expression makes its clock a changed finding' 1 HEAD~1 "$dir"
+
+dir=$(new_repo deleted-import)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Vendor\Period;
+
+Period\Factory::makePeriodFromQueryParams('', 'day', $date);
+PHP
+commit_all "$dir"
+sed -i '/^use Vendor/d' "$dir/src/Source.php"
+commit_all "$dir" edit
+check_against_base 'deleting an import that made a call name another class is a change to that call' 1 HEAD~1 "$dir"
+
+dir=$(new_repo reordered-imports)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+namespace Piwik\Plugins\Example;
+
+use Piwik\Period\Factory;
+use Piwik\Common;
+
+Factory::makePeriodFromQueryParams('', 'day', $date);
+PHP
+commit_all "$dir"
+sed -i -e 's/^use Piwik\\Period\\Factory;$/use Piwik\\Common;/' -e '5s/.*/use Piwik\\Period\\Factory;/' "$dir/src/Source.php"
+commit_all "$dir" edit
+check_against_base 'reordering imports leaves an old finding unchanged' 0 HEAD~1 "$dir"
+
+dir=$(new_repo same-line-different-ends)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Piwik\Period\Factory;
+
+Factory::build('day', 'today'); Factory::build('day',
+    'today');
+PHP
+commit_all "$dir"
+sed -i "5s/'today'/'yesterday'/" "$dir/src/Source.php"
+commit_all "$dir" edit
+output=$(bash "$SCRIPT" --fail-on-new-findings --base-ref HEAD~1 "$dir" 2>&1)
+tests=$((tests + 1))
+if grep -qF 'Timezone finding on a changed production line' <<< "$output" && grep -qF '2 warning(s)' <<< "$output"; then
+  echo 'ok - a same-message call starting on the line of another is reported separately'
+else
+  failures=$((failures + 1))
+  echo 'FAIL - a same-message call starting on the line of another is reported separately'
+  print_indented "$output"
+fi
+
+dir=$(new_repo uncommitted-edit)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Piwik\Period\Factory;
+
+$period = Factory::makePeriodFromQueryParams(siteTimezone(), 'day', $date);
+PHP
+commit_all "$dir"
+sed -i "s/siteTimezone()/''/" "$dir/src/Source.php"
+check_against_base 'an uncommitted edit is compared with the base revision' 1 HEAD "$dir"
+
+dir=$(new_repo untracked-file)
+commit_all "$dir"
+cat > "$dir/src/New.php" <<'PHP'
+<?php
+use Piwik\Period\Factory;
+
+$period = Factory::makePeriodFromQueryParams('', 'day', $date);
+PHP
+check_against_base 'an untracked source file is all changed lines' 1 HEAD "$dir"
+
+dir=$(new_repo backtick-string)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$output = `echo new \Piwik\Period\Range('today', 'yesterday')`;
+PHP
+check 'a call written inside a backtick string is not scanned' 0 '0 warning(s)' "$dir"
+
 dir=$(new_repo explicit-empty-timezone)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
