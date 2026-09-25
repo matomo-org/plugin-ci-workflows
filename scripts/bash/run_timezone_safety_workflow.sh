@@ -33,7 +33,13 @@ run_with_base() {
     advisory_notice=1
     return 0
   fi
-  bash "$CHECKER" --base-ref "$ref" --fail-on-new-findings .
+  if [ -n "$BASE_BRANCH" ]; then
+    bash "$CHECKER" --base-ref "$ref" --fail-on-new-findings .
+  else
+    # A push and a pull request for the same commit compare with different bases; only the pull
+    # request gates, so the two runs cannot give the commit different verdicts.
+    bash "$CHECKER" --base-ref "$ref" --advisory .
+  fi
 }
 
 if [ -n "$base_ref" ]; then

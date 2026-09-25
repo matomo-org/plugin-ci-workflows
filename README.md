@@ -72,7 +72,7 @@ jobs:
 
 **The `push` and `workflow_dispatch` triggers are what make a build badge mean anything**, and they follow the shape `matomo-tests.yml` already uses across the fleet. A workflow that only runs on `pull_request` never runs on the default branch, so GitHub's badge — which takes the newest run on any branch when it cannot find one on the default branch — reports whichever pull request someone opened last. That is why `plugin-LogViewer`'s PHPStan badge reads *failing* off a feature branch while its `6.x-dev` is fine. With the triggers above, one `?branch=6.x-dev` badge on this workflow says whether the plugin's checks pass on the branch that ships.
 
-The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs on all three, but the timezone scan deliberately compares a pull request with its base branch, a push with its previous commit, and runs advisory-only when no trustworthy base exists.
+The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs on all three, but the timezone scan gates only on a pull request, where it compares with the base branch; on a push or a dispatch it reports findings without failing on them.
 
 Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check`, `skip-min-php-lint`, `skip-timezone-safety` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Most inputs the individual workflows take are passed through; the three that take a PHP version are named `phpcs-php-version`, `phpstan-php-version` and `min-php-lint-php-version`. The optional timezone regression job is called separately from a plugin's test workflow so it does not rerun on description edits in this umbrella.
 
@@ -246,12 +246,11 @@ bash scripts/bash/check_timezone_safety.sh --fail-on-warnings .
 
 The reusable `plugin-timezone-safety.yml` workflow runs this static scan for every plugin through
 Plugins CI. On pull requests it compares with the checked-out base branch and fails only for errors on changed production lines;
-older findings are still printed as notices for cleanup. Push and manual runs compare with the
-previous commit when available; manual runs normally have no event-before commit. If no comparison
-base exists, findings are advisory and structural scan failures still fail the job. Because a push
-and pull-request run for the same commit can use different event baselines, their changed-line
-verdicts are intentionally event-specific; the pull-request result is the authoritative review
-gate, while the push result checks the incremental commit. An older pinned `workflows-ref` fails
+older findings are still printed as notices for cleanup. Push and manual runs are advisory:
+they report findings, marking those on lines changed since the previous commit when it is available,
+but only structural scan failures fail the job. A push and a pull-request run for the same commit
+compare with different bases, so letting both gate could give the commit two verdicts; the
+pull-request result is the review gate. An older pinned `workflows-ref` fails
 closed rather than reporting a green job without running the scan; advance the pin or explicitly
 skip this direct workflow with `skip-static-scan` (`skip-timezone-safety` in Plugins CI) during
 rollout. It is

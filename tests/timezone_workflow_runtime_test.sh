@@ -55,7 +55,7 @@ check 'checker failures propagate through the workflow runner' 1 '--base-ref ori
 check 'missing pull request bases fail closed' 2 'unavailable in this checkout' "$WORK/repo" \
   BASE_BRANCH=missing EVENT_BEFORE= CHECKER_LOG="$WORK/calls"
 
-check 'pushes use the previous commit when it is available' 0 "--base-ref $initial_commit --fail-on-new-findings ." "$WORK/repo" \
+check 'pushes mark changes since the previous commit but stay advisory' 0 "--base-ref $initial_commit --advisory ." "$WORK/repo" \
   BASE_BRANCH= EVENT_BEFORE="$initial_commit" CHECKER_LOG="$WORK/calls"
 
 git clone -q "$WORK/repo" "$WORK/force-pushed"
@@ -64,7 +64,7 @@ git -C "$WORK/force-pushed" config user.name 'Timezone test'
 git -C "$WORK/force-pushed" commit -q --allow-empty -m 'replaced by a force push'
 force_pushed_commit=$(git -C "$WORK/force-pushed" rev-parse HEAD)
 git -C "$WORK/repo" remote add origin "$WORK/force-pushed"
-check 'pushes fetch a previous commit missing from the checkout' 0 "--base-ref $force_pushed_commit --fail-on-new-findings ." "$WORK/repo" \
+check 'pushes fetch a previous commit missing from the checkout' 0 "--base-ref $force_pushed_commit --advisory ." "$WORK/repo" \
   BASE_BRANCH= EVENT_BEFORE="$force_pushed_commit" CHECKER_LOG="$WORK/calls"
 
 mkdir -p "$WORK/unrelated/src"
