@@ -206,6 +206,13 @@ SQL
 check 'database server clock functions are errors' 1 'database server-clock' "$dir"
 database_dir="$dir"
 
+dir=$(new_repo sql-double-dash)
+cat > "$dir/src/query.sql" <<'SQL'
+SELECT 1;-- NOW()
+SELECT 5--1, NOW();
+SQL
+check 'a double dash is a SQL comment only when whitespace follows it' 1 '1 error(s)' "$dir"
+
 dir=$(new_repo sql-string-literals)
 cat > "$dir/src/query.sql" <<'SQL'
 INSERT INTO labels (value) VALUES ('CURRENT_TIMESTAMP'), ("NOW()"), (`CURRENT_TIMESTAMP`);
@@ -311,6 +318,15 @@ cat > "$dir/src/schema.sql" <<'SQL'
 ALTER TABLE t ADD COLUMN ts_updated DATETIME DEFAULT CURRENT_TIMESTAMP;
 SQL
 check 'a server-clock column default is reported' 1 '2 error(s)' "$dir"
+
+dir=$(new_repo php-sql-string-values)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$a = $db->fetchAll("SELECT 'CURRENT_TIMESTAMP' AS label FROM t");
+$b = $db->fetchAll('SELECT \'NOW()\', "O\'Brien", NOW() FROM t');
+$c = "SELECT a FROM t WHERE b = '" . $b . "' AND c < CURRENT_DATE";
+PHP
+check 'a clock name inside a SQL string value in PHP is not a finding' 1 '2 error(s)' "$dir"
 
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
@@ -693,6 +709,24 @@ use Piwik\Period\Factory;
 $period = Factory::makePeriodFromQueryParams('', 'day', $date);
 PHP
 check_against_base 'an untracked source file is all changed lines' 1 HEAD "$dir"
+
+dir=$(new_repo advisory-with-base)
+commit_all "$dir"
+cat > "$dir/src/New.php" <<'PHP'
+<?php
+$today = $db->fetchOne('SELECT NOW()');
+PHP
+output=$(bash "$SCRIPT" --advisory --base-ref HEAD "$dir" 2>&1)
+actual=$?
+tests=$((tests + 1))
+if [ "$actual" -eq 0 ] && grep -qF '::notice file=src/New.php,line=2::Timezone finding on a changed production line' <<< "$output" \
+  && grep -qF 'Findings on changed production lines: 1 error(s)' <<< "$output"; then
+  echo 'ok - an advisory scan with a base still marks findings on changed lines'
+else
+  failures=$((failures + 1))
+  echo "FAIL - an advisory scan with a base still marks findings on changed lines (exit $actual)"
+  print_indented "$output"
+fi
 
 dir=$(new_repo backtick-string)
 cat > "$dir/src/Source.php" <<'PHP'

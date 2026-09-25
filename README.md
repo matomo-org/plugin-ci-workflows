@@ -199,7 +199,7 @@ The reusable workflow accepts these inputs:
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `plugin-name` | yes | — | Plugin name used in the workflow job labels |
+| `plugin-name` | yes | — | Plugin name used in the regression job's label |
 | `workflows-ref` | no | `main` | This repository ref containing the checker and runtime helper |
 | `timezone-test-command` | no | empty | Optional focused regression command; runs as a separate job |
 | `skip-static-scan` | no | `false` | Skip the static job when calling this workflow only for regression tests |

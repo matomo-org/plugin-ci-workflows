@@ -174,11 +174,11 @@ report() {
   case "$severity" in
     error)
       errors=$((errors + 1))
-      if [ "$ADVISORY" -eq 1 ]; then
-        echo "::notice file=$annotation_file,line=$annotation_line::$annotation_message"
-      elif [ "$changed" -eq 1 ]; then
-        echo "::error file=$annotation_file,line=$annotation_line::Timezone finding on a changed production line: $annotation_message"
+      if [ "$changed" -eq 1 ]; then
+        echo "::$([ "$ADVISORY" -eq 1 ] && echo notice || echo error) file=$annotation_file,line=$annotation_line::Timezone finding on a changed production line: $annotation_message"
         changed_errors=$((changed_errors + 1))
+      elif [ "$ADVISORY" -eq 1 ]; then
+        echo "::notice file=$annotation_file,line=$annotation_line::$annotation_message"
       elif [ "$FAIL_ON_NEW_FINDINGS" -eq 1 ]; then
         echo "::notice file=$annotation_file,line=$annotation_line::$annotation_message"
       else
@@ -187,11 +187,11 @@ report() {
       ;;
     warning)
       warnings=$((warnings + 1))
-      if [ "$ADVISORY" -eq 1 ]; then
-        echo "::notice file=$annotation_file,line=$annotation_line::$annotation_message"
-      elif [ "$changed" -eq 1 ]; then
-        echo "::warning file=$annotation_file,line=$annotation_line::Timezone finding on a changed production line: $annotation_message"
+      if [ "$changed" -eq 1 ]; then
+        echo "::$([ "$ADVISORY" -eq 1 ] && echo notice || echo warning) file=$annotation_file,line=$annotation_line::Timezone finding on a changed production line: $annotation_message"
         changed_warnings=$((changed_warnings + 1))
+      elif [ "$ADVISORY" -eq 1 ]; then
+        echo "::notice file=$annotation_file,line=$annotation_line::$annotation_message"
       elif [ "$FAIL_ON_NEW_FINDINGS" -eq 1 ]; then
         echo "::notice file=$annotation_file,line=$annotation_line::$annotation_message"
       else
@@ -532,7 +532,8 @@ while position < len(text):
         state = "block"
         position += 2
         continue
-    if is_sql and text.startswith("--", position) and (position == 0 or text[position - 1].isspace()):
+    # MySQL starts a comment at `--` followed by whitespace, whatever precedes it; `1--1` is arithmetic.
+    if is_sql and text.startswith("--", position) and (position + 2 == len(text) or text[position + 2].isspace()):
         comment_start = position
         state = "line"
         position += 2
@@ -909,6 +910,43 @@ sql_expression = []
 sql_depth = 0
 
 
+def literal_characters(start, end):
+    """Yield (position, character) for the characters a PHP literal or heredoc evaluates to."""
+    if text[start] in "'\"":
+        quote, position, end = text[start], start + 1, end - 1
+    else:
+        quote = "'" if re.match(r"<<<[ \t]*'", text[start:end]) else '"'
+        position = text.find("\n", start) + 1
+        end = text.rfind("\n", position, end) + 1 or position
+    escapes = "\\'" if quote == "'" else "\\\""
+    while position < end:
+        if text[position] == "\\" and position + 1 < end and text[position + 1] in escapes:
+            yield position, text[position + 1]
+            position += 2
+            continue
+        yield position, text[position]
+        position += 1
+
+
+def sql_quoted_positions():
+    """Source positions inside a SQL string, which may open in one literal and close in another."""
+    quoted = set()
+    quote = None
+    for start, end in sql_expression:
+        characters = literal_characters(start, end)
+        for position, character in characters:
+            if quote:
+                if character == "\\":
+                    next(characters, None)
+                elif character == quote:
+                    quote = None
+                    continue
+                quoted.add(position)
+            elif character in "'\"":
+                quote = character
+    return quoted
+
+
 def end_sql_expression():
     global sql_depth
     sql_depth = 0
@@ -921,8 +959,11 @@ def end_sql_expression():
     clock = sql_clock if is_sql else sql_clock_call
     # The whole expression is context: adding SQL to one literal makes a clock in another SQL.
     context = f"{line_number(sql_expression[0][0])}\t{line_number(sql_expression[-1][1])}" if sql_expression else ""
+    quoted = sql_quoted_positions() if is_sql else set()
     for start, end in sql_expression:
         for match in clock.finditer(text, start, end):
+            if match.start() in quoted:
+                continue
             line = line_number(match.start())
             print(f"error\t{line}\t{line}\t{context}\t0\tA database server-clock date is used; Matomo dates are stored in UTC and must not depend on the database timezone.")
     sql_expression.clear()
