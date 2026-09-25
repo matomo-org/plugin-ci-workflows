@@ -328,6 +328,16 @@ $c = "SELECT a FROM t WHERE b = '" . $b . "' AND c < CURRENT_DATE";
 PHP
 check 'a clock name inside a SQL string value in PHP is not a finding' 1 '2 error(s)' "$dir"
 
+dir=$(new_repo php-sql-comments)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$a = "SELECT a -- the user's note
+    FROM t WHERE d = CURRENT_DATE";
+$b = 'SELECT 1 -- NOW()';
+$c = "SELECT /* NOW() isn't used */ `CURRENT_DATE` FROM t # NOW()";
+PHP
+check 'SQL comments and identifiers in PHP neither hide nor raise clock findings' 1 '1 error(s)' "$dir"
+
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
@@ -688,6 +698,29 @@ else
   echo 'FAIL - a same-message call starting on the line of another is reported separately'
   print_indented "$output"
 fi
+
+dir=$(new_repo suppressed-then-reimported)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+use Vendor\Period;
+
+Period\Factory::makePeriodFromQueryParams('', 'day', $date); // timezone-safety-ignore
+PHP
+commit_all "$dir"
+sed -i '/^use Vendor/d' "$dir/src/Source.php"
+commit_all "$dir" edit
+check_against_base 'an old marker does not cover a call an import edit made name another class' 1 HEAD~1 "$dir"
+
+dir=$(new_repo suppressed-then-sql)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$query = 'label, '
+    . 'current_date'; // timezone-safety-ignore
+PHP
+commit_all "$dir"
+sed -i "s/'label, '/'SELECT label, '/" "$dir/src/Source.php"
+commit_all "$dir" edit
+check_against_base 'an old marker does not cover a clock that an SQL edit elsewhere made SQL' 1 HEAD~1 "$dir"
 
 dir=$(new_repo uncommitted-edit)
 cat > "$dir/src/Source.php" <<'PHP'

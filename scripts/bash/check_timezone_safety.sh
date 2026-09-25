@@ -130,6 +130,17 @@ report() {
       fi
     done
   fi
+  # Context that changes what the finding means: an import that now names a different class, or
+  # the rest of an SQL expression. Checked before the suppressions, so an old marker does not cover a finding whose meaning changed.
+  if [ "$resolution_changed" -eq 1 ]; then
+    changed=1
+  fi
+  for ((candidate = context_start; changed == 0 && candidate > 0 && candidate <= context_end; candidate++)); do
+    if [ -n "${changed_lines["$file:$candidate"]+set}" ] \
+      || { [ "$candidate" -gt "$context_start" ] && [ -n "${deletion_points["$file:$candidate"]+set}" ]; }; then
+      changed=1
+    fi
+  done
   # A marker anywhere in an SQL expression covers a clock in it, because the lines between may all
   # be inside one string, where no comment can go.
   local suppress_start="$line" suppress_end="$end_line"
@@ -155,17 +166,6 @@ report() {
       return
     fi
   fi
-  # Context that changes what the finding means: an import that now names a different class, or
-  # the rest of an SQL expression. Checked after the suppressions, which were already reviewed.
-  if [ "$resolution_changed" -eq 1 ]; then
-    changed=1
-  fi
-  for ((candidate = context_start; changed == 0 && candidate > 0 && candidate <= context_end; candidate++)); do
-    if [ -n "${changed_lines["$file:$candidate"]+set}" ] \
-      || { [ "$candidate" -gt "$context_start" ] && [ -n "${deletion_points["$file:$candidate"]+set}" ]; }; then
-      changed=1
-    fi
-  done
   local finding_key="$severity:$file:$line:$end_line:$message"
   if [ -n "${reported_findings[$finding_key]+set}" ]; then
     return
@@ -929,22 +929,41 @@ def literal_characters(start, end):
 
 
 def sql_quoted_positions():
-    """Source positions inside a SQL string, which may open in one literal and close in another."""
-    quoted = set()
-    quote = None
-    for start, end in sql_expression:
-        characters = literal_characters(start, end)
-        for position, character in characters:
-            if quote:
-                if character == "\\":
-                    next(characters, None)
-                elif character == quote:
-                    quote = None
-                    continue
-                quoted.add(position)
-            elif character in "'\"":
-                quote = character
-    return quoted
+    """Source positions inside a SQL string, identifier or comment, which may span literals."""
+    characters = [pair for start, end in sql_expression for pair in literal_characters(start, end)]
+    skipped = set()
+    state = None
+    index = 0
+    while index < len(characters):
+        position, character = characters[index]
+        following = characters[index + 1][1] if index + 1 < len(characters) else ""
+        after = characters[index + 2][1] if index + 2 < len(characters) else " "
+        if state in ("'", '"', "`"):
+            if character == "\\" and state != "`":
+                skipped.add(position)
+                index += 1
+            elif character == state:
+                state = None
+                index += 1
+                continue
+        elif state == "line":
+            if character == "\n":
+                state = None
+        elif state == "block":
+            if character == "*" and following == "/":
+                state = None
+                index += 2
+                continue
+        elif character in "'\"`":
+            state = character
+        elif character == "#" or (character == "-" and following == "-" and after.isspace()):
+            state = "line"
+        elif character == "/" and following == "*":
+            state = "block"
+        if state:
+            skipped.add(position)
+        index += 1
+    return skipped
 
 
 def end_sql_expression():
