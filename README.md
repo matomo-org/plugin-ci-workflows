@@ -23,7 +23,7 @@ Reach for a reusable workflow when the whole job is the same everywhere, and a c
 
 The examples below use `secrets: inherit` for brevity. [Codex review](#codex-review) is the exception and names its two secrets explicitly, because `inherit` hands every secret the calling repository can see to a workflow defined in another repository.
 
-The `plugin-` prefix is what marks a workflow as part of the public surface. Anything without it — the checklist gate, the script tests — runs against this repository only, and may change without notice to callers.
+The `plugin-` prefix is what marks a reusable workflow as part of the public surface. Anything without it — the checklist gate, the script tests — runs against this repository only, and may change without notice to callers.
 
 ## Catalogue
 
@@ -32,6 +32,8 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 | [`plugin-phpcs.yml`](#phpcs) | Reusable workflow | Checks the plugin against the Matomo coding standards |
 | [`plugin-phpstan.yml`](#phpstan) | Reusable workflow | Runs PHPStan against the plugin, on one or more Matomo targets |
 | [`plugin-license-check.yml`](#license-check) | Reusable workflow | Checks the LICENSE file and source file license headers |
+| [`plugin-timezone-safety.yml`](#timezone-safety-check) | Reusable workflow | Runs the timezone safety scan and an optional focused regression suite |
+| [`scripts/bash/check_timezone_safety.sh`](#timezone-safety-check) | Standalone script | Finds known server-timezone date and database patterns in plugin source |
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
 | [`plugin-hook-check.yml`](#hook-check) | Reusable workflow | Fails when a plugin's vendored pre-push hook has drifted from the copy here |
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
@@ -42,7 +44,7 @@ The `plugin-` prefix is what marks a workflow as part of the public surface. Any
 
 ### Plugins CI
 
-Runs PHPCS, PHPStan, the license check, the minimum PHP lint and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
+Runs PHPCS, PHPStan, the license check, the minimum PHP lint, the timezone safety check and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
 
 ```yaml
 name: Plugins CI
@@ -70,9 +72,9 @@ jobs:
 
 **The `push` and `workflow_dispatch` triggers are what make a build badge mean anything**, and they follow the shape `matomo-tests.yml` already uses across the fleet. A workflow that only runs on `pull_request` never runs on the default branch, so GitHub's badge — which takes the newest run on any branch when it cannot find one on the default branch — reports whichever pull request someone opened last. That is why `plugin-LogViewer`'s PHPStan badge reads *failing* off a feature branch while its `6.x-dev` is fine. With the triggers above, one `?branch=6.x-dev` badge on this workflow says whether the plugin's checks pass on the branch that ships.
 
-The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs the same way on all three.
+The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs on all three, but the timezone scan gates only on a pull request, where it compares with the base branch; on a push or a dispatch it reports findings without failing on them.
 
-Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check`, `skip-min-php-lint` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Every input the individual workflows take is passed through; the three that take a PHP version are named `phpcs-php-version`, `phpstan-php-version` and `min-php-lint-php-version`.
+Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-license-check`, `skip-min-php-lint`, `skip-timezone-safety` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Most inputs the individual workflows take are passed through; the three that take a PHP version are named `phpcs-php-version`, `phpstan-php-version` and `min-php-lint-php-version`. The optional timezone regression job is called separately from a plugin's test workflow so it does not rerun on description edits in this umbrella.
 
 The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description, and **every check runs on that event like any other**. Skipping the code checks on an edit is the obvious economy and it is the one thing this workflow must not do: a run whose checks are all skipped concludes `success`, and GitHub resolves a commit's verdict from the newest check suite per workflow, ordered by suite *creation* time — so the edited run's green suite replaces the code run's verdict, while the analysis is still running, and still after it fails. Nine of the fleet's migration pull requests had a red license check hidden that way before this was found. `tests/plugin_ci_invariants_test.sh` fails the build if any job conditions itself on `github.event.action`.
 
@@ -185,6 +187,87 @@ jobs:
 ```
 
 The check script lives at `scripts/bash/license_check.sh` and is covered by `tests/license_check_test.sh`, which runs on every pull request to this repository.
+
+### Timezone safety check
+
+The standalone `scripts/bash/check_timezone_safety.sh` check looks for date and database patterns
+that have caused reports to use the server's calendar day instead of the website's timezone. It
+also reports timezone-specific tests or workflow configuration when a repository has them, but a
+test suite is not required: the static scan still runs when none exists.
+
+The reusable workflow accepts these inputs:
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `plugin-name` | yes | — | Plugin name used in the regression job's label |
+| `workflows-ref` | no | `main` | This repository ref containing the checker and runtime helper |
+| `timezone-test-command` | no | empty | Optional focused regression command; runs as a separate job |
+| `skip-static-scan` | no | `false` | Skip the static job when calling this workflow only for regression tests |
+
+For a direct call, pass the plugin name and optionally a pinned workflow ref or focused test
+command:
+
+```yaml
+jobs:
+  timezone:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
+    with:
+      plugin-name: MyPlugin
+      workflows-ref: main
+      timezone-test-command: >-
+        ./tests/run-timezone-suite.sh
+```
+
+Run it against a complete repository:
+
+```bash
+bash scripts/bash/check_timezone_safety.sh /path/to/plugin
+```
+
+To add changed-line context since a Git revision, pass `--base-ref`. The complete current repository
+is still scanned, so existing findings remain visible; the output additionally reports findings
+located on changed production lines. Lines are compared with the working tree, so uncommitted edits
+and untracked files count as changed, and an unchanged call counts as changed when an import or
+namespace edit makes it name a different class, and a clock counts as changed when any line of its SQL expression
+changes. `--fail-on-new-findings` makes errors on changed production
+lines blocking, which is the mode used by Plugins CI for pull requests. Warnings are advisory by
+default; `--fail-on-warnings` makes selected warnings blocking. Combined with
+`--fail-on-new-findings`, only warnings on changed lines are selected. An intentional finding can be suppressed with a
+`timezone-safety-ignore` comment on any of its lines, or a comment line immediately before an unchanged finding; include a new
+suppression comment in the same change as a changed finding. A column default such as `DEFAULT CURRENT_TIMESTAMP` is
+reported deliberately: Matomo does not set the connection timezone, so the value reads back in the database server's
+timezone rather than UTC; suppress it once that has been checked. The script requires `python3` and Bash 4+,
+and exits with status 2 without scanning when either is missing:
+
+```bash
+bash scripts/bash/check_timezone_safety.sh --base-ref origin/6.x-dev .
+bash scripts/bash/check_timezone_safety.sh --base-ref origin/6.x-dev --fail-on-new-findings .
+bash scripts/bash/check_timezone_safety.sh --fail-on-warnings .
+```
+
+The reusable `plugin-timezone-safety.yml` workflow runs this static scan for every plugin through
+Plugins CI. On pull requests it compares with the checked-out base branch and fails only for errors on changed production lines;
+older findings are still printed as notices for cleanup. Push and manual runs are advisory:
+they report findings, marking those on lines changed since the previous commit when it is available,
+but only structural scan failures fail the job. A push and a pull-request run for the same commit
+compare with different bases, so letting both gate could give the commit two verdicts; the
+pull-request result is the review gate. An older pinned `workflows-ref` fails
+closed rather than reporting a green job without running the scan; advance the pin or explicitly
+skip this direct workflow with `skip-static-scan` (`skip-timezone-safety` in Plugins CI) during
+rollout. It is
+static-only unless a plugin passes
+`timezone-test-command` when calling that reusable workflow directly, in which case a separate,
+90-minute job runs the focused command with
+the `TZ` and `MYSQL_TIMEZONE` hint variables set to `Pacific/Auckland`. The command must
+bootstrap any PHP, Matomo, and database environment it needs,
+and remains responsible for configuring its test site's timezone. It should select the plugin's
+timezone regression tests rather than its entire suite. When the caller already runs the
+umbrella workflow's static check, pass `skip-static-scan: true` to avoid running that static check
+twice. A reported finding still
+needs code-level review and, where the behavior is report-facing, a regression test using sites on
+opposite sides of a UTC date boundary. The script and workflow contract are covered by
+`tests/timezone_safety_test.sh`, `tests/timezone_workflow_invariants_test.sh` and
+`tests/timezone_workflow_runtime_test.sh`.
 
 ### Hook check
 
@@ -439,7 +522,7 @@ Tracking `@main` is the default for Matomo plugin repositories, and it is what m
 
 Pin to a tag where a repository needs to hold a check steady — for example while a plugin is mid-migration to a new Matomo major version and cannot yet take an updated check.
 
-Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml` and `plugin-min-php-lint.yml` also run helper scripts checked out at `scripts-ref`, and `plugin-phpstan.yml`, `plugin-min-php-lint.yml`, `plugin-hook-check.yml` and `plugin-license-check.yml` take files from this repository at `workflows-ref` and `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
+Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml` and `plugin-min-php-lint.yml` also run helper scripts checked out at `scripts-ref`; `plugin-phpstan.yml`, `plugin-min-php-lint.yml`, `plugin-hook-check.yml` and `plugin-timezone-safety.yml` take files from this repository at `workflows-ref`; and `plugin-license-check.yml` takes its script at `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
 
 ## Contributing
 
