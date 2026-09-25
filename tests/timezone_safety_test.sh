@@ -302,6 +302,16 @@ $other = "SELECT a FROM " . self::TABLE . " WHERE b < now()";
 PHP
 check 'a static call or constant inside a concatenated SQL expression does not split it' 1 '2 error(s)' "$dir"
 
+dir=$(new_repo column-defaults)
+cat > "$dir/src/Model.php" <<'PHP'
+<?php
+$sql = "CREATE TABLE t (ts_created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)";
+PHP
+cat > "$dir/src/schema.sql" <<'SQL'
+ALTER TABLE t ADD COLUMN ts_updated DATETIME DEFAULT CURRENT_TIMESTAMP;
+SQL
+check 'a server-clock column default is reported' 1 '2 error(s)' "$dir"
+
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php

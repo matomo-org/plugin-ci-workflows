@@ -233,7 +233,9 @@ lines blocking, which is the mode used by Plugins CI for pull requests. Warnings
 default; `--fail-on-warnings` makes selected warnings blocking. Combined with
 `--fail-on-new-findings`, only warnings on changed lines are selected. An intentional finding can be suppressed with a
 `timezone-safety-ignore` comment on any of its lines, or a comment line immediately before an unchanged finding; include a new
-suppression comment in the same change as a changed finding. The argument-aware PHP scan requires
+suppression comment in the same change as a changed finding. A column default such as `DEFAULT CURRENT_TIMESTAMP` is
+reported deliberately: Matomo does not set the connection timezone, so the value reads back in the database server's
+timezone rather than UTC; suppress it once that has been checked. The argument-aware PHP scan requires
 `python3` and Bash 4+:
 
 ```bash
