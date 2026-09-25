@@ -228,15 +228,16 @@ To add changed-line context since a Git revision, pass `--base-ref`. The complet
 is still scanned, so existing findings remain visible; the output additionally reports findings
 located on changed production lines. Lines are compared with the working tree, so uncommitted edits
 and untracked files count as changed, and an unchanged call counts as changed when an import or
-namespace edit makes it name a different class. `--fail-on-new-findings` makes errors on changed production
+namespace edit makes it name a different class, and a clock counts as changed when any line of its SQL expression
+changes. `--fail-on-new-findings` makes errors on changed production
 lines blocking, which is the mode used by Plugins CI for pull requests. Warnings are advisory by
 default; `--fail-on-warnings` makes selected warnings blocking. Combined with
 `--fail-on-new-findings`, only warnings on changed lines are selected. An intentional finding can be suppressed with a
 `timezone-safety-ignore` comment on any of its lines, or a comment line immediately before an unchanged finding; include a new
 suppression comment in the same change as a changed finding. A column default such as `DEFAULT CURRENT_TIMESTAMP` is
 reported deliberately: Matomo does not set the connection timezone, so the value reads back in the database server's
-timezone rather than UTC; suppress it once that has been checked. The argument-aware PHP scan requires
-`python3` and Bash 4+:
+timezone rather than UTC; suppress it once that has been checked. The script requires `python3` and Bash 4+,
+and exits with status 2 without scanning when either is missing:
 
 ```bash
 bash scripts/bash/check_timezone_safety.sh --base-ref origin/6.x-dev .
