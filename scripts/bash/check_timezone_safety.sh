@@ -910,18 +910,25 @@ sql_expression = []
 sql_depth = 0
 
 
+single_quoted_escapes = {"\\": "\\", "'": "'"}
+double_quoted_escapes = {
+    "\\": "\\", '"': '"', "$": "$", "n": "\n", "r": "\r", "t": "\t", "v": "\v", "f": "\f", "e": "\x1b",
+}
+
+
 def literal_characters(start, end):
     """Yield (position, character) for the characters a PHP literal or heredoc evaluates to."""
-    if text[start] in "'\"":
-        quote, position, end = text[start], start + 1, end - 1
+    if text[start] == "'":
+        escapes, position, end = single_quoted_escapes, start + 1, end - 1
+    elif text[start] == '"':
+        escapes, position, end = double_quoted_escapes, start + 1, end - 1
     else:
-        quote = "'" if re.match(r"<<<[ \t]*'", text[start:end]) else '"'
+        escapes = {} if re.match(r"<<<[ \t]*'", text[start:end]) else double_quoted_escapes
         position = text.find("\n", start) + 1
         end = text.rfind("\n", position, end) + 1 or position
-    escapes = "\\'" if quote == "'" else "\\\""
     while position < end:
         if text[position] == "\\" and position + 1 < end and text[position + 1] in escapes:
-            yield position, text[position + 1]
+            yield position, escapes[text[position + 1]]
             position += 2
             continue
         yield position, text[position]

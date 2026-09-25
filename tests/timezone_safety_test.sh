@@ -338,6 +338,14 @@ $c = "SELECT /* NOW() isn't used */ `CURRENT_DATE` FROM t # NOW()";
 PHP
 check 'SQL comments and identifiers in PHP neither hide nor raise clock findings' 1 '1 error(s)' "$dir"
 
+dir=$(new_repo php-sql-escaped-newlines)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$a = $db->fetchAll("SELECT a -- note\n FROM t WHERE d = NOW()");
+$b = $db->fetchAll('SELECT a -- note\n FROM t WHERE d = NOW()');
+PHP
+check 'an escaped newline ends a SQL comment only in a double-quoted PHP string' 1 '1 error(s)' "$dir"
+
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
