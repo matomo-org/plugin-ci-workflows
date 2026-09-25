@@ -282,6 +282,26 @@ $db->query('SELECT a FROM t WHERE b = ?', ['current_date']);
 PHP
 check 'a call or cast inside a concatenated SQL expression does not split it' 1 '2 error(s)' "$dir"
 
+dir=$(new_repo lowercase-statements)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$today = $db->fetchOne("select current_date");
+$now = $db->fetchOne(' select now()');
+$sql = <<<SQL
+update t set ts = localtime
+SQL;
+$help = 'Select to use localtime';
+PHP
+check 'a literal opening with a lowercase statement verb is SQL' 1 '3 error(s)' "$dir"
+
+dir=$(new_repo sql-around-static-calls)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+$sql = "select * from " . Common::prefixTable('t') . " t join u on t.d = current_date";
+$other = "SELECT a FROM " . self::TABLE . " WHERE b < now()";
+PHP
+check 'a static call or constant inside a concatenated SQL expression does not split it' 1 '2 error(s)' "$dir"
+
 dir=$(new_repo ordinary-identifiers)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php

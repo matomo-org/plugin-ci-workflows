@@ -884,10 +884,11 @@ def strip_argument_comments(value):
 
 
 # Case-sensitive, because prose writes these words in lower or sentence case; lowercase SQL is
-# recognised by its clauses instead.
+# recognised by its clauses, or by a literal that opens with a lowercase statement verb.
 sql_keyword = re.compile(
     r"(?<![A-Za-z0-9_$])(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DEFAULT|SET|WHERE|VALUES|FROM|AND|OR)(?![A-Za-z0-9_])"
 )
+sql_statement = re.compile(r"(?:<<<[^\n]*\n|['\"])\s*(?:select|insert|update|delete|replace)\s")
 sql_clause = re.compile(
     r"(?<![A-Za-z0-9_$])(?:select\s[\s\S]*?\sfrom\s|insert\s+into\s|delete\s+from\s|update\s+[\w`.]+\s+set\s"
     r"|(?:create|alter)\s+table\s|set\s+[\w`.]+\s*=|where\s+[\w`.]+\s*(?:[=<>!]|in\s*\(|is\s+(?:not\s+)?null|(?:like|between)\s)|values\s*\()",
@@ -912,7 +913,12 @@ def end_sql_expression():
     global sql_depth
     sql_depth = 0
     expression = " ".join(text[start:end] for start, end in sql_expression)
-    clock = sql_clock if sql_keyword.search(expression) or sql_clause.search(expression) else sql_clock_call
+    is_sql = (
+        sql_keyword.search(expression)
+        or sql_clause.search(expression)
+        or any(sql_statement.match(text, start, end) for start, end in sql_expression)
+    )
+    clock = sql_clock if is_sql else sql_clock_call
     # The whole expression is context: adding SQL to one literal makes a clock in another SQL.
     context = f"{line_number(sql_expression[0][0])}\t{line_number(sql_expression[-1][1])}" if sql_expression else ""
     for start, end in sql_expression:
@@ -1008,6 +1014,8 @@ while position < len(text):
         sql_depth += 1
     elif sql_depth and character in ")]":
         sql_depth -= 1
+    elif character == ":" and (text.startswith("::", position) or text.startswith("::", max(position - 1, 0))):
+        pass
     elif character in ";{}" or (not sql_depth and character in ",()[]=?:"):
         end_sql_expression()
     check_call(position)
