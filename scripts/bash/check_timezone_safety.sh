@@ -130,20 +130,27 @@ report() {
       fi
     done
   fi
-  for ((candidate = line; candidate <= end_line; candidate++)); do
+  # A marker anywhere in an SQL expression covers a clock in it, because the lines between may all
+  # be inside one string, where no comment can go.
+  local suppress_start="$line" suppress_end="$end_line"
+  if [ "$context_start" -gt 0 ]; then
+    [ "$context_start" -ge "$suppress_start" ] || suppress_start="$context_start"
+    [ "$context_end" -le "$suppress_end" ] || suppress_end="$context_end"
+  fi
+  for ((candidate = suppress_start; candidate <= suppress_end; candidate++)); do
     if [ -n "${ignore_comments["$file:$candidate"]+set}" ] \
       && { [ "$changed" -eq 0 ] || [ -n "${changed_lines["$file:$candidate"]+set}" ]; }; then
       return
     fi
   done
-  if [ "$line" -gt 1 ]; then
-    previous_line=$((line - 1))
+  if [ "$suppress_start" -gt 1 ]; then
+    previous_line=$((suppress_start - 1))
     if [ "${ignore_comments["$file:$previous_line"]-}" = whole-line ] \
       && [ -n "${changed_lines["$file:$previous_line"]+set}" ]; then
       previous_changed=1
     fi
     if [ "${ignore_comments["$file:$previous_line"]-}" = whole-line ] \
-      && { [ -z "${deletion_points["$file:$line"]+set}" ] || [ "$previous_changed" -eq 1 ]; } \
+      && { [ -z "${deletion_points["$file:$suppress_start"]+set}" ] || [ "$previous_changed" -eq 1 ]; } \
       && { [ "$changed" -eq 0 ] || [ "$previous_changed" -eq 1 ]; }; then
       return
     fi

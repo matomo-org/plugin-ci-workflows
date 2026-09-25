@@ -671,6 +671,33 @@ $output = `echo new \Piwik\Period\Range('today', 'yesterday')`;
 PHP
 check 'a call written inside a backtick string is not scanned' 0 '0 warning(s)' "$dir"
 
+dir=$(new_repo ignore-around-multiline-sql)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+// timezone-safety-ignore
+$heredoc = <<<SQL
+SELECT idvisit
+FROM log_visit WHERE ts < NOW()
+SQL;
+$string = "SELECT idvisit
+    FROM log_visit WHERE ts < NOW()"; // timezone-safety-ignore
+PHP
+check 'a suppression before or after a multi-line SQL string covers a clock inside it' 0 '0 error(s)' "$dir"
+
+dir=$(new_repo changed-clock-in-suppressed-heredoc)
+cat > "$dir/src/Source.php" <<'PHP'
+<?php
+// timezone-safety-ignore
+$heredoc = <<<SQL
+SELECT idvisit
+FROM log_visit WHERE ts < ?
+SQL;
+PHP
+commit_all "$dir"
+sed -i 's/ts < ?/ts < NOW()/' "$dir/src/Source.php"
+commit_all "$dir" edit
+check_against_base 'an old suppression before a heredoc does not cover a clock newly added inside it' 1 HEAD~1 "$dir"
+
 dir=$(new_repo explicit-empty-timezone)
 cat > "$dir/src/Source.php" <<'PHP'
 <?php
