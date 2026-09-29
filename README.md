@@ -244,6 +244,7 @@ The reusable workflow accepts these inputs:
 | `workflows-ref` | no | `main` | This repository ref containing the checker and runtime helper |
 | `timezone-test-command` | no | empty | Optional focused regression command; runs as a separate job |
 | `skip-static-scan` | no | `false` | Skip the static job when calling this workflow only for regression tests |
+| `timezone-regression-exempt` | no | empty | Why the plugin needs no regression suite; see [regression coverage](#timezone-regression-coverage) |
 
 For a direct call, pass the plugin name and optionally a pinned workflow ref or focused test
 command:
@@ -309,6 +310,46 @@ needs code-level review and, where the behavior is report-facing, a regression t
 opposite sides of a UTC date boundary. The script and workflow contract are covered by
 `tests/timezone_safety_test.sh`, `tests/timezone_workflow_invariants_test.sh` and
 `tests/timezone_workflow_runtime_test.sh`.
+
+#### Timezone regression coverage
+
+The regression suite is opt-in per plugin, so the static job also runs
+`scripts/bash/check_timezone_regression_coverage.sh` to stop a plugin that needs one from being
+missed. A plugin needs one when its tracked production PHP reads a log table's event time
+(`server_time`, `visit_first_action_time`, `visit_last_action_time`), a period boundary
+(`getDateStart()`, `getDateTimeEndUTC()` and the like) or a site's timezone (`getTimezone()`,
+`Site::getTimezoneFor()`). Tests, `vendor/`, `libs/`, `Updates/` and PHP comments are not counted.
+Such a plugin passes when a job in one of its `.github/workflows` files calls
+`plugin-timezone-safety.yml` with a non-empty `timezone-test-command`, or when Plugins CI is given
+the reason it does not need one:
+
+```yaml
+jobs:
+  ci:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ci.yml@main
+    with:
+      plugin-name: VisitorGenerator
+      timezone-regression-exempt: Generates synthetic visits for development; reports nothing itself
+```
+
+The workflows are read with PyYAML, which the step installs if the runner lacks it. A job switched
+off with `if: false` does not count; any other condition, and an expression such as
+`${{ inputs.command }}` as the command, is taken at face value, because the check cannot know what
+it resolves to. `skip-timezone-safety` skips this check along with the scan, and a direct call with
+`skip-static-scan` never reads `timezone-regression-exempt`.
+
+The check currently warns. Once every plugin it reports runs the suite or is exempt, setting
+`COVERAGE_MODE: enforce` in `plugin-timezone-safety.yml` makes it fail pull requests; pushes and
+dispatches stay advisory, like the scan. A pinned `workflows-ref` that predates the script warns
+while the check warns, and fails pull requests once it enforces. Plugins CI always calls
+`plugin-timezone-safety.yml@main`, so a plugin pinned to a `plugin-ci.yml` older than
+`timezone-regression-exempt` gets the check but cannot pass the exemption until it moves its pin.
+Tested by `tests/timezone_regression_coverage_test.sh` and `tests/timezone_coverage_step_test.sh`.
+
+```bash
+bash scripts/bash/check_timezone_regression_coverage.sh /path/to/plugin
+bash scripts/bash/check_timezone_regression_coverage.sh --enforce /path/to/plugin
+```
 
 ### Hook check
 
