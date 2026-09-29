@@ -36,6 +36,7 @@ class GeneratedTwigCompilationTest extends IntegrationTestCase
         $templates   = is_dir($templateDir) ? $this->getTemplateNames($templateDir) : [];
 
         if (empty($templates)) {
+            $this->recordOutcome('skipped');
             self::markTestSkipped(self::PLUGIN_NAME . ' ships no templates.');
         }
 
@@ -51,6 +52,17 @@ class GeneratedTwigCompilationTest extends IntegrationTestCase
         foreach ($templates as $template) {
             $environment->load('@' . self::PLUGIN_NAME . '/' . $template);
         }
+
+        $this->recordOutcome('ran');
+    }
+
+    /**
+     * Read by check_compatibility_results.sh, which fails the leg unless this test got this far.
+     */
+    private function recordOutcome(string $outcome): void
+    {
+        $file = PIWIK_DOCUMENT_ROOT . '/{{RESULTS_DIR}}/GeneratedTwigCompilationTest';
+        self::assertNotFalse(file_put_contents($file, $outcome), "Could not write $file.");
     }
 
     /**

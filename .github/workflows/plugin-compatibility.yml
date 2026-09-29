@@ -130,8 +130,10 @@ jobs:
           dependent-plugins: ${{ inputs.dependent-plugins }}
           github-token: ${{ inputs.dependent-plugins != '' && secrets.TESTS_ACCESS_TOKEN || '' }}
           setup-script: ${{ env.WORKFLOWS_DIR }}/scripts/bash/generate_compatibility_checks.sh
-          phpunit-test-options: --filter=GeneratedAssetCompilationTest|GeneratedTwigCompilationTest --log-junit=compatibility-results.xml
+          phpunit-test-options: --filter=GeneratedAssetCompilationTest|GeneratedTwigCompilationTest
 
+      # Reads the markers the generated tests write, not a JUnit log: run_tests.sh appends its own
+      # --log-junit on push runs, overriding any passed above.
       - name: Check both compatibility tests ran
         working-directory: ${{ github.workspace }}/matomo
-        run: ${{ github.workspace }}/${{ env.WORKFLOWS_DIR }}/scripts/bash/check_compatibility_results.sh compatibility-results.xml "$PLUGIN_NAME"
+        run: ${{ github.workspace }}/${{ env.WORKFLOWS_DIR }}/scripts/bash/check_compatibility_results.sh compatibility-results

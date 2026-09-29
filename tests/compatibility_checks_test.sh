@@ -148,6 +148,27 @@ status=$?
 chmod 644 "$matomo/plugins/Other/nested/.git/config"
 check "fails when a config cannot be read to rule a token out" "[ $status -ne 0 ] && grep -qF 'Credential material' <<<\"\$output\"" "$output"
 
+matomo="$(make_matomo Example tests)"
+mkdir -p "$matomo/compatibility-results"
+echo ran > "$matomo/compatibility-results/GeneratedAssetCompilationTest"
+output="$(generate "$matomo" Example)"
+check "starts from an empty results directory, so no stale marker counts" \
+  "[ -d '$matomo/compatibility-results' ] && [ -z \"\$(ls -A '$matomo/compatibility-results')\" ]" "$output"
+for class in "${CLASSES[@]}"; do
+  check "$class records its outcome in the results directory" \
+    "grep -qF \"PIWIK_DOCUMENT_ROOT . '/compatibility-results/$class'\" '$matomo/plugins/Example/tests/Integration/$class.php'"
+done
+# markTestSkipped() throws, so a marker written after it would never land.
+twig_file="$matomo/plugins/Example/tests/Integration/GeneratedTwigCompilationTest.php"
+record_line="$(grep -n "recordOutcome('skipped')" "$twig_file" | cut -d: -f1)"
+skip_line="$(grep -n 'markTestSkipped(' "$twig_file" | cut -d: -f1)"
+check "the Twig test records a skip before it skips" \
+  "[ -n '$record_line' ] && [ -n '$skip_line' ] && [ '$record_line' -lt '$skip_line' ]"
+check "the workflow checks the results directory the generator creates" \
+  "grep -qE 'check_compatibility_results\.sh compatibility-results\$' '$ROOT/.github/workflows/plugin-compatibility.yml'"
+check "the workflow no longer relies on a JUnit log" \
+  "! grep -qE 'phpunit-test-options:.*log-junit' '$ROOT/.github/workflows/plugin-compatibility.yml'"
+
 # A composer whose unset silently does nothing, so the entry is still readable afterwards.
 mkdir -p "$WORK/stuck-composer"
 printf '#!/bin/sh\nexit 0\n' > "$WORK/stuck-composer/composer"
@@ -167,34 +188,31 @@ else
   echo "skip - composer is not available, so the github-oauth removal is not exercised"
 fi
 
-# $1 description, $2 expected exit (0 or 1), $3 file contents (omitted: no file at all).
+# $1 description, $2 expected exit (0 or 1), then class=outcome pairs to write (none: no directory).
 results_case() {
-  local file="$WORK/results-$tests.xml" output status
-  [ $# -ge 3 ] && printf '%s' "$3" > "$file"
-  output="$("$CHECKER" "$file" Example 2>&1)"
+  local description="$1" expected="$2" dir="$WORK/results-$tests" output status pair
+  shift 2
+  if [ $# -gt 0 ]; then
+    mkdir -p "$dir"
+    for pair in "$@"; do
+      [ -n "${pair#*=}" ] && printf '%s' "${pair#*=}" > "$dir/${pair%%=*}"
+    done
+  fi
+  output="$("$CHECKER" "$dir" 2>&1)"
   status=$?
-  check "results check $1" "[ $status -eq $2 ]" "$output"
+  check "results check $description" "[ $status -eq $expected ]" "$output"
 }
-ns='Piwik\Plugins\Example\tests\Integration'
-asset_ran="<testcase name=\"testX\" class=\"$ns\\GeneratedAssetCompilationTest\"/>"
-twig_ran="<testcase name=\"testX\" class=\"$ns\\GeneratedTwigCompilationTest\"/>"
-twig_skipped="<testcase name=\"testX\" class=\"$ns\\GeneratedTwigCompilationTest\"><skipped/></testcase>"
-asset_skipped="<testcase name=\"testX\" class=\"$ns\\GeneratedAssetCompilationTest\"><skipped/></testcase>"
-wrap() { echo "<testsuites><testsuite>$*</testsuite></testsuites>"; }
+asset=GeneratedAssetCompilationTest
+twig=GeneratedTwigCompilationTest
 
-results_case "passes when both ran" 0 "$(wrap "$asset_ran$twig_ran")"
-results_case "passes when only the Twig test was skipped" 0 "$(wrap "$asset_ran$twig_skipped")"
-results_case "reads the dotted classname form" 0 \
-  "$(wrap '<testcase name="a" classname="Piwik.Plugins.Example.Test.Integration.GeneratedAssetCompilationTest"/><testcase name="b" classname="Piwik.Plugins.Example.Test.Integration.GeneratedTwigCompilationTest"/>')"
-results_case "ignores same-named classes in another namespace" 1 \
-  "$(wrap "${asset_ran//Example/Other}${twig_ran//Example/Other}")"
-results_case "ignores same-named classes elsewhere in the plugin" 1 \
-  "$(wrap "${asset_ran//Integration/Elsewhere}${twig_ran//Integration/Elsewhere}")"
-results_case "fails when the asset test was skipped" 1 "$(wrap "$asset_skipped$twig_ran")"
-results_case "fails when the Twig test was not collected" 1 "$(wrap "$asset_ran")"
-results_case "fails when the asset test was not collected" 1 "$(wrap "$twig_ran")"
-results_case "fails when the log is missing" 1
-results_case "fails when the log is malformed" 1 '<testsuites><'
+results_case "passes when both ran" 0 "$asset=ran" "$twig=ran"
+results_case "passes when only the Twig test was skipped" 0 "$asset=ran" "$twig=skipped"
+results_case "fails when the asset test was skipped" 1 "$asset=skipped" "$twig=ran"
+results_case "fails when the Twig test recorded nothing" 1 "$asset=ran" "$twig="
+results_case "fails when the asset test recorded nothing" 1 "$asset=" "$twig=ran"
+results_case "fails on an unrecognised outcome" 1 "$asset=ran" "$twig=ran,skipped"
+results_case "fails on an outcome that only ends in ran" 1 "$asset=corrupted:ran" "$twig=ran"
+results_case "fails when the directory is missing" 1
 
 # github-action-tests executes the setup-script directly rather than through bash, and the workflow
 # runs the results check the same way.

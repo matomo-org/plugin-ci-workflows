@@ -50,5 +50,16 @@ class GeneratedAssetCompilationTest extends IntegrationTestCase
         $assetManager->removeMergedAssets();
 
         self::assertNotEmpty($assetManager->getMergedStylesheet()->getContent());
+
+        $this->recordOutcome('ran');
+    }
+
+    /**
+     * Read by check_compatibility_results.sh, which fails the leg unless this test got this far.
+     */
+    private function recordOutcome(string $outcome): void
+    {
+        $file = PIWIK_DOCUMENT_ROOT . '/{{RESULTS_DIR}}/GeneratedAssetCompilationTest';
+        self::assertNotFalse(file_put_contents($file, $outcome), "Could not write $file.");
     }
 }
