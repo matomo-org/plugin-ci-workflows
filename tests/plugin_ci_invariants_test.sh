@@ -270,6 +270,23 @@ check(
     re.search(r'(?<![!\w.-])inputs\.workflows-ref(?![\w-])', hook_with) is not None,
 )
 
+# The compatibility workflow defaults all four to values that look right: dropping matomo-targets
+# still checks both ends, but ignores a caller's per-target php, dropping php-version ignores the
+# caller's compatibility-php-version, and dropping either ref runs main's generator or action
+# against a caller that pinned an older one.
+compatibility_with = (jobs.get('compatibility') or {}).get('with') or {}
+for forwarded, source in (
+    ('matomo-targets', 'matomo-targets'),
+    ('php-version', 'compatibility-php-version'),
+    ('scripts-ref', 'scripts-ref'),
+    ('workflows-ref', 'workflows-ref'),
+):
+    value = ''.join(str(compatibility_with.get(forwarded, '')).split())
+    check(
+        f"compatibility forwards {source} to the called workflow as {forwarded}",
+        re.search(r'(?<![!\w.-])inputs\.' + re.escape(source) + r'(?![\w-])', value) is not None,
+    )
+
 for name in sorted(pull_request_only):
     if name not in jobs:
         check(f"declared pull-request-only job {name} still exists in the workflow", False)

@@ -1,0 +1,137 @@
+# Compiles a plugin's stylesheets and templates against both ends of the Matomo range its
+# plugin.json declares.
+#
+# PHPStan cannot see either kind of dependency on core: a Less mixin or variable, or a Twig
+# function, filter or tag, is resolved when the asset or template is compiled, so a plugin using
+# one that its minimum Matomo does not have yet, or that its maximum no longer has, installs
+# cleanly and then fails on every page that needs it. The minimum leg catches the first and the
+# maximum leg the second.
+#
+# The tests doing the compiling are generated into the runner's Matomo checkout by
+# scripts/bash/generate_compatibility_checks.sh and never reach the plugin repository.
+
+name: Compatibility check
+
+on:
+  workflow_call:
+    inputs:
+      plugin-name:
+        description: "Name of the plugin, e.g. LoginLdap"
+        required: true
+        type: string
+      dependent-plugins:
+        description: "Space-separated repository slugs to check out, e.g. 'innocraft/plugin-Funnels'"
+        required: false
+        type: string
+        default: ''
+      php-version:
+        description: "PHP version for a target that sets no `php` of its own. Accepts a literal version or one of the shared aliases (matomo5_min_php, matomo5_max_php, matomo6_min_php, matomo6_max_php). The default clears Matomo 6's floor of 8.1, which matomo5_min_php (7.2) cannot install."
+        required: false
+        type: string
+        default: 'matomo6_min_php'
+      scripts-ref:
+        description: "Ref of matomo-org/github-action-tests, whose composite action runs the tests. Pinning this workflow does not pin that: pass a SHA from that repository, which is a different repository with different SHAs."
+        required: false
+        type: string
+        default: 'main'
+      workflows-ref:
+        description: "Ref of matomo-org/plugin-ci-workflows to take the test generator and its templates from. This is this repository, so the workflow SHA is the right value when pinning."
+        required: false
+        type: string
+        default: 'main'
+      matomo-targets:
+        description: >-
+          JSON array of {target, php} objects, one compilation run each. `php` is optional and
+          falls back to the php-version input; set it per target when the targets span Matomo
+          majors, because a Matomo 6 checkout cannot be installed on the PHP 7.2 that Matomo 5
+          allows.
+        required: false
+        type: string
+        default: '[{"target": "minimum_required_matomo"}, {"target": "maximum_supported_matomo"}]'
+    secrets:
+      TESTS_ACCESS_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: Compatibility (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.matomo-targets) }}
+    env:
+      PLUGIN_NAME: ${{ inputs.plugin-name }}
+      DEPENDENT_PLUGINS: ${{ inputs.dependent-plugins }}
+      # Dot-prefixed so checkout_matomo.sh's `cp -R !($PLUGIN_NAME)` leaves it out of the plugin it
+      # assembles: that glob enables extglob, not dotglob. Unique so it cannot collide with a
+      # directory the caller tracks.
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Validate inputs
+        run: |
+          if [[ ! "$PLUGIN_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "Invalid plugin-name: $PLUGIN_NAME"
+            exit 1
+          fi
+
+          # checkout_dependent_plugins.sh does `rm -rf plugins/<derived-name>` before
+          # cloning, so a dependent plugin resolving to the plugin under test would
+          # silently replace it and compile the wrong code. Refuse instead.
+          for slug in $DEPENDENT_PLUGINS; do
+            name=${slug##*/}
+            name=${name#plugin-}
+            if [[ "$name" == "$PLUGIN_NAME" ]]; then
+              echo "dependent-plugins entry '$slug' resolves to the plugin under test ($PLUGIN_NAME)."
+              exit 1
+            fi
+          done
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+          persist-credentials: false
+
+      # Checked out and called as a local action because `uses:` takes no expression, so a remote
+      # reference could follow neither scripts-ref nor the pinning check_action_pins.sh requires.
+      # The path is fixed for the same reason, and dot-prefixed like WORKFLOWS_DIR.
+      - name: Check out github-action-tests repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/github-action-tests
+          ref: ${{ inputs.scripts-ref }}
+          path: .plugin-ci-github-action-tests
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      # The action runs setup-script as ${{ github.workspace }}/<path>, so the path stays relative,
+      # and hands phpunit-test-options to run_tests.sh through an environment variable, so the `|`
+      # is not a pipe. The filter has no spaces because that variable is expanded unquoted. The
+      # generator also removes the token this passes, before PHPUnit runs the plugin's code, and
+      # it is passed at all only when there are dependent plugins to clone with it.
+      - name: Compile against ${{ matrix.target }}
+        uses: ./.plugin-ci-github-action-tests
+        with:
+          test-type: PluginTests
+          plugin-name: ${{ inputs.plugin-name }}
+          matomo-test-branch: ${{ matrix.target }}
+          php-version: ${{ matrix.php || inputs.php-version }}
+          dependent-plugins: ${{ inputs.dependent-plugins }}
+          github-token: ${{ inputs.dependent-plugins != '' && secrets.TESTS_ACCESS_TOKEN || '' }}
+          setup-script: ${{ env.WORKFLOWS_DIR }}/scripts/bash/generate_compatibility_checks.sh
+          phpunit-test-options: --filter=GeneratedAssetCompilationTest|GeneratedTwigCompilationTest --log-junit=compatibility-results.xml
+
+      - name: Check both compatibility tests ran
+        working-directory: ${{ github.workspace }}/matomo
+        run: ${{ github.workspace }}/${{ env.WORKFLOWS_DIR }}/scripts/bash/check_compatibility_results.sh compatibility-results.xml "$PLUGIN_NAME"
