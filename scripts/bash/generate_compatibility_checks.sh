@@ -72,6 +72,12 @@ fi
 TARGET_DIR="$PLUGIN_DIR/$TEST_ROOT/Integration"
 mkdir -p "$TARGET_DIR"
 
+# The generated tests record their outcome here for check_compatibility_results.sh, which
+# plugin-compatibility.yml hands the same name. Emptied so a stale marker cannot pass a leg.
+RESULTS_DIR="compatibility-results"
+rm -rf "$RESULTS_DIR"
+mkdir "$RESULTS_DIR"
+
 for template in "$TEMPLATE_DIR"/Generated*.php.tpl; do
   target="$TARGET_DIR/$(basename "$template" .tpl)"
   if [ -e "$target" ]; then
@@ -84,7 +90,7 @@ GENERATED=0
 for template in "$TEMPLATE_DIR"/Generated*.php.tpl; do
   [ -f "$template" ] || continue
   target="$TARGET_DIR/$(basename "$template" .tpl)"
-  sed -e "s/{{PLUGIN_NAME}}/$PLUGIN_NAME/g" -e "s/{{TEST_ROOT}}/$TEST_ROOT/g" "$template" > "$target"
+  sed -e "s/{{PLUGIN_NAME}}/$PLUGIN_NAME/g" -e "s/{{TEST_ROOT}}/$TEST_ROOT/g" -e "s/{{RESULTS_DIR}}/$RESULTS_DIR/g" "$template" > "$target"
   echo "Generated $target"
   GENERATED=$((GENERATED + 1))
 done
