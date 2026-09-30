@@ -55,7 +55,7 @@ check 'plugins without date logic pass when enforced' 0 "$NOT_REQUIRED" "$dir" -
 
 dir=$(new_repo server-time Archiver.php '$sql = "SELECT COUNT(*) FROM log_link_visit_action WHERE server_time >= ?";')
 check 'log table event times are date logic' 0 "$MISSING" "$dir"
-check 'the evidence names the file' 0 '  Archiver.php' "$dir"
+check 'the evidence names the file' 0 '  - Archiver.php' "$dir"
 check 'enforcement fails a plugin with date logic and no suite' 1 '::error::This plugin has date or site-timezone logic' "$dir" --enforce
 
 dir=$(new_repo visit-time Model.php '$where = "visit_last_action_time < ?";')
@@ -138,7 +138,28 @@ else
 fi
 
 dir=$(new_repo colon-path 'Reports/a:b.php' '$where = "server_time >= ?";')
-check 'a path containing a colon is reported whole' 0 '  Reports/a:b.php' "$dir"
+check 'a path containing a colon is reported whole' 0 '  - Reports/a:b.php' "$dir"
+
+dir=$(new_repo command-path '::warning::x.php' '$where = "server_time >= ?";')
+tests=$((tests + 1))
+if bash "$SCRIPT" "$dir" 2>&1 | grep -q '^[[:space:]]*::warning::x'; then
+  failures=$((failures + 1))
+  echo 'FAIL - a file name starting with :: cannot start a workflow command'
+else
+  echo 'ok - a file name starting with :: cannot start a workflow command'
+fi
+
+dir=$(new_repo symlinks Archiver.php '$where = "server_time >= ?";')
+mkdir "$dir/lib"
+ln -s missing.php "$dir/Dangling.php"
+ln -s lib "$dir/Directory.php"
+git -C "$dir" add .
+check 'a dangling or directory symlink is skipped, not unreadable' 0 "$MISSING" "$dir"
+
+dir=$(new_repo unreadable API.php 'return 1;')
+chmod 000 "$dir/API.php"
+check 'an unreadable PHP file is not checked' 2 'Unable to read API.php' "$dir"
+chmod 644 "$dir/API.php"
 
 check 'a repository root that does not exist fails closed' 2 '' "$WORK/does-not-exist"
 

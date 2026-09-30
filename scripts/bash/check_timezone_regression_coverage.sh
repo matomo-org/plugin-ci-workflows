@@ -52,6 +52,7 @@ if ! git ls-files -z -- '*.php' > "$listing"; then
 fi
 
 evidence_files=$(python3 - "$listing" <<'PY'
+import os
 import re
 import sys
 
@@ -71,19 +72,26 @@ TOKEN = re.compile(r'''
 
 with open(sys.argv[1], 'rb') as handle:
     paths = [name.decode('utf-8', 'surrogateescape') for name in handle.read().split(b'\0') if name]
+
+
+def shown(path):
+    # The path is printed into the log, where a newline could start a workflow command.
+    return path if path.isprintable() else path.encode('unicode_escape', 'backslashreplace').decode('ascii')
+
+
 for path in paths:
-    if EXCLUDED.search(path):
+    # A tracked symlink may dangle or name a directory; neither holds PHP to scan.
+    if EXCLUDED.search(path) or not os.path.isfile(path):
         continue
     try:
         with open(path, encoding='utf-8', errors='replace') as handle:
             source = handle.read()
     except OSError as error:
-        print(f'::error::Unable to read {path} for the timezone regression coverage check: {error.strerror}', file=sys.stderr)
+        print(f'::error::Unable to read {shown(path)} for the timezone regression coverage check: {error.strerror}', file=sys.stderr)
         sys.exit(2)
     code = TOKEN.sub(lambda match: match.group('keep') or ' ', source)
     if SENSITIVE.search(code):
-        # The path is printed into the log, where a newline could start a workflow command.
-        print(path if path.isprintable() else path.encode('unicode_escape', 'backslashreplace').decode('ascii'))
+        print(shown(path))
 PY
 ) || {
   echo '::error::Unable to scan the PHP files for the timezone regression coverage check.' >&2
@@ -96,7 +104,8 @@ if [ -z "$evidence_files" ]; then
 fi
 
 echo "Timezone regression coverage: date or site-timezone logic found in $(wc -l <<< "$evidence_files") production file(s):"
-head -n 10 <<< "$evidence_files" | sed 's/^/  /'
+# A dash rather than bare indentation: a line that starts with `::` is a workflow command.
+head -n 10 <<< "$evidence_files" | sed 's/^/  - /'
 if [ "$(wc -l <<< "$evidence_files")" -gt 10 ]; then
   echo '  ...'
 fi
