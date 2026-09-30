@@ -61,12 +61,14 @@ done < <(sed -E 's/^namespace ([A-Za-z0-9_\\]+).*/\1/' "$listing" | sort -u)
 rm -f "$listing"
 
 # Packages rather than the whole file: composer.lock also changes on metadata alone (content-hash,
-# plugin-api-version), and that legitimately leaves vendor/prefixed untouched.
+# plugin-api-version), and that legitimately leaves vendor/prefixed untouched. The reference counts
+# because a branch dependency such as dev-main moves to a new commit without changing its version.
 lock_packages() {
-  jq -S '[(.packages // [])[] | {name, version}]'
+  jq -S '[(.packages // [])[] | {name, version, reference: (.source.reference // .dist.reference)}]'
 }
+# Against HEAD, not the index, so a rebuild already staged still counts as a change.
 if ! cmp -s <(git -C "$plugin_dir" show HEAD:composer.lock | lock_packages) <(lock_packages < "$plugin_dir/composer.lock") \
-  && git -C "$plugin_dir" diff --quiet -- vendor/prefixed \
+  && git -C "$plugin_dir" diff --quiet HEAD -- vendor/prefixed \
   && [ -z "$(git -C "$plugin_dir" ls-files --others --exclude-standard -- vendor/prefixed)" ]; then
   echo "::error::composer.lock resolved different packages but vendor/prefixed did not change, so the scoped tree is stale."
   status=1

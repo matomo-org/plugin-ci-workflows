@@ -135,7 +135,7 @@ jobs:
             exit 1
           fi
           if ! others=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$UPDATE_BRANCH" \
-            --jq "[.commits[] | select(.commit.author.email != \"$BOT_EMAIL\")] | length"); then
+            --jq "[.commits[] | select(.commit.author.email != \"$BOT_EMAIL\" or .commit.committer.email != \"$BOT_EMAIL\")] | length"); then
             echo "::error::Could not list the commits on $UPDATE_BRANCH."
             exit 1
           fi
@@ -155,13 +155,10 @@ jobs:
         run: |
           log=$(mktemp)
           composer update --working-dir="$PLUGIN_DIR" --no-interaction --no-progress 2>&1 | tee "$log"
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            exit "$status"
-          fi
 
+          # The same comparison as check_scoped_tree.sh, which fails a run whose tree did not follow it.
           lock_packages() {
-            jq -S '[(.packages // [])[] | {name, version}]'
+            jq -S '[(.packages // [])[] | {name, version, reference: (.source.reference // .dist.reference)}]'
           }
           if cmp -s <(git -C "$PLUGIN_DIR" show HEAD:composer.lock | lock_packages) <(lock_packages < "$PLUGIN_DIR/composer.lock"); then
             echo "::notice::Every dependency is already at the newest version composer.json allows."
@@ -232,7 +229,7 @@ jobs:
             vendor
           commit-message: Update scoped dependencies
           # Both set to the bot, because the human-commit check above tells the workflow's own
-          # commits apart by author email; the default author is whoever triggered the run.
+          # commits apart by author and committer email; the default author is whoever triggered the run.
           author: github-actions[bot] <${{ env.BOT_EMAIL }}>
           committer: github-actions[bot] <${{ env.BOT_EMAIL }}>
           title: Update scoped dependencies (${{ env.BASE_BRANCH }})

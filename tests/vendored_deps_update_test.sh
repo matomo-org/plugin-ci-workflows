@@ -96,6 +96,15 @@ git -C "$dir" checkout -q -- vendor/prefixed
 printf '<?php\nnamespace Matomo\\Dependencies\\Foo\\New;\n' > "$dir/vendor/prefixed/foo/src/New.php"
 expect "a tree whose only change is a new file counts as regenerated" 0 "$dir" '' 'Composer\Autoload'
 
+dir=$(make_plugin moved-reference)
+git -C "$dir" checkout -q -- vendor/prefixed
+printf '{"packages":[{"name":"foo/bar","version":"1.0.0","source":{"reference":"def"}}]}\n' > "$dir/composer.lock"
+expect "a branch dependency that moved to a new commit at the same version needs a new tree" 1 "$dir" 'is stale' 'Composer\Autoload'
+
+dir=$(make_plugin staged)
+git -C "$dir" add vendor/prefixed
+expect "a rebuild that is already staged counts as regenerated" 0 "$dir" '' 'Composer\Autoload'
+
 dir=$(make_plugin empty)
 rm -rf "$dir/vendor/prefixed"/*
 expect "a prefixed tree with no namespaces at all fails" 1 "$dir" 'no namespace declarations' 'Composer\Autoload'
@@ -133,6 +142,8 @@ expect_downgrade "a plugin with no Matomo requirement gets the lower target" '' 
 expect_downgrade "none skips Rector" '>=6.0.0-b1,<7.0.0-b1' none ''
 expect_downgrade "an explicit target overrides plugin.json" '>=6.0.0-b1,<7.0.0-b1' 7.3 7.3
 expect_downgrade "a target the Rector config does not know fails" '>=6.0.0-b1,<7.0.0-b1' 8.2 error
+expect_downgrade "the lowest of several ranges decides when it comes first" '>=5.0.0-b1,<6.0.0-b1 || >=6.0.0-b1,<7.0.0-b1' auto 7.3
+expect_downgrade "the lowest of several ranges decides when it comes last" '>=6.0.0-b1,<7.0.0-b1 || >=5.0.0-b1,<6.0.0-b1' auto 7.3
 
 expect_usage_error() {
   local description="$1"
@@ -190,7 +201,7 @@ xdebug_line=$(line_of '^export XDEBUG_MODE=off$')
 first_php_line=$(line_of '(^|[[:space:]!])(php|composer) ' | head -1)
 expect_true "Xdebug is off before the script runs any PHP" [ "${xdebug_line:-999}" -lt "${first_php_line:-0}" ]
 scope_line=$(line_of 'bin/matomo-scoper" scope')
-phar_check_line=$(line_of '^if ! php "[$]phar" --version')
+phar_check_line=$(line_of '^if ! phar_runs; then')
 expect_true "the script checks php-scoper.phar actually runs after scoping" [ "${scope_line:-999}" -lt "${phar_check_line:-0}" ]
 expect_true "the script checks the tree after everything that writes to it" \
   [ "$(line_of 'check_scoped_tree\.sh')" = "$(printf '%s\n' "$code" | wc -l)" ]

@@ -90,10 +90,11 @@ case "$downgrade_input" in
   none) downgrade='' ;;
   7.3|8.1) downgrade="$downgrade_input" ;;
   auto)
-    # Only the lower bound matters: it is the oldest Matomo, so the oldest PHP, the plugin runs on.
-    # The same rule as DevPluginCommands, so the output matches a rebuild made with it.
+    # Only the lowest bound matters: it is the oldest Matomo, so the oldest PHP, the plugin runs on.
+    # DevPluginCommands takes the first bound instead, which is the same for every constraint
+    # without an ||.
     constraint=$(jq -r '.require.matomo // empty' "$plugin_dir/plugin.json")
-    major=$(printf '%s' "$constraint" | sed -nE 's/.*>=[[:space:]]*([0-9]+)\..*/\1/p' | head -1)
+    major=$(printf '%s' "$constraint" | grep -oE '>=[[:space:]]*[0-9]+\.' | grep -oE '[0-9]+' | sort -n | head -1 || true)
     if [ -n "$major" ] && [ "$major" -ge 6 ]; then
       downgrade=8.1
     else
@@ -129,29 +130,39 @@ if [ -z "$scoper_dir" ]; then
   fi
   git -C "$scoper_dir" fetch -q --depth 1 "$SCOPER_URL" "$scoper_ref"
   git -C "$scoper_dir" checkout -q --detach FETCH_HEAD
+  composer install --working-dir="$scoper_dir" --no-dev --no-interaction --no-progress
 fi
 if [ ! -f "$scoper_dir/bin/matomo-scoper" ]; then
   echo "::error::$scoper_dir is not a matomo-scoper checkout." >&2
   exit 1
 fi
+# A developer's own checkout is left for them to install, since --no-dev would uninstall its dev
+# packages.
+if [ ! -f "$scoper_dir/vendor/autoload.php" ]; then
+  echo "::error::$scoper_dir has no vendor/. Run composer install in it first." >&2
+  exit 1
+fi
 echo "matomo-scoper at $(git -C "$scoper_dir" rev-parse HEAD)"
-composer install --working-dir="$scoper_dir" --no-dev --no-interaction --no-progress
 
 cp "$TOOLS_SOURCE/tools/composer.json" "$TOOLS_SOURCE/tools/composer.lock" "$rector_dir/"
 composer install --working-dir="$rector_dir" --no-interaction --no-progress
 
-# The scoper downloads php-scoper on first use and keeps it, and an empty or truncated phar runs as
-# a no-op that exits 0 -- after the scoper has already deleted the unprefixed packages. A kept copy
-# that does not run is removed so the scoper downloads it again, and the one it used is checked.
+# The scoper downloads php-scoper on first use and keeps it, and an empty phar runs as a no-op that
+# exits 0 -- after the scoper has already deleted the unprefixed packages. Hence the -s: php exits 0
+# on an empty file even with --version. A kept copy that does not run is removed so the scoper
+# downloads it again, and the one it used is checked.
 phar="$scoper_dir/php-scoper.phar"
-if [ -f "$phar" ] && ! php "$phar" --version >/dev/null 2>&1; then
+phar_runs() {
+  [ -s "$phar" ] && php "$phar" --version >/dev/null 2>&1
+}
+if [ -e "$phar" ] && ! phar_runs; then
   echo "Removing a php-scoper.phar that does not run, so the scoper downloads it again."
   rm -f "$phar"
 fi
 
 php "$scoper_dir/bin/matomo-scoper" scope "$plugin_dir" --yes --ignore-platform-check
 
-if ! php "$phar" --version >/dev/null 2>&1; then
+if ! phar_runs; then
   echo "::error::php-scoper.phar did not download intact, so nothing was scoped. Restore vendor/ with composer install before running again." >&2
   exit 1
 fi

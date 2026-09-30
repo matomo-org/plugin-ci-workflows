@@ -542,7 +542,7 @@ Each branch gets its own pull request, from `automated/vendored-dependencies-<br
 `actions/scope-dependencies` rebuilds `vendor/prefixed` from whatever the plugin's unprefixed `vendor/` holds, so run `composer install` or `composer update` in the plugin first. The action runs `scripts/bash/scope_plugin_dependencies.sh`, which does what DevPluginCommands' `process-dependencies` command does, without Matomo's console:
 
 1. It scopes the dependencies with matomo-scoper, which also writes the `vendor/autoload.php` proxy.
-2. It transpiles `vendor/prefixed` with Rector, using the Rector version locked in `actions/scope-dependencies/tools` and the config in `actions/scope-dependencies/rector.php`. With `auto`, the target is 8.1 when plugin.json requires Matomo 6 or later and 7.3 otherwise, the same rule DevPluginCommands applies.
+2. It transpiles `vendor/prefixed` with Rector, using the Rector version locked in `actions/scope-dependencies/tools` and the config in `actions/scope-dependencies/rector.php`. With `auto`, the target is 8.1 when the lowest Matomo that plugin.json accepts is 6 or later, and 7.3 otherwise.
 3. It runs `scripts/bash/check_scoped_tree.sh`, which fails on any of the following, each of which has happened locally while the tools reported success:
    - `vendor/autoload.php` is no longer the scoper's proxy.
    - A namespace under `vendor/prefixed` is outside `Matomo\Dependencies\<plugin>` and not on the allowed list.
