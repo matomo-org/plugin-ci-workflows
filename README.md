@@ -321,7 +321,7 @@ missed. A plugin needs one when its tracked production PHP reads a log table's e
 `Site::getTimezoneFor()`), in any letter case. Tests, `vendor/`, `libs/`, `node_modules/`,
 `vue/dist/`, `Updates/` and PHP comments are not counted. Such a plugin passes when a job in one of its `.github/workflows` files
 calls `plugin-timezone-safety.yml` with a non-empty `timezone-test-command` from a workflow that
-runs on `pull_request`, `pull_request_target` or `workflow_call`, or when Plugins CI is given the
+runs on `pull_request` or `workflow_call`, or when Plugins CI is given the
 reason it does not need one:
 
 ```yaml

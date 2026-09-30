@@ -226,6 +226,7 @@ YAML
 
 check 'a push-only caller does not cover pull requests' 1 '::error::' "$(caller_on on-push push)" --enforce
 check 'a dispatch-only caller does not cover pull requests' 1 '::error::' "$(caller_on on-dispatch '[workflow_dispatch]')" --enforce
+check 'a pull_request_target caller tests the base branch, not the pull request' 1 '::error::' "$(caller_on on-target pull_request_target)" --enforce
 check 'a trigger list with pull_request enables the suite' 0 'enabled by' "$(caller_on on-list '[push, pull_request]')" --enforce
 check 'a trigger mapping with pull_request enables the suite' 0 'enabled by' "$(caller_on on-map '{pull_request: {branches: [main]}}')" --enforce
 check 'a reusable workflow caller enables the suite' 0 'enabled by' "$(caller_on on-call workflow_call)" --enforce

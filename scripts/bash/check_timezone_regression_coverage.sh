@@ -125,8 +125,9 @@ import yaml
 
 CALLER = re.compile(r'^matomo-org/plugin-ci-workflows/\.github/workflows/plugin-timezone-safety\.yml@')
 # The gate judges pull requests, so a suite that only runs on push or dispatch does not cover them.
+# pull_request_target does not count either: the regression job checks out the base branch there.
 # A workflow_call caller is taken at face value rather than traced to its own triggers.
-PR_TRIGGERS = {'pull_request', 'pull_request_target', 'workflow_call'}
+PR_TRIGGERS = {'pull_request', 'workflow_call'}
 for path in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('.github/workflows/*.yaml')):
     try:
         # Bytes, so PyYAML reports bad encoding as a YAMLError rather than raising UnicodeDecodeError.
