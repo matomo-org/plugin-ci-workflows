@@ -179,21 +179,25 @@ jobs:
         shell: bash
         run: |
           log=$(mktemp)
+          # Before composer, whose plugins run with this checkout writable and could move HEAD to a
+          # commit the pull-request job would then check out.
+          base=$(git -C "$PLUGIN_DIR" rev-parse HEAD)
           composer update --working-dir="$PLUGIN_DIR" --no-interaction --no-progress 2>&1 | tee "$log"
 
           # The same comparison as check_scoped_tree.sh, which fails a run whose tree did not follow it.
           lock_packages() {
             jq -S '[(.packages // [])[] | {name, version, source: .source.reference, dist: (.dist.reference // .dist.url)}]'
           }
-          if cmp -s <(git -C "$PLUGIN_DIR" show HEAD:composer.lock | lock_packages) <(lock_packages < "$PLUGIN_DIR/composer.lock"); then
+          if cmp -s <(git -C "$PLUGIN_DIR" show "$base:./composer.lock" | lock_packages) <(lock_packages < "$PLUGIN_DIR/composer.lock"); then
             echo "::notice::Every dependency is already at the newest version composer.json allows."
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "base-sha=$(git -C "$PLUGIN_DIR" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          # One run holds every branch of a matrix caller, and an artifact name is unique per run.
-          echo "artifact=rebuilt-tree-${BASE_BRANCH//[^A-Za-z0-9._-]/-}" >> "$GITHUB_OUTPUT"
+          echo "base-sha=$base" >> "$GITHUB_OUTPUT"
+          # One run holds every branch of a matrix caller, and an artifact name is unique per run. The
+          # hash keeps a/b and a-b apart once the slash is replaced.
+          echo "artifact=rebuilt-tree-${BASE_BRANCH//[^A-Za-z0-9._-]/-}-$(printf '%s' "$BASE_BRANCH" | sha256sum | cut -c1-8)" >> "$GITHUB_OUTPUT"
 
           # Only the lock file operations: after "Installing dependencies from lock file" composer
           # lists every package it extracts, which is the whole tree for an unprefixed vendor/ that

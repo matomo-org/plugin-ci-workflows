@@ -166,6 +166,7 @@ expect_downgrade "the lowest of several ranges decides when it comes first" '>=5
 expect_downgrade "the lowest of several ranges decides when it comes last" '>=6.0.0-b1,<7.0.0-b1 || >=5.0.0-b1,<6.0.0-b1' auto 7.3
 expect_downgrade "a caret requirement on Matomo 6 is transpiled to 8.1" '^6.0' auto 8.1
 expect_downgrade "a tilde requirement on Matomo 5 is transpiled to 7.3" '~5.0' auto 7.3
+expect_downgrade "a bound with no minor version still counts" '>=6,<7' auto 8.1
 
 tests=$((tests + 1))
 echo '{"name": "Foo", "require": {"matomo": "*"}}' > "$WORK/downgrade/plugin.json"
@@ -469,6 +470,11 @@ check("each branch of a matrix caller uploads and downloads its own artifact",
       step('Upload the rebuilt tree')['with']['name'] == '${{ steps.update.outputs.artifact }}'
       and step('Download the rebuilt tree', pr_steps)['with']['name'] == '${{ needs.update.outputs.artifact }}'
       and 'artifact=rebuilt-tree-${BASE_BRANCH' in step('Update dependencies')['run'])
+
+update_run = step('Update dependencies')['run']
+check("the commit the pull-request job checks out is read before composer can move HEAD",
+      0 <= update_run.find('base=$(git') < update_run.find('composer update')
+      and 'base-sha=$base' in update_run and 'rev-parse HEAD)" >> ' not in update_run)
 
 pr = step('Open or update the pull request', pr_steps)['with']
 check("the workflow's commits are authored by the address the human-commit check filters on",
