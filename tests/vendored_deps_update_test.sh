@@ -215,8 +215,10 @@ xdebug_line=$(line_of '^export XDEBUG_MODE=off$')
 first_php_line=$(line_of '(^|[[:space:]!])(php|composer) ' | head -1)
 expect_true "Xdebug is off before the script runs any PHP" [ "${xdebug_line:-999}" -lt "${first_php_line:-0}" ]
 scope_line=$(line_of 'bin/matomo-scoper" scope')
-phar_check_line=$(line_of '^if ! phar_runs; then')
-expect_true "the script checks php-scoper.phar actually runs after scoping" [ "${scope_line:-999}" -lt "${phar_check_line:-0}" ]
+phar_check_line=$(line_of '^if ! phar_intact "[^"]*phar"; then')
+expect_true "the script checks php-scoper.phar before the scoper can run it" [ "${phar_check_line:-999}" -lt "${scope_line:-0}" ]
+expect_true "the default scoper ref is a commit, not a branch" \
+  grep -qE '^SCOPER_PINNED_REF=[0-9a-f]{40}$' "$SCOPE"
 expect_true "the script checks the tree after everything that writes to it" \
   [ "$(line_of 'check_scoped_tree\.sh')" = "$(printf '%s\n' "$code" | wc -l)" ]
 

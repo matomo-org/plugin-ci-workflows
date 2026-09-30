@@ -36,10 +36,10 @@ on:
         type: string
         default: ''
       scoper-ref:
-        description: "Ref of matomo-org/matomo-scoper."
+        description: "Ref of matomo-org/matomo-scoper. Empty uses the commit scripts/bash/scope_plugin_dependencies.sh pins."
         required: false
         type: string
-        default: 'main'
+        default: ''
       workflows-ref:
         description: "Ref of this repository to take the scope-dependencies action from."
         required: false

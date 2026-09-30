@@ -25,9 +25,9 @@ inputs:
     required: false
     default: ''
   scoper-ref:
-    description: "Ref of matomo-org/matomo-scoper."
+    description: "Ref of matomo-org/matomo-scoper. Empty uses the commit scripts/bash/scope_plugin_dependencies.sh pins."
     required: false
-    default: 'main'
+    default: ''
 
 outputs:
   plugin-name:

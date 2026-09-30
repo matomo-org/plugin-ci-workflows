@@ -503,7 +503,7 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 | `php-version` | no | `8.3` | PHP to run the tooling on. Resolution follows `config.platform.php`, which the plugin's `composer.json` must set |
 | `downgrade-php` | no | `auto` | Passed to the action: `auto`, `none`, `7.3` or `8.1` |
 | `allowed-unprefixed-namespaces` | no | `''` | Passed to the action |
-| `scoper-ref` | no | `main` | Ref of matomo-org/matomo-scoper |
+| `scoper-ref` | no | `''` | Passed to the action |
 | `workflows-ref` | no | `main` | Ref of this repository to take the action from |
 
 | Secret | Required | Description |
@@ -555,9 +555,11 @@ It needs `php`, `composer`, `jq` and `git` on `PATH`, and sets up no PHP of its 
 | `plugin-path` | no | `.` | Path to the plugin, which must be a git checkout |
 | `downgrade-php` | no | `auto` | `auto` reads the target from plugin.json, `none` skips Rector, or pass `7.3` or `8.1` |
 | `allowed-unprefixed-namespaces` | no | `''` | Whitespace-separated namespaces allowed to stay global in `vendor/prefixed`, besides `Composer\Autoload`, which is always allowed |
-| `scoper-ref` | no | `main` | Ref of matomo-org/matomo-scoper |
+| `scoper-ref` | no | `''` | Ref of matomo-org/matomo-scoper. Empty uses the commit the script pins |
 
 The outputs are `plugin-name`, read from plugin.json, and `downgrade-php-version`, which is empty when Rector was skipped.
+
+The scoper's output is committed as code the plugin ships, so the script pins what produces it: a matomo-scoper commit, and the sha256 of the php-scoper build that commit downloads. Before the scoper can run it, the script downloads that phar itself, replacing any kept copy with a different hash, and stops if the download does not match. A newer scoper means bumping `SCOPER_PINNED_REF` in `scripts/bash/scope_plugin_dependencies.sh`, and also `PHP_SCOPER_URL` and `PHP_SCOPER_SHA256` if the new scoper uses a different php-scoper build.
 
 ```yaml
 steps:
@@ -589,7 +591,7 @@ It fetches matomo-scoper and installs the locked Rector into `~/.cache/matomo-sc
 | --- | --- | --- |
 | `--downgrade-php=TARGET` | `auto` | `auto`, `none`, `7.3` or `8.1`, as for the action |
 | `--allow-namespace=NS` | | A namespace allowed to stay global, besides `Composer\Autoload`. Repeat it for more than one |
-| `--scoper-ref=REF` | `main` | Ref of matomo-org/matomo-scoper to fetch |
+| `--scoper-ref=REF` | the pinned commit | Ref of matomo-org/matomo-scoper to fetch |
 | `--scoper-dir=PATH` | | Use an existing matomo-scoper checkout instead of fetching one |
 | `--tools-dir=PATH` | `~/.cache/matomo-scope-dependencies` | Where the tools are installed |
 | `--dry-run` | | Print the plugin and the downgrade target, and stop |
