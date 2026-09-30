@@ -129,7 +129,8 @@ CALLER = re.compile(r'^matomo-org/plugin-ci-workflows/\.github/workflows/plugin-
 PR_TRIGGERS = {'pull_request', 'pull_request_target', 'workflow_call'}
 for path in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('.github/workflows/*.yaml')):
     try:
-        with open(path) as handle:
+        # Bytes, so PyYAML reports bad encoding as a YAMLError rather than raising UnicodeDecodeError.
+        with open(path, 'rb') as handle:
             workflow = yaml.safe_load(handle)
     except (OSError, yaml.YAMLError):
         continue

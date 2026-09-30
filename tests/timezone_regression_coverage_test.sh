@@ -201,6 +201,10 @@ jobs:
 YAML
 check 'a caller with a timezone test command enables the suite' 0 'enabled by .github/workflows/tests.yml' "$dir" --enforce
 
+printf 'name: caf\xe9\n' > "$dir/.github/workflows/a.yml"
+check 'a workflow that is not UTF-8 is skipped, not fatal' 0 'enabled by .github/workflows/tests.yml' "$dir" --enforce
+rm "$dir/.github/workflows/a.yml"
+
 mv "$dir/.github/workflows/tests.yml" "$dir/.github/workflows/a"$'\n'"::error::x.yml"
 check_no_command 'a workflow file name cannot start a workflow command' 'enabled by .github/workflows/a\n::error::x.yml' "$dir" '::error::x'
 
