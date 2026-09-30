@@ -84,6 +84,7 @@ jobs:
     outputs:
       changed: ${{ steps.update.outputs.changed }}
       base-sha: ${{ steps.update.outputs.base-sha }}
+      update-head: ${{ steps.branch.outputs.head }}
     steps:
       - name: Check out the plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -134,16 +135,18 @@ jobs:
         run: |
           # Only a 404 means there is no branch yet. Reading any failure as absence would let a rate
           # limit or an outage wave the force-push through.
-          if ! error=$(gh api "repos/$GITHUB_REPOSITORY/branches/$UPDATE_BRANCH" --silent 2>&1); then
-            case "$error" in
+          if ! head=$(gh api "repos/$GITHUB_REPOSITORY/branches/$UPDATE_BRANCH" --jq .commit.sha 2>&1); then
+            case "$head" in
               *"HTTP 404"*)
                 echo "skip=false" >> "$GITHUB_OUTPUT"
                 exit 0
                 ;;
             esac
-            echo "::error::Could not check whether $UPDATE_BRANCH exists: $error"
+            echo "::error::Could not check whether $UPDATE_BRANCH exists: $head"
             exit 1
           fi
+          # The pull-request job pushes minutes later, and checks the branch is still here.
+          echo "head=$head" >> "$GITHUB_OUTPUT"
           # Only an open pull request's work needs keeping. A squash-merge leaves the branch behind
           # with its human commits still unmerged by ancestry, and without this every later run would
           # skip until someone deleted the branch.
@@ -289,13 +292,51 @@ jobs:
           name: rebuilt-tree
           path: ${{ runner.temp }}/rebuilt
 
-      # Tracked files first, so one the rebuild deleted stays deleted.
+      # The archive was written by a job that ran dependency code, so it is not trusted: a member in
+      # .git/ would run as a hook or fsmonitor while this job holds the write token. Only regular
+      # files and directories under composer.lock and vendor/ are unpacked; no scoped plugin tracks a
+      # symlink there. Tracked files are removed first, so one the rebuild deleted stays deleted.
       - name: Apply the rebuilt tree
         shell: bash
         run: |
+          tree="$RUNNER_TEMP/rebuilt/tree.tar"
+          # Listed to files, not piped: with pipefail, a grep -q that stops early makes tar die of
+          # SIGPIPE, and the failed pipeline would read as "nothing found".
+          tar -tvf "$tree" > "$RUNNER_TEMP/members-long"
+          tar -tf "$tree" > "$RUNNER_TEMP/members"
+          if grep -qv '^[-d]' "$RUNNER_TEMP/members-long"; then
+            echo "::error::The rebuilt tree holds a link or special file, so it was not applied."
+            exit 1
+          fi
+          if grep -qvE '^(composer\.lock|vendor(/.*)?)$' "$RUNNER_TEMP/members" \
+            || grep -qE '(^|/)\.\.(/|$)' "$RUNNER_TEMP/members"; then
+            echo "::error::The rebuilt tree holds a path outside composer.lock and vendor/, so it was not applied."
+            exit 1
+          fi
           cd "$PLUGIN_DIR"
           git ls-files -z -- vendor | xargs -0 -r rm -f --
-          tar -xf "$RUNNER_TEMP/rebuilt/tree.tar"
+          tar -xf "$tree" -- composer.lock vendor
+
+      # The update job checked the branch minutes ago; a push since then would be force-pushed over.
+      - name: Check the update branch has not moved
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ needs.update.outputs.update-head }}
+        run: |
+          if ! head=$(gh api "repos/$GITHUB_REPOSITORY/branches/$UPDATE_BRANCH" --jq .commit.sha 2>&1); then
+            case "$head" in
+              *"HTTP 404"*) head='' ;;
+              *)
+                echo "::error::Could not check whether $UPDATE_BRANCH exists: $head"
+                exit 1
+                ;;
+            esac
+          fi
+          if [ "$head" != "$EXPECTED_HEAD" ]; then
+            echo "::error::$UPDATE_BRANCH moved while the tree was rebuilt (from '${EXPECTED_HEAD:-none}' to '${head:-none}'), so it was left as it is. The next run checks it again."
+            exit 1
+          fi
 
       - name: Open or update the pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1

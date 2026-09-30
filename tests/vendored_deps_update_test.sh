@@ -70,6 +70,10 @@ dir=$(make_plugin unprefixed)
 printf '<?php\nnamespace GuzzleHttp\\Psr7;\n' > "$dir/vendor/prefixed/foo/src/Leak.php"
 expect "a file the scoper copied through unprefixed fails" 1 "$dir" 'namespace GuzzleHttp\\Psr7, outside' 'Composer\Autoload'
 
+dir=$(make_plugin unprefixed-inline)
+printf '<?php namespace  GuzzleHttp\\Psr7 {\n}\n' > "$dir/vendor/prefixed/foo/src/Leak.php"
+expect "an unprefixed namespace declared on the <?php line fails" 1 "$dir" 'namespace GuzzleHttp\\Psr7, outside' 'Composer\Autoload'
+
 dir=$(make_plugin lookalike)
 printf '<?php\nnamespace ComposerX\\Thing;\n' > "$dir/vendor/prefixed/foo/src/Lookalike.php"
 expect "an allowed namespace does not also allow one that merely starts with its name" 1 "$dir" 'ComposerX\\Thing' 'Composer'
@@ -283,6 +287,82 @@ expect_branch "a pull request lookup that fails stops the run" '' 'fail:gh: Serv
 expect_branch "an open pull request with a human commit is left alone" '' 1 1 true
 expect_branch "an open pull request with only the workflow's commits is refreshed" '' 1 0 false
 expect_branch "a comparison that fails stops the run" '' 1 'fail:gh: Server Error (HTTP 500)' error
+expect_true "the branch check hands the head it saw to the pull-request job" \
+  grep -qx 'head=abc123' <(: > "$WORK/branch-output"; PATH="$WORK/bin:$PATH" GITHUB_OUTPUT="$WORK/branch-output" \
+    GITHUB_REPOSITORY=matomo-org/plugin-Foo BASE_BRANCH=5.x-dev UPDATE_BRANCH=u BOT_EMAIL=bot@x \
+    GH_BRANCH=abc123 GH_PULLS=0 bash -eo pipefail "$WORK/branch-step.sh" > /dev/null 2>&1; cat "$WORK/branch-output")
+
+# The pull-request job's steps that run before the push: applying the untrusted tree, and checking
+# the branch has not moved.
+pr_step() {
+  python3 - "$WORKFLOW" "$1" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['pull-request']['steps']
+print(next(s for s in steps if s.get('name') == sys.argv[2])['run'])
+PY
+}
+pr_step 'Apply the rebuilt tree' > "$WORK/apply-step.sh"
+pr_step 'Check the update branch has not moved' > "$WORK/moved-step.sh"
+expect_apply() {
+  local description="$1" want="$2" got
+  tests=$((tests + 1))
+  rm -rf "$WORK/target" && mkdir -p "$WORK/target/vendor"
+  git -C "$WORK/target" init -q
+  echo old > "$WORK/target/vendor/gone.php"
+  git -C "$WORK/target" add vendor/gone.php
+  if RUNNER_TEMP="$WORK/runner" PLUGIN_DIR="$WORK/target" bash -eo pipefail "$WORK/apply-step.sh" > /dev/null 2>&1; then
+    got=applied
+  else
+    got=refused
+  fi
+  if [ "$got" = "$want" ] && { [ "$got" = refused ] || [ ! -e "$WORK/target/vendor/gone.php" ]; } \
+    && [ ! -e "$WORK/target/.git/hooks/pre-commit" ] && [ ! -e "$WORK/outside" ]; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description (got '$got', wanted '$want')"
+    failures+=("$description")
+  fi
+}
+make_tree() {
+  rm -rf "$WORK/runner" "$WORK/src" && mkdir -p "$WORK/runner/rebuilt" "$WORK/src/vendor/prefixed"
+  echo '{}' > "$WORK/src/composer.lock"
+  echo '<?php' > "$WORK/src/vendor/prefixed/a.php"
+  (cd "$WORK/src" && tar -cf "$WORK/runner/rebuilt/tree.tar" "$@")
+}
+make_tree composer.lock vendor
+expect_apply "a tree of composer.lock and vendor/ is applied, and a file it dropped is deleted" applied
+make_tree composer.lock vendor && mkdir -p "$WORK/src/.git/hooks" && echo x > "$WORK/src/.git/hooks/pre-commit" \
+  && (cd "$WORK/src" && tar -rf "$WORK/runner/rebuilt/tree.tar" .git/hooks/pre-commit)
+expect_apply "a tree carrying a git hook is refused" refused
+make_tree composer.lock vendor && ln -s ../../outside "$WORK/src/vendor/link" \
+  && (cd "$WORK/src" && tar -rf "$WORK/runner/rebuilt/tree.tar" vendor/link)
+expect_apply "a tree carrying a symlink is refused" refused
+make_tree composer.lock vendor && (cd "$WORK/src" && tar -rf "$WORK/runner/rebuilt/tree.tar" --transform 's,^,vendor/../,' composer.lock)
+expect_apply "a tree with a .. path is refused" refused
+
+expect_moved() {
+  local description="$1" expected="$2" branch="$3" want="$4" got
+  tests=$((tests + 1))
+  if PATH="$WORK/bin:$PATH" GITHUB_REPOSITORY=matomo-org/plugin-Foo UPDATE_BRANCH=u \
+    EXPECTED_HEAD="$expected" GH_BRANCH="$branch" bash -eo pipefail "$WORK/moved-step.sh" > /dev/null 2>&1; then
+    got=push
+  else
+    got=stop
+  fi
+  if [ "$got" = "$want" ]; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description (got '$got', wanted '$want')"
+    failures+=("$description")
+  fi
+}
+expect_moved "a branch still where the update job saw it is pushed" abc123 abc123 push
+expect_moved "a branch that still does not exist is created" '' 'fail:gh: Not Found (HTTP 404)' push
+expect_moved "a branch someone pushed to since is left alone" abc123 def456 stop
+expect_moved "a branch created since is left alone" '' def456 stop
+expect_moved "a branch lookup that fails stops the push" abc123 'fail:gh: Server Error (HTTP 500)' stop
 
 # The workflow's update step, with a stand-in composer that prints a canned log and leaves the lock
 # that make_plugin already changed.

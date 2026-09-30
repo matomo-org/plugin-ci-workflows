@@ -37,7 +37,10 @@ listing=$(mktemp)
 # -a because the protobuf descriptor files under google/*/metadata are PHP files holding binary
 # strings. Without it grep prints "Binary file ... matches" in place of their namespace line, and -I
 # would skip them unchecked.
-if ! grep -rhaE --include='*.php' '^namespace [A-Za-z0-9_\\]+' "$plugin_dir/vendor/prefixed" > "$listing"; then
+# A file copied through unprefixed keeps its own layout, so the declaration may be indented or follow
+# <?php on the same line.
+if ! grep -rhaoE --include='*.php' '^[[:space:]]*(<\?php[[:space:]]+)?namespace[[:space:]]+[A-Za-z0-9_\\]+' \
+  "$plugin_dir/vendor/prefixed" > "$listing"; then
   echo "::error::Found no namespace declarations under vendor/prefixed, so it cannot have been scoped."
   rm -f "$listing"
   exit 1
@@ -58,7 +61,7 @@ while IFS= read -r namespace; do
     echo "::error::vendor/prefixed declares namespace $namespace, outside $prefix. Either the scoper skipped a file, or the namespace is deliberately left global and belongs in allowed-unprefixed-namespaces."
     status=1
   fi
-done < <(sed -E 's/^namespace ([A-Za-z0-9_\\]+).*/\1/' "$listing" | sort -u)
+done < <(sed -E 's/.*namespace[[:space:]]+//' "$listing" | sort -u)
 rm -f "$listing"
 
 # Packages rather than the whole file: composer.lock also changes on metadata alone (content-hash,
