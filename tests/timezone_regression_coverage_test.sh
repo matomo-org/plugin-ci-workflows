@@ -61,6 +61,12 @@ check 'enforcement fails a plugin with date logic and no suite' 1 '::error::This
 dir=$(new_repo visit-time Model.php '$where = "visit_last_action_time < ?";')
 check 'visit action times are date logic' 0 "$MISSING" "$dir"
 
+dir=$(new_repo qualified-column Model.php '$where = "log_link_visit_action.server_time >= ?";')
+check 'a table-qualified event time is date logic' 0 "$MISSING" "$dir"
+
+dir=$(new_repo similar-names Config.php '$timeout = $config["server_timeout"] + $observer_time; $zone = $cfg["server_timezone"]; $last = $this->prev_visit_last_action_times; $s = $x->mygetTimezone();')
+check 'names that only contain a column or method name are not date logic' 0 "$NOT_REQUIRED" "$dir"
+
 dir=$(new_repo period-bounds API.php '$start = $period->getDateTimeStartUTC();')
 check 'period boundaries are date logic' 0 "$MISSING" "$dir"
 

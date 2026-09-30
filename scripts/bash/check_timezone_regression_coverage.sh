@@ -57,7 +57,7 @@ import sys
 
 # Event-time columns of the log tables, period boundaries and the site's timezone: code touching
 # any of them computes something per site day, which is where server-timezone bugs surface.
-SENSITIVE = re.compile(r'server_time|visit_(first|last)_action_time|getDate(Time)?(Start|End)(UTC)?\s*\(|getTimezone(For)?\s*\(')
+SENSITIVE = re.compile(r'\b(server_time|visit_(first|last)_action_time)\b|\bgetDate(Time)?(Start|End)(UTC)?\s*\(|\bgetTimezone(For)?\s*\(')
 # Updates/ holds one-off migrations, which run once rather than per report.
 EXCLUDED = re.compile(r'(^|/)([Tt]ests?|vendor|libs|node_modules|vue/dist|Updates)/')
 # Comments describe date logic without running it. Strings and heredocs are matched first so a
