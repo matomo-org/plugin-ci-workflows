@@ -346,6 +346,7 @@ while the check warns, and fails pull requests once it enforces. Plugins CI alwa
 `plugin-timezone-safety.yml@main`, so a plugin pinned to a `plugin-ci.yml` older than
 `timezone-regression-exempt` gets the check but cannot pass the exemption until it moves its pin.
 Tested by `tests/timezone_regression_coverage_test.sh` and `tests/timezone_coverage_step_test.sh`.
+Run locally, the script requires Python 3.11 or later, for `python3 -P`, and PyYAML.
 
 ```bash
 bash scripts/bash/check_timezone_regression_coverage.sh /path/to/plugin
