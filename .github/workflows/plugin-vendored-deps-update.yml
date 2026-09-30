@@ -21,7 +21,7 @@ on:
         type: string
         default: ''
       php-version:
-        description: "PHP to run composer, matomo-scoper and Rector on. This is not the plugin's floor: dependency resolution follows config.platform.php in the plugin's composer.json, which this workflow requires to be set."
+        description: "PHP to run composer, matomo-scoper and Rector on, 8.1 or later. This is not the plugin's floor: dependency resolution follows config.platform.php in the plugin's composer.json, which this workflow requires to be set."
         required: false
         type: string
         default: '8.3'
@@ -169,7 +169,7 @@ jobs:
 
           # The same comparison as check_scoped_tree.sh, which fails a run whose tree did not follow it.
           lock_packages() {
-            jq -S '[(.packages // [])[] | {name, version, source, dist}]'
+            jq -S '[(.packages // [])[] | {name, version, source: .source.reference, dist: (.dist.reference // .dist.url)}]'
           }
           if cmp -s <(git -C "$PLUGIN_DIR" show HEAD:composer.lock | lock_packages) <(lock_packages < "$PLUGIN_DIR/composer.lock"); then
             echo "::notice::Every dependency is already at the newest version composer.json allows."
@@ -182,8 +182,11 @@ jobs:
           # lists every package it extracts, which is the whole tree for an unprefixed vendor/ that
           # is never committed.
           sed -n '/^Lock file operations/,/^Installing dependencies from lock file/p' "$log" \
-            | grep -E '^  - (Upgrading|Downgrading|Locking|Removing)' \
+            | { grep -E '^  - (Upgrading|Downgrading|Locking|Removing)' || true; } \
             | sed -E 's/^  - /- /' > "$RUNNER_TEMP/package-changes.md"
+          if [ ! -s "$RUNNER_TEMP/package-changes.md" ]; then
+            echo "Composer listed no package operations; the \`composer.lock\` diff shows what changed." > "$RUNNER_TEMP/package-changes.md"
+          fi
           rm -f "$log"
 
       - name: Scope, downgrade and check

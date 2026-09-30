@@ -13,7 +13,8 @@
 #                           Matomo 6 or later, 7.3 otherwise. none skips Rector. Or 7.3 or 8.1.
 #   --scoper-dir=PATH       Use an existing matomo-scoper checkout instead of fetching one.
 #   --scoper-ref=REF        Ref of matomo-org/matomo-scoper to fetch. Defaults to the commit pinned
-#                           below.
+#                           below. Only the pinned commit has its php-scoper.phar checked against a
+#                           known hash; either option leaves the scoper to fetch its own.
 #   --allow-namespace=NS    A namespace allowed to stay outside Matomo\Dependencies\<plugin> in
 #                           vendor/prefixed, besides Composer\Autoload, which the scoper leaves
 #                           for Composer's generated autoloader. Repeatable.
@@ -21,7 +22,7 @@
 #                           Defaults to ${XDG_CACHE_HOME:-~/.cache}/matomo-scope-dependencies.
 #   --dry-run               Print the plugin and the downgrade target, and stop.
 #
-# Needs php, composer, jq, git and curl on PATH. The plugin directory must be a git checkout, because
+# Needs php 8.1 or later, composer, jq, git and curl on PATH. The plugin directory must be a git checkout, because
 # the tree check compares composer.lock against HEAD.
 
 set -euo pipefail
@@ -134,6 +135,7 @@ fi
 
 rector_dir="$tools_dir/rector"
 mkdir -p "$tools_dir" "$rector_dir"
+own_scoper="$scoper_dir"
 if [ -z "$scoper_dir" ]; then
   scoper_dir="$tools_dir/matomo-scoper"
   if [ ! -d "$scoper_dir/.git" ]; then
@@ -153,32 +155,52 @@ if [ ! -f "$scoper_dir/vendor/autoload.php" ]; then
   echo "::error::$scoper_dir has no vendor/. Run composer install in it first." >&2
   exit 1
 fi
-echo "matomo-scoper at $(git -C "$scoper_dir" rev-parse HEAD)"
+echo "matomo-scoper at $(git -C "$scoper_dir" rev-parse HEAD 2>/dev/null || echo "$scoper_dir, not a git checkout")"
 
 cp "$TOOLS_SOURCE/tools/composer.json" "$TOOLS_SOURCE/tools/composer.lock" "$rector_dir/"
 composer install --working-dir="$rector_dir" --no-interaction --no-progress
 
 # The scoper uses any php-scoper.phar already in its root and downloads one only when there is none,
-# without checking it. So it is put there here, checked, before the scoper can run it. The check
-# also catches a download that failed partway: an empty phar runs as a no-op that exits 0, after the
-# scoper has already deleted the unprefixed packages.
+# without checking it. An empty phar, from a download that failed partway, runs as a no-op that
+# exits 0, after the scoper has already deleted the unprefixed packages. Hence the -s: php exits 0
+# on an empty file even with --version.
 phar="$scoper_dir/php-scoper.phar"
+phar_runs() {
+  [ -s "$phar" ] && php "$phar" --version >/dev/null 2>&1
+}
 phar_intact() {
   # shellcheck disable=SC2016 # $argv is PHP's, not the shell's.
   [ -f "$1" ] && [ "$(php -r 'echo hash_file("sha256", $argv[1]);' "$1")" = "$PHP_SCOPER_SHA256" ]
 }
-if ! phar_intact "$phar"; then
-  download="$phar.download"
-  curl -fsSL --retry 3 -o "$download" "$PHP_SCOPER_URL"
-  if ! phar_intact "$download"; then
-    rm -f "$download"
-    echo "::error::The php-scoper.phar downloaded from $PHP_SCOPER_URL does not have the pinned sha256 $PHP_SCOPER_SHA256." >&2
-    exit 1
+if [ -z "$own_scoper" ] && [ "$(git -C "$scoper_dir" rev-parse HEAD)" = "$SCOPER_PINNED_REF" ]; then
+  # The pinned build is put there here, checked, before the scoper can run it.
+  if ! phar_intact "$phar"; then
+    download="$phar.download"
+    curl -fsSL --retry 3 -o "$download" "$PHP_SCOPER_URL"
+    if ! phar_intact "$download"; then
+      rm -f "$download"
+      echo "::error::The php-scoper.phar downloaded from $PHP_SCOPER_URL does not have the pinned sha256 $PHP_SCOPER_SHA256." >&2
+      exit 1
+    fi
+    mv "$download" "$phar"
   fi
-  mv "$download" "$phar"
+else
+  echo "::warning::matomo-scoper is not the pinned commit, so the php-scoper.phar it runs is not checked against a known hash."
+  if [ -z "$own_scoper" ]; then
+    # Another ref may download another build, so a kept copy, perhaps the pinned one, is not reused.
+    rm -f "$phar"
+  elif [ -e "$phar" ] && ! phar_runs; then
+    echo "Removing a php-scoper.phar that does not run, so the scoper downloads it again."
+    rm -f "$phar"
+  fi
 fi
 
 php "$scoper_dir/bin/matomo-scoper" scope "$plugin_dir" --yes --ignore-platform-check
+
+if ! phar_runs; then
+  echo "::error::php-scoper.phar did not download intact, so nothing was scoped. Restore vendor/ with composer install before running again." >&2
+  exit 1
+fi
 
 if [ -n "$downgrade" ]; then
   RECTOR_DOWNGRADE_PHP_VERSION="$downgrade" "$rector_dir/vendor/bin/rector" process "$plugin_dir/vendor/prefixed" \

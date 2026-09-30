@@ -5,7 +5,7 @@
 # same tree. Run composer install or composer update in the plugin first; the scoper prefixes
 # whatever the unprefixed vendor/ tree holds.
 #
-# Needs php, composer, jq and git on PATH. It sets up no PHP of its own, so it never changes the PHP
+# Needs php 8.1 or later, composer, jq, git and curl on PATH. It sets up no PHP of its own, so it never changes the PHP
 # that later steps of the caller's job run on.
 
 name: Scope plugin dependencies

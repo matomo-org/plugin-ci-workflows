@@ -106,6 +106,17 @@ git -C "$dir" checkout -q -- vendor/prefixed
 printf '{"packages":[{"name":"foo/bar","version":"1.0.0","dist":{"url":"https://example.org/foo.zip"}}]}\n' > "$dir/composer.lock"
 expect "a package whose download changed at the same version needs a new tree" 1 "$dir" 'is stale' 'Composer\Autoload'
 
+dir=$(make_plugin renamed-repository)
+git -C "$dir" checkout -q -- vendor/prefixed
+printf '{"packages":[{"name":"foo/bar","version":"1.0.0","source":{"url":"https://github.com/old/bar.git","reference":"abc"},"dist":{"url":"https://api.github.com/repos/old/bar/zipball/abc","reference":"abc"}}]}\n' > "$dir/composer.lock"
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qam old-urls
+sed -i 's#/old/#/new/#g' "$dir/composer.lock"
+expect "a repository renamed with the code left as it was does not need a new tree" 0 "$dir" '' 'Composer\Autoload'
+
+dir=$(make_plugin binary)
+printf '<?php\nnamespace GuzzleHttp\\Leak;\necho "\0";\n' > "$dir/vendor/prefixed/foo/src/Binary.php"
+expect "a file holding binary strings is still checked" 1 "$dir" 'namespace GuzzleHttp\\Leak, outside' 'Composer\Autoload'
+
 dir=$(make_plugin staged)
 git -C "$dir" add vendor/prefixed
 expect "a rebuild that is already staged counts as regenerated" 0 "$dir" '' 'Composer\Autoload'
@@ -215,7 +226,7 @@ xdebug_line=$(line_of '^export XDEBUG_MODE=off$')
 first_php_line=$(line_of '(^|[[:space:]!])(php|composer) ' | head -1)
 expect_true "Xdebug is off before the script runs any PHP" [ "${xdebug_line:-999}" -lt "${first_php_line:-0}" ]
 scope_line=$(line_of 'bin/matomo-scoper" scope')
-phar_check_line=$(line_of '^if ! phar_intact "[^"]*phar"; then')
+phar_check_line=$(line_of '^[[:space:]]*if ! phar_intact "[^"]*phar"; then')
 expect_true "the script checks php-scoper.phar before the scoper can run it" [ "${phar_check_line:-999}" -lt "${scope_line:-0}" ]
 expect_true "the default scoper ref is a commit, not a branch" \
   grep -qE '^SCOPER_PINNED_REF=[0-9a-f]{40}$' "$SCOPE"
@@ -272,6 +283,47 @@ expect_branch "a pull request lookup that fails stops the run" '' 'fail:gh: Serv
 expect_branch "an open pull request with a human commit is left alone" '' 1 1 true
 expect_branch "an open pull request with only the workflow's commits is refreshed" '' 1 0 false
 expect_branch "a comparison that fails stops the run" '' 1 'fail:gh: Server Error (HTTP 500)' error
+
+# The workflow's update step, with a stand-in composer that prints a canned log and leaves the lock
+# that make_plugin already changed.
+python3 - "$WORKFLOW" > "$WORK/update-step.sh" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']
+print(next(s for s in steps if s.get('id') == 'update')['run'])
+PY
+cat > "$WORK/bin/composer" <<'SH'
+#!/bin/bash
+printf '%s' "$COMPOSER_LOG"
+SH
+chmod +x "$WORK/bin/composer"
+expect_summary() {
+  local description="$1" log="$2" want="$3"
+  tests=$((tests + 1))
+  local dir got
+  dir=$(make_plugin "summary")
+  mkdir -p "$WORK/runner"
+  : > "$WORK/update-output"
+  if ! PATH="$WORK/bin:$PATH" GITHUB_OUTPUT="$WORK/update-output" RUNNER_TEMP="$WORK/runner" PLUGIN_DIR="$dir" \
+    COMPOSER_LOG="$log" bash -eo pipefail "$WORK/update-step.sh" > /dev/null 2>&1; then
+    got=error
+  else
+    got=$(cat "$WORK/runner/package-changes.md")
+  fi
+  if [ "$got" = "$want" ]; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description (got '$got', wanted '$want')"
+    failures+=("$description")
+  fi
+}
+expect_summary "the pull request lists the packages composer changed" \
+  $'Lock file operations: 0 installs, 1 update, 0 removals\n  - Upgrading foo/bar (1.0.0 => 1.1.0)\nInstalling dependencies from lock file\n  - Downloading foo/bar (1.1.0)\n' \
+  '- Upgrading foo/bar (1.0.0 => 1.1.0)'
+expect_summary "a change composer listed no operation for still gets a summary" \
+  $'Nothing to modify in lock file\nInstalling dependencies from lock file\n' \
+  "Composer listed no package operations; the \`composer.lock\` diff shows what changed."
 
 # The workflow decides whether to rescope with the same lock comparison the checker fails on, so the
 # two must not drift apart.

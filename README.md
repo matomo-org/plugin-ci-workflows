@@ -500,7 +500,7 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `branch` | no | the caller's ref | Branch to update and open the pull request against |
-| `php-version` | no | `8.3` | PHP to run the tooling on. Resolution follows `config.platform.php`, which the plugin's `composer.json` must set |
+| `php-version` | no | `8.3` | PHP to run the tooling on, 8.1 or later. Resolution follows `config.platform.php`, which the plugin's `composer.json` must set |
 | `downgrade-php` | no | `auto` | Passed to the action: `auto`, `none`, `7.3` or `8.1` |
 | `allowed-unprefixed-namespaces` | no | `''` | Passed to the action |
 | `scoper-ref` | no | `''` | Passed to the action |
@@ -548,7 +548,7 @@ Each branch gets its own pull request, from `automated/vendored-dependencies-<br
    - A namespace under `vendor/prefixed` is outside `Matomo\Dependencies\<plugin>` and not on the allowed list.
    - `composer.lock` resolved different packages from `HEAD`, but the tree did not change.
 
-It needs `php`, `composer`, `jq` and `git` on `PATH`, and sets up no PHP of its own, so the PHP of the steps after it is unchanged. Matomo core and DevPluginCommands aren't needed, and neither is any secret.
+It needs `php` 8.1 or later, `composer`, `jq`, `git` and `curl` on `PATH`, and sets up no PHP of its own, so the PHP of the steps after it is unchanged. Matomo core and DevPluginCommands aren't needed, and neither is any secret.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -559,7 +559,7 @@ It needs `php`, `composer`, `jq` and `git` on `PATH`, and sets up no PHP of its 
 
 The outputs are `plugin-name`, read from plugin.json, and `downgrade-php-version`, which is empty when Rector was skipped.
 
-The scoper's output is committed as code the plugin ships, so the script pins what produces it: a matomo-scoper commit, and the sha256 of the php-scoper build that commit downloads. Before the scoper can run it, the script downloads that phar itself, replacing any kept copy with a different hash, and stops if the download does not match. A newer scoper means bumping `SCOPER_PINNED_REF` in `scripts/bash/scope_plugin_dependencies.sh`, and also `PHP_SCOPER_URL` and `PHP_SCOPER_SHA256` if the new scoper uses a different php-scoper build.
+The scoper's output is committed as code the plugin ships, so the script pins what produces it: a matomo-scoper commit, and the sha256 of the php-scoper build that commit downloads. Before the scoper can run it, the script downloads that phar itself, replacing any kept copy with a different hash, and stops if the download does not match. A newer scoper means bumping `SCOPER_PINNED_REF` in `scripts/bash/scope_plugin_dependencies.sh`, and also `PHP_SCOPER_URL` and `PHP_SCOPER_SHA256` if the new scoper uses a different php-scoper build. A `scoper-ref` that resolves to another commit, or a local `--scoper-dir`, runs whatever php-scoper build that scoper fetches, unchecked, and the script warns that it did.
 
 ```yaml
 steps:

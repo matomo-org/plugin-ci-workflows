@@ -34,9 +34,10 @@ fi
 
 prefix="Matomo\\Dependencies\\$plugin_name"
 listing=$(mktemp)
-# -I skips the protobuf descriptor files under google/*/metadata, which are PHP files holding binary
-# strings; grep would otherwise print "Binary file ... matches" in place of the namespace line.
-if ! grep -rhIE --include='*.php' '^namespace [A-Za-z0-9_\\]+' "$plugin_dir/vendor/prefixed" > "$listing"; then
+# -a because the protobuf descriptor files under google/*/metadata are PHP files holding binary
+# strings. Without it grep prints "Binary file ... matches" in place of their namespace line, and -I
+# would skip them unchecked.
+if ! grep -rhaE --include='*.php' '^namespace [A-Za-z0-9_\\]+' "$plugin_dir/vendor/prefixed" > "$listing"; then
   echo "::error::Found no namespace declarations under vendor/prefixed, so it cannot have been scoped."
   rm -f "$listing"
   exit 1
@@ -61,11 +62,12 @@ done < <(sed -E 's/^namespace ([A-Za-z0-9_\\]+).*/\1/' "$listing" | sort -u)
 rm -f "$listing"
 
 # Packages rather than the whole file: composer.lock also changes on metadata alone (content-hash,
-# plugin-api-version), and that legitimately leaves vendor/prefixed untouched. Where they came from
-# counts too, because a branch dependency such as dev-main moves to a new commit without changing
-# its version. Only packages, not packages-dev: matomo-scoper prefixes nothing else.
+# plugin-api-version), and that legitimately leaves vendor/prefixed untouched. The commit counts too,
+# because a branch dependency such as dev-main moves to a new commit without changing its version,
+# but not the URLs, which change when a repository is renamed with the code left as it was. Only
+# packages, not packages-dev: matomo-scoper prefixes nothing else.
 lock_packages() {
-  jq -S '[(.packages // [])[] | {name, version, source, dist}]'
+  jq -S '[(.packages // [])[] | {name, version, source: .source.reference, dist: (.dist.reference // .dist.url)}]'
 }
 # Against HEAD, not the index, so a rebuild already staged still counts as a change.
 if ! cmp -s <(git -C "$plugin_dir" show HEAD:composer.lock | lock_packages) <(lock_packages < "$plugin_dir/composer.lock") \
