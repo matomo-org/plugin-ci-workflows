@@ -63,14 +63,15 @@ import sys
 SENSITIVE = re.compile(r'\b(server_time|visit_(first|last)_action_time)\b|\bgetDate(Time)?(Start|End)(UTC)?\s*\(|\bgetTimezone(For)?\s*\(', re.I)
 # Updates/ holds one-off migrations, which run once rather than per report.
 EXCLUDED = re.compile(r'(^|/)([Tt]ests?|vendor|libs|node_modules|vue/dist|Updates)/')
-# Comments describe date logic without running it. Strings and heredocs are matched first so a
-# `//` or `/*` inside one is not taken for a comment; `#[` opens an attribute, not a comment.
-# Inline HTML after `?>` is dropped too, so an apostrophe in it cannot open a string. A short `<? `
+# Comments describe date logic without running it. Strings, backtick commands and heredocs are
+# matched first so a `//` or `/*` inside one is not taken for a comment; `#[` opens an attribute,
+# not a comment.
+# Inline HTML after `?>` is dropped too, so an apostrophe in it cannot open a string. A short `<?`
 # tag ends it, but `<?xml` does not: PHP reads that as HTML when short tags are off.
 TOKEN = re.compile(r'''
-    (?P<keep> '(?:\\.|[^'\\])*' | "(?:\\.|[^"\\])*"
+    (?P<keep> '(?:\\.|[^'\\])*' | "(?:\\.|[^"\\])*" | `(?:\\.|[^`\\])*`
             | <<<[ \t]*(?P<quote>["']?)(?P<label>[A-Za-z_]\w*)(?P=quote)\n.*?\n[ \t]*(?P=label)\b )
-  | (?P<comment> /\*.*?(?:\*/|\Z) | (?://|\#(?!\[)).*?(?=\?>|\n|\Z) | \?>.*?(?:<\?(?:(?i:php)|=|(?=\s))|\Z) )
+  | (?P<comment> /\*.*?(?:\*/|\Z) | (?://|\#(?!\[)).*?(?=\?>|\n|\Z) | \?>.*?(?:<\?(?!(?i:xml))|\Z) )
 ''', re.S | re.X)
 
 with open(sys.argv[1], 'rb') as handle:

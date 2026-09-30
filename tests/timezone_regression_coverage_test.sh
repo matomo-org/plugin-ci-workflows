@@ -157,6 +157,12 @@ check 'an upper-case open tag ends inline HTML' 0 "$MISSING" "$dir"
 dir=$(new_repo short-open-tag view.php '?><p>x</p><? $tz = $site->getTimezone(); ?>')
 check 'a short open tag ends inline HTML' 0 "$MISSING" "$dir"
 
+dir=$(new_repo short-open-tag-no-space view.php '?><p>x</p><?$tz = $site->getTimezone(); ?>')
+check 'a short open tag without a space ends inline HTML' 0 "$MISSING" "$dir"
+
+dir=$(new_repo backtick view.php '$now = `date // now`; $tz = $site->getTimezone();')
+check 'a // inside a backtick command does not start a comment' 0 "$MISSING" "$dir"
+
 dir=$(new_repo xml-declaration view.php '?><?xml-stylesheet href="day.xsl" title="getTimezone() per day"?><p>x</p>')
 check 'an XML declaration does not end inline HTML' 0 "$NOT_REQUIRED" "$dir"
 
