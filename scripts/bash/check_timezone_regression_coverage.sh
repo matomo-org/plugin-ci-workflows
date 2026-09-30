@@ -142,7 +142,7 @@ for path in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('.github/wor
         inputs = job.get('with')
         command = inputs.get('timezone-test-command') if isinstance(inputs, dict) else None
         if command is not None and str(command).strip():
-            print(path)
+            print(path if path.isprintable() else path.encode('unicode_escape', 'backslashreplace').decode('ascii'))
             raise SystemExit(0)
 PY
 ) || {

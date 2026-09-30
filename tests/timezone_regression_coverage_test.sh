@@ -117,6 +117,9 @@ SELECT 'it''s' FROM log_visit /* not a PHP comment
 SQL;
 \$tz = \$site->getTimezone();")
 check 'a heredoc does not open a comment or string that hides later code' 0 "$MISSING" "$dir"
+# Text-mode reads translate CRLF, which is what lets the heredoc pattern stay on \n.
+sed -i 's/$/\r/' "$dir/Model.php"
+check 'a heredoc with CRLF line endings is still a heredoc' 0 "$MISSING" "$dir"
 
 dir=$(new_repo attribute Model.php '#[\ReturnTypeWillChange] public function day() { return $this->period->getDateStart(); }')
 check 'a PHP attribute is code, not a comment' 0 "$MISSING" "$dir"
@@ -183,6 +186,15 @@ jobs:
       timezone-test-command: ./tests/run-timezone-suite.sh
 YAML
 check 'a caller with a timezone test command enables the suite' 0 'enabled by .github/workflows/tests.yml' "$dir" --enforce
+
+mv "$dir/.github/workflows/tests.yml" "$dir/.github/workflows/a"$'\n'"::error::x.yml"
+tests=$((tests + 1))
+if bash "$SCRIPT" "$dir" 2>&1 | grep -q '^[[:space:]]*::error::x'; then
+  failures=$((failures + 1))
+  echo 'FAIL - a workflow file name cannot start a workflow command'
+else
+  echo 'ok - a workflow file name cannot start a workflow command'
+fi
 
 dir=$(new_repo enabled-folded Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yaml <<'YAML'
