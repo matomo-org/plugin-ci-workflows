@@ -93,7 +93,8 @@ for path in paths:
     except OSError as error:
         print(f'::error::Unable to read {shown(path)} for the timezone regression coverage check: {error.strerror}', file=sys.stderr)
         sys.exit(2)
-    code = TOKEN.sub(lambda match: match.group('keep') or ' ', source)
+    # PHP starts in HTML mode, so the file is read as if it followed a `?>`.
+    code = TOKEN.sub(lambda match: match.group('keep') or ' ', '?>' + source)
     if SENSITIVE.search(code):
         print(shown(path))
 PY

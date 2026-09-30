@@ -166,6 +166,16 @@ check 'a // inside a backtick command does not start a comment' 0 "$MISSING" "$d
 dir=$(new_repo xml-declaration view.php '?><?xml-stylesheet href="day.xsl" title="getTimezone() per day"?><p>x</p>')
 check 'an XML declaration does not end inline HTML' 0 "$NOT_REQUIRED" "$dir"
 
+dir=$(new_repo leading-html API.php 'return 1;')
+printf '%s\n' '<h1>#</h1><?php $tz = Site::getTimezoneFor(1); ?>' > "$dir/view.php"
+git -C "$dir" add .
+check 'HTML before the first open tag does not hide the code after it' 0 "$MISSING" "$dir"
+
+dir=$(new_repo leading-html-only API.php 'return 1;')
+printf '%s\n' '<p>Uses getTimezone() for the day.</p>' > "$dir/view.php"
+git -C "$dir" add .
+check 'HTML before any open tag is not code' 0 "$NOT_REQUIRED" "$dir"
+
 dir=$(new_repo newline-path API.php 'return 1;')
 printf '<?php\n$where = "server_time >= ?";\n' > "$dir/Evil"$'\n'"::error::x.php"
 git -C "$dir" add .
