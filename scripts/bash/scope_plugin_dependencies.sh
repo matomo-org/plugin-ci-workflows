@@ -95,7 +95,10 @@ case "$downgrade_input" in
     # without an ||.
     constraint=$(jq -r '.require.matomo // empty' "$plugin_dir/plugin.json")
     major=$(printf '%s' "$constraint" | grep -oE '>=[[:space:]]*[0-9]+\.' | grep -oE '[0-9]+' | sort -n | head -1 || true)
-    if [ -n "$major" ] && [ "$major" -ge 6 ]; then
+    if [ -z "$major" ]; then
+      echo "::warning::No >=N. bound in the Matomo requirement '$constraint', so transpiling to the lowest target. Pass --downgrade-php to choose one." >&2
+      downgrade=7.3
+    elif [ "$major" -ge 6 ]; then
       downgrade=8.1
     else
       downgrade=7.3

@@ -134,13 +134,24 @@ jobs:
             echo "::error::Could not check whether $UPDATE_BRANCH exists: $error"
             exit 1
           fi
+          # Only an open pull request's work needs keeping. A squash-merge leaves the branch behind
+          # with its human commits still unmerged by ancestry, and without this every later run would
+          # skip until someone deleted the branch.
+          if ! open=$(gh api "repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$UPDATE_BRANCH&state=open" --jq length); then
+            echo "::error::Could not list the pull requests from $UPDATE_BRANCH."
+            exit 1
+          fi
+          if [ "$open" = "0" ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if ! others=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$UPDATE_BRANCH" \
             --jq "[.commits[] | select(.commit.author.email != \"$BOT_EMAIL\" or .commit.committer.email != \"$BOT_EMAIL\")] | length"); then
             echo "::error::Could not list the commits on $UPDATE_BRANCH."
             exit 1
           fi
           if [ "$others" != "0" ]; then
-            echo "::notice::$UPDATE_BRANCH carries $others commit(s) not made by this workflow, so it was left as it is. Merge or close its pull request, or delete the branch, to get a fresh update."
+            echo "::notice::$UPDATE_BRANCH carries $others commit(s) not made by this workflow, so its open pull request was left as it is. Merge or close the pull request to get a fresh update."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -158,7 +169,7 @@ jobs:
 
           # The same comparison as check_scoped_tree.sh, which fails a run whose tree did not follow it.
           lock_packages() {
-            jq -S '[(.packages // [])[] | {name, version, reference: (.source.reference // .dist.reference)}]'
+            jq -S '[(.packages // [])[] | {name, version, source, dist}]'
           }
           if cmp -s <(git -C "$PLUGIN_DIR" show HEAD:composer.lock | lock_packages) <(lock_packages < "$PLUGIN_DIR/composer.lock"); then
             echo "::notice::Every dependency is already at the newest version composer.json allows."

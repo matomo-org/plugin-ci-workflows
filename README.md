@@ -535,7 +535,7 @@ jobs:
       DEPS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN }}
 ```
 
-Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. A run skips the branch once anyone other than the workflow has committed to it, such as for the changelog entry and version bump the pull request still needs, so that work is never overwritten. The plugin's `composer.json` has to pin `config.platform.php`, because composer otherwise resolves against the runner's PHP.
+Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for the changelog entry and version bump the pull request still needs, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. The plugin's `composer.json` has to pin `config.platform.php`, because composer otherwise resolves against the runner's PHP.
 
 ### Scope dependencies
 

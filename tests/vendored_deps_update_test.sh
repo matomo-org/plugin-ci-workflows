@@ -101,6 +101,11 @@ git -C "$dir" checkout -q -- vendor/prefixed
 printf '{"packages":[{"name":"foo/bar","version":"1.0.0","source":{"reference":"def"}}]}\n' > "$dir/composer.lock"
 expect "a branch dependency that moved to a new commit at the same version needs a new tree" 1 "$dir" 'is stale' 'Composer\Autoload'
 
+dir=$(make_plugin moved-dist)
+git -C "$dir" checkout -q -- vendor/prefixed
+printf '{"packages":[{"name":"foo/bar","version":"1.0.0","dist":{"url":"https://example.org/foo.zip"}}]}\n' > "$dir/composer.lock"
+expect "a package whose download changed at the same version needs a new tree" 1 "$dir" 'is stale' 'Composer\Autoload'
+
 dir=$(make_plugin staged)
 git -C "$dir" add vendor/prefixed
 expect "a rebuild that is already staged counts as regenerated" 0 "$dir" '' 'Composer\Autoload'
@@ -144,6 +149,15 @@ expect_downgrade "an explicit target overrides plugin.json" '>=6.0.0-b1,<7.0.0-b
 expect_downgrade "a target the Rector config does not know fails" '>=6.0.0-b1,<7.0.0-b1' 8.2 error
 expect_downgrade "the lowest of several ranges decides when it comes first" '>=5.0.0-b1,<6.0.0-b1 || >=6.0.0-b1,<7.0.0-b1' auto 7.3
 expect_downgrade "the lowest of several ranges decides when it comes last" '>=6.0.0-b1,<7.0.0-b1 || >=5.0.0-b1,<6.0.0-b1' auto 7.3
+
+tests=$((tests + 1))
+echo '{"name": "Foo", "require": {"matomo": "^6.0"}}' > "$WORK/downgrade/plugin.json"
+if bash "$SCOPE" --dry-run "$WORK/downgrade" 2>&1 | grep -q '::warning::No >=N. bound'; then
+  echo "ok - a requirement with no >=N. bound warns that the lower target was assumed"
+else
+  echo "FAIL - a requirement with no >=N. bound warns that the lower target was assumed"
+  failures+=("the no-bound warning")
+fi
 
 expect_usage_error() {
   local description="$1"
@@ -205,6 +219,70 @@ phar_check_line=$(line_of '^if ! phar_runs; then')
 expect_true "the script checks php-scoper.phar actually runs after scoping" [ "${scope_line:-999}" -lt "${phar_check_line:-0}" ]
 expect_true "the script checks the tree after everything that writes to it" \
   [ "$(line_of 'check_scoped_tree\.sh')" = "$(printf '%s\n' "$code" | wc -l)" ]
+
+# The workflow's branch check, run against a stand-in gh. Each case is the answers it gives to the
+# three calls: the branch lookup, the open pull requests and the comparison.
+python3 - "$WORKFLOW" > "$WORK/branch-step.sh" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']
+print(next(s for s in steps if s.get('id') == 'branch')['run'])
+PY
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/gh" <<'SH'
+#!/bin/bash
+case "$2" in
+  */branches/*) answer="$GH_BRANCH" ;;
+  */pulls\?*) answer="$GH_PULLS" ;;
+  */compare/*) answer="$GH_COMPARE" ;;
+esac
+case "$answer" in
+  fail:*) echo "${answer#fail:}" >&2; exit 1 ;;
+  *) [ -n "$answer" ] && echo "$answer"; exit 0 ;;
+esac
+SH
+chmod +x "$WORK/bin/gh"
+expect_branch() {
+  local description="$1" branch="$2" pulls="$3" compare="$4" want="$5"
+  tests=$((tests + 1))
+  local got
+  : > "$WORK/branch-output"
+  if ! PATH="$WORK/bin:$PATH" GITHUB_OUTPUT="$WORK/branch-output" GITHUB_REPOSITORY=matomo-org/plugin-Foo \
+    BASE_BRANCH=5.x-dev UPDATE_BRANCH=automated/vendored-dependencies-5.x-dev BOT_EMAIL=bot@x \
+    GH_BRANCH="$branch" GH_PULLS="$pulls" GH_COMPARE="$compare" \
+    bash -eo pipefail "$WORK/branch-step.sh" > /dev/null 2>&1; then
+    got=error
+  else
+    got=$(sed -n 's/^skip=//p' "$WORK/branch-output")
+  fi
+  if [ "$got" = "$want" ]; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description (got '$got', wanted '$want')"
+    failures+=("$description")
+  fi
+}
+expect_branch "no update branch yet is updated" 'fail:gh: Not Found (HTTP 404)' '' '' false
+expect_branch "a branch lookup that fails for another reason stops the run" 'fail:gh: Server Error (HTTP 500)' '' '' error
+expect_branch "a branch left behind with no open pull request is rebuilt" '' 0 1 false
+expect_branch "a pull request lookup that fails stops the run" '' 'fail:gh: Server Error (HTTP 500)' '' error
+expect_branch "an open pull request with a human commit is left alone" '' 1 1 true
+expect_branch "an open pull request with only the workflow's commits is refreshed" '' 1 0 false
+expect_branch "a comparison that fails stops the run" '' 1 'fail:gh: Server Error (HTTP 500)' error
+
+# The workflow decides whether to rescope with the same lock comparison the checker fails on, so the
+# two must not drift apart.
+tests=$((tests + 1))
+lock_filter() {
+  grep -A1 -E '^[[:space:]]*lock_packages\(\) \{' "$1" | tail -1 | sed -E 's/^[[:space:]]+//'
+}
+if [ -n "$(lock_filter "$CHECK")" ] && [ "$(lock_filter "$CHECK")" = "$(lock_filter "$WORKFLOW")" ]; then
+  echo "ok - the workflow and the checker compare composer.lock the same way"
+else
+  echo "FAIL - the workflow and the checker compare composer.lock the same way"
+  failures+=("the lock comparisons match")
+fi
 
 # The workflow's guards.
 yaml_output=$(python3 - "$WORKFLOW" <<'PY' 2>&1
