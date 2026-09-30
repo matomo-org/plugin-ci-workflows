@@ -76,6 +76,24 @@ regression_runs = '\n'.join(
 )
 check('regression job runs the caller command', 'TIMEZONE_TEST_COMMAND' in regression_runs)
 
+check('timezone workflow declares timezone-regression-exempt', 'timezone-regression-exempt' in inputs)
+check('plugins are not exempt by default', inputs.get('timezone-regression-exempt', {}).get('default') == '')
+coverage_steps = [
+    step for step in (jobs.get('timezone-safety') or {}).get('steps', [])
+    if isinstance(step, dict) and step.get('name') == 'Check timezone regression coverage'
+]
+coverage_step = coverage_steps[0] if coverage_steps else {}
+check('static timezone job runs the regression coverage check', len(coverage_steps) == 1 and 'bash "$coverage"' in str(coverage_step.get('run', '')))
+coverage_env = coverage_step.get('env') or {}
+check('coverage check reports even when the scan fails', 'cancelled()' in str(coverage_step.get('if', '')))
+check('coverage check receives the exemption through env', 'inputs.timezone-regression-exempt' in str(coverage_env.get('TIMEZONE_REGRESSION_EXEMPT', '')))
+# Interpolating caller input into run: would let the exemption reason execute as shell.
+check('exemption reason is never interpolated into the script', '${{' not in str(coverage_step.get('run', '')))
+check('coverage mode is warn or enforce', coverage_env.get('COVERAGE_MODE') in ('warn', 'enforce'))
+# What the step does with these is exercised by tests/timezone_coverage_step_test.sh.
+check('coverage step learns whether it runs for a pull request', coverage_env.get('BASE_BRANCH') == '${{ github.base_ref }}')
+check('static scan step stages the coverage script', 'check_timezone_regression_coverage.sh' in static_runs.split('rm -rf')[0])
+
 umbrella_triggers = umbrella.get('on', umbrella.get(True)) or {}
 umbrella_inputs = (umbrella_triggers.get('workflow_call') or {}).get('inputs') or {}
 umbrella_jobs = umbrella.get('jobs') or {}
@@ -84,6 +102,8 @@ check('Plugins CI has a timezone skip input', 'skip-timezone-safety' in umbrella
 check('timezone skip defaults to false', umbrella_inputs.get('skip-timezone-safety', {}).get('default') is False)
 check('Plugins CI calls the timezone workflow', 'plugin-timezone-safety.yml' in str(timezone_job.get('uses', '')))
 check('Plugins CI forwards workflows-ref', 'inputs.workflows-ref' in str(timezone_job.get('with', {})))
+check('Plugins CI has a timezone regression exemption input', umbrella_inputs.get('timezone-regression-exempt', {}).get('default') == '')
+check('Plugins CI forwards the exemption', (timezone_job.get('with') or {}).get('timezone-regression-exempt') == '${{ inputs.timezone-regression-exempt }}')
 
 print(f"{tests} test(s), {len(failures)} failure(s)")
 sys.exit(bool(failures))

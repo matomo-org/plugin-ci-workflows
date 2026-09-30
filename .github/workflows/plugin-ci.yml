@@ -47,7 +47,7 @@ on:
         type: boolean
         default: false
       skip-timezone-safety:
-        description: "Do not run the timezone safety static scan"
+        description: "Do not run the timezone safety static scan or its regression coverage check"
         required: false
         type: boolean
         default: false
@@ -95,6 +95,11 @@ on:
         default: 'vendor/prefixed'
       min-php-lint-php-version:
         description: "Override the floor the minimum PHP lint derives from the plugin's composer.json and plugin.json. Accepts a major.minor version such as 8.1, or one of the shared aliases. Leave unset unless the declared floor is wrong."
+        required: false
+        type: string
+        default: ''
+      timezone-regression-exempt:
+        description: "Why this plugin needs no timezone regression suite although the timezone check found date or site-timezone logic. Empty means it is not exempt."
         required: false
         type: string
         default: ''
@@ -322,6 +327,7 @@ jobs:
     with:
       plugin-name: ${{ inputs.plugin-name }}
       workflows-ref: ${{ inputs.workflows-ref }}
+      timezone-regression-exempt: ${{ inputs.timezone-regression-exempt }}
 
 # Codex review is not called from here, and should not be. It runs on `pull_request_target` with
 # secrets available, gated on a label; every check above runs on `pull_request`. Putting both in
