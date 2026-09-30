@@ -584,7 +584,7 @@ The same script rebuilds the tree on a developer's machine, so a local rebuild m
 
 ```bash
 composer update
-bash ~/projects/plugin-ci-workflows/scripts/bash/scope_plugin_dependencies.sh
+bash /path/to/plugin-ci-workflows/scripts/bash/scope_plugin_dependencies.sh
 ```
 
 It fetches matomo-scoper and installs the locked Rector into `~/.cache/matomo-scope-dependencies` (or under `$XDG_CACHE_HOME`), and reuses them on later runs. Its options mirror the action's inputs:

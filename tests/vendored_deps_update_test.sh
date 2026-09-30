@@ -164,13 +164,15 @@ expect_downgrade "an explicit target overrides plugin.json" '>=6.0.0-b1,<7.0.0-b
 expect_downgrade "a target the Rector config does not know fails" '>=6.0.0-b1,<7.0.0-b1' 8.2 error
 expect_downgrade "the lowest of several ranges decides when it comes first" '>=5.0.0-b1,<6.0.0-b1 || >=6.0.0-b1,<7.0.0-b1' auto 7.3
 expect_downgrade "the lowest of several ranges decides when it comes last" '>=6.0.0-b1,<7.0.0-b1 || >=5.0.0-b1,<6.0.0-b1' auto 7.3
+expect_downgrade "a caret requirement on Matomo 6 is transpiled to 8.1" '^6.0' auto 8.1
+expect_downgrade "a tilde requirement on Matomo 5 is transpiled to 7.3" '~5.0' auto 7.3
 
 tests=$((tests + 1))
-echo '{"name": "Foo", "require": {"matomo": "^6.0"}}' > "$WORK/downgrade/plugin.json"
-if bash "$SCOPE" --dry-run "$WORK/downgrade" 2>&1 | grep -q '::warning::No >=N. bound'; then
-  echo "ok - a requirement with no >=N. bound warns that the lower target was assumed"
+echo '{"name": "Foo", "require": {"matomo": "*"}}' > "$WORK/downgrade/plugin.json"
+if bash "$SCOPE" --dry-run "$WORK/downgrade" 2>&1 | grep -q '::warning::No >=, ^ or ~ lower bound'; then
+  echo "ok - a requirement with no lower bound warns that the lower target was assumed"
 else
-  echo "FAIL - a requirement with no >=N. bound warns that the lower target was assumed"
+  echo "FAIL - a requirement with no lower bound warns that the lower target was assumed"
   failures+=("the no-bound warning")
 fi
 
@@ -462,6 +464,11 @@ pr_uses = ' '.join(s.get('uses', '') for s in pr_steps)
 check("the pull-request job runs no composer, php or scoper",
       'composer ' not in pr_runs and 'php ' not in pr_runs
       and 'scope-dependencies' not in pr_uses and 'setup-php' not in pr_uses)
+
+check("each branch of a matrix caller uploads and downloads its own artifact",
+      step('Upload the rebuilt tree')['with']['name'] == '${{ steps.update.outputs.artifact }}'
+      and step('Download the rebuilt tree', pr_steps)['with']['name'] == '${{ needs.update.outputs.artifact }}'
+      and 'artifact=rebuilt-tree-${BASE_BRANCH' in step('Update dependencies')['run'])
 
 pr = step('Open or update the pull request', pr_steps)['with']
 check("the workflow's commits are authored by the address the human-commit check filters on",
