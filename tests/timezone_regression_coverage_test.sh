@@ -352,6 +352,19 @@ YAML
   check "a caller switched off with if: $condition does not enable the suite" 1 '::error::' "$dir" --enforce
 done
 
+dir=$(new_repo disabled-block Archiver.php '$where = "server_time >= ?";')
+add_workflow "$dir" tests.yml <<'YAML'
+on: pull_request
+jobs:
+  timezone:
+    if: |
+      false
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
+    with:
+      timezone-test-command: ./tests/run-timezone-suite.sh
+YAML
+check 'a caller switched off with a block-scalar if does not enable the suite' 1 '::error::' "$dir" --enforce
+
 dir=$(new_repo conditional Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yml <<'YAML'
 on: pull_request

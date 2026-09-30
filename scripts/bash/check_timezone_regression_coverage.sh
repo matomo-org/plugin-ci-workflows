@@ -153,7 +153,7 @@ for path in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('.github/wor
         if not isinstance(job, dict) or not CALLER.match(str(job.get('uses', ''))):
             continue
         condition = job.get('if', True)
-        if condition is False or str(condition).replace(' ', '') in ('false', '${{false}}'):
+        if condition is False or ''.join(str(condition).split()) in ('false', '${{false}}'):
             continue
         inputs = job.get('with')
         command = inputs.get('timezone-test-command') if isinstance(inputs, dict) else None
