@@ -43,6 +43,7 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
 | [`plugin-vendored-deps-update.yml`](#vendored-dependencies-update) | Reusable workflow | Updates a plugin's scoped dependencies, rebuilds `vendor/prefixed` and opens a pull request |
 | [`actions/scope-dependencies`](#scope-dependencies) | Composite action | Scopes a plugin's dependencies with matomo-scoper, downgrades them with Rector, and checks the result |
+| [`scripts/bash/scope_plugin_dependencies.sh`](#scope-dependencies) | Standalone script | What the action runs, and how a developer rebuilds `vendor/prefixed` locally |
 | [`scripts/bash/check_scoped_tree.sh`](#scope-dependencies) | Standalone script | Checks a rebuilt `vendor/prefixed` tree is really scoped and really new |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
@@ -501,7 +502,7 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 | `branch` | no | the caller's ref | Branch to update and open the pull request against |
 | `php-version` | no | `8.3` | PHP to run the tooling on. Resolution follows `config.platform.php`, which the plugin's `composer.json` must set |
 | `downgrade-php` | no | `auto` | Passed to the action: `auto`, `none`, `7.3` or `8.1` |
-| `allowed-unprefixed-namespaces` | no | `Composer\Autoload` | Passed to the action |
+| `allowed-unprefixed-namespaces` | no | `''` | Passed to the action |
 | `scoper-ref` | no | `main` | Ref of matomo-org/matomo-scoper |
 | `workflows-ref` | no | `main` | Ref of this repository to take the action from |
 
@@ -538,7 +539,7 @@ Each branch gets its own pull request, from `automated/vendored-dependencies-<br
 
 ### Scope dependencies
 
-`actions/scope-dependencies` rebuilds `vendor/prefixed` from whatever the plugin's unprefixed `vendor/` holds, so run `composer install` or `composer update` in the plugin first. It runs the steps DevPluginCommands' `process-dependencies` command runs, without Matomo's console:
+`actions/scope-dependencies` rebuilds `vendor/prefixed` from whatever the plugin's unprefixed `vendor/` holds, so run `composer install` or `composer update` in the plugin first. The action runs `scripts/bash/scope_plugin_dependencies.sh`, which does what DevPluginCommands' `process-dependencies` command does, without Matomo's console:
 
 1. It scopes the dependencies with matomo-scoper, which also writes the `vendor/autoload.php` proxy.
 2. It transpiles `vendor/prefixed` with Rector, using the Rector version locked in `actions/scope-dependencies/tools` and the config in `actions/scope-dependencies/rector.php`. With `auto`, the target is 8.1 when plugin.json requires Matomo 6 or later and 7.3 otherwise, the same rule DevPluginCommands applies.
@@ -553,7 +554,7 @@ It needs `php`, `composer`, `jq` and `git` on `PATH`, and sets up no PHP of its 
 | --- | --- | --- | --- |
 | `plugin-path` | no | `.` | Path to the plugin, which must be a git checkout |
 | `downgrade-php` | no | `auto` | `auto` reads the target from plugin.json, `none` skips Rector, or pass `7.3` or `8.1` |
-| `allowed-unprefixed-namespaces` | no | `Composer\Autoload` | Whitespace-separated namespaces allowed to stay global in `vendor/prefixed` |
+| `allowed-unprefixed-namespaces` | no | `''` | Whitespace-separated namespaces allowed to stay global in `vendor/prefixed`, besides `Composer\Autoload`, which is always allowed |
 | `scoper-ref` | no | `main` | Ref of matomo-org/matomo-scoper |
 
 The outputs are `plugin-name`, read from plugin.json, and `downgrade-php-version`, which is empty when Rector was skipped.
@@ -571,7 +572,29 @@ steps:
   - uses: matomo-org/plugin-ci-workflows/actions/scope-dependencies@main
 ```
 
-Set up PHP with `coverage: none`. Under Xdebug, php-scoper can copy deeply nested files through unprefixed while still reporting success. The action turns Xdebug off for its own steps, but `coverage: none` keeps it off for the `composer` steps as well.
+Set up PHP with `coverage: none`. Under Xdebug, php-scoper can copy deeply nested files through unprefixed while still reporting success. The script turns Xdebug off for itself, but `coverage: none` keeps it off for the `composer` steps as well.
+
+#### Running it locally
+
+The same script rebuilds the tree on a developer's machine, so a local rebuild matches the one CI produces. From the plugin's directory:
+
+```bash
+composer update
+bash ~/projects/plugin-ci-workflows/scripts/bash/scope_plugin_dependencies.sh
+```
+
+It fetches matomo-scoper and installs the locked Rector into `~/.cache/matomo-scope-dependencies` (or under `$XDG_CACHE_HOME`), and reuses them on later runs. Its options mirror the action's inputs:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--downgrade-php=TARGET` | `auto` | `auto`, `none`, `7.3` or `8.1`, as for the action |
+| `--allow-namespace=NS` | | A namespace allowed to stay global, besides `Composer\Autoload`. Repeat it for more than one |
+| `--scoper-ref=REF` | `main` | Ref of matomo-org/matomo-scoper to fetch |
+| `--scoper-dir=PATH` | | Use an existing matomo-scoper checkout instead of fetching one |
+| `--tools-dir=PATH` | `~/.cache/matomo-scope-dependencies` | Where the tools are installed |
+| `--dry-run` | | Print the plugin and the downgrade target, and stop |
+
+A plugin directory can be passed as the last argument instead of running from inside it. The plugin must be a git checkout, because the tree check compares `composer.lock` against `HEAD`.
 
 ## The pre-push hook
 

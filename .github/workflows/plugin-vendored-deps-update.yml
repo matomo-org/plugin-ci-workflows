@@ -4,7 +4,8 @@
 # and composer.lock and nothing else, so its pull request would test the old prefixed code under a
 # new lock file and pass. The tree has to be rebuilt the way a developer rebuilds it locally:
 # composer update, then matomo-scoper, then Rector. The last two are the scope-dependencies action
-# in this repository, which needs neither Matomo core nor DevPluginCommands.
+# in this repository, which runs scripts/bash/scope_plugin_dependencies.sh and needs neither Matomo
+# core nor DevPluginCommands.
 #
 # The caller keeps the `schedule` trigger, because a reusable workflow's own cron would fire in this
 # repository rather than the plugin's.
@@ -30,10 +31,10 @@ on:
         type: string
         default: 'auto'
       allowed-unprefixed-namespaces:
-        description: "Whitespace-separated namespaces allowed to remain outside Matomo\\Dependencies\\<plugin> in vendor/prefixed. Composer's own generated autoloader is always one."
+        description: "Whitespace-separated namespaces allowed to remain outside Matomo\\Dependencies\\<plugin> in vendor/prefixed, besides Composer\\Autoload, which is always allowed."
         required: false
         type: string
-        default: 'Composer\Autoload'
+        default: ''
       scoper-ref:
         description: "Ref of matomo-org/matomo-scoper."
         required: false

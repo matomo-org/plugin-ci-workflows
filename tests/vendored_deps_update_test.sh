@@ -1,6 +1,6 @@
 #!/bin/bash
-# Tests for scripts/bash/check_scoped_tree.sh, the scope-dependencies action and
-# .github/workflows/plugin-vendored-deps-update.yml.
+# Tests for scripts/bash/check_scoped_tree.sh, scripts/bash/scope_plugin_dependencies.sh, the
+# scope-dependencies action and .github/workflows/plugin-vendored-deps-update.yml.
 # Usage: bash tests/vendored_deps_update_test.sh
 #
 # The check exists because the scoping pipeline reports success on output it did not produce, so
@@ -9,6 +9,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECK="$ROOT/scripts/bash/check_scoped_tree.sh"
+SCOPE="$ROOT/scripts/bash/scope_plugin_dependencies.sh"
 WORKFLOW="$ROOT/.github/workflows/plugin-vendored-deps-update.yml"
 ACTION="$ROOT/actions/scope-dependencies/action.yml"
 WORK="$(mktemp -d)"
@@ -99,16 +100,7 @@ dir=$(make_plugin empty)
 rm -rf "$dir/vendor/prefixed"/*
 expect "a prefixed tree with no namespaces at all fails" 1 "$dir" 'no namespace declarations' 'Composer\Autoload'
 
-# The action's downgrade target, run from the action's own step so the test cannot drift from it.
-RESOLVE="$WORK/resolve.sh"
-python3 - "$ACTION" > "$RESOLVE" <<'PY'
-import sys
-import yaml
-
-steps = yaml.safe_load(open(sys.argv[1]))['runs']['steps']
-print([s for s in steps if s.get('id') == 'resolve'][0]['run'])
-PY
-
+# The downgrade target, from the script's dry run, which stops before anything is installed.
 expect_downgrade() {
   local description="$1" matomo_constraint="$2" input="$3" want="$4"
   tests=$((tests + 1))
@@ -121,7 +113,7 @@ expect_downgrade() {
     echo '{"name": "Foo"}' > "$dir/plugin.json"
   fi
   : > "$WORK/output"
-  if ! PLUGIN_PATH="$dir" DOWNGRADE_INPUT="$input" GITHUB_OUTPUT="$WORK/output" bash -e "$RESOLVE" > /dev/null 2>&1; then
+  if ! GITHUB_OUTPUT="$WORK/output" bash "$SCOPE" --dry-run --downgrade-php="$input" "$dir" > /dev/null 2>&1; then
     got=error
   else
     got=$(sed -n 's/^downgrade=//p' "$WORK/output")
@@ -142,33 +134,82 @@ expect_downgrade "none skips Rector" '>=6.0.0-b1,<7.0.0-b1' none ''
 expect_downgrade "an explicit target overrides plugin.json" '>=6.0.0-b1,<7.0.0-b1' 7.3 7.3
 expect_downgrade "a target the Rector config does not know fails" '>=6.0.0-b1,<7.0.0-b1' 8.2 error
 
-# The guards the check leans on. Each of these has a failure that looks like success.
-yaml_output=$(python3 - "$WORKFLOW" "$ACTION" <<'PY' 2>&1
+expect_usage_error() {
+  local description="$1"
+  shift
+  tests=$((tests + 1))
+  if bash "$SCOPE" --dry-run "$@" > /dev/null 2>&1; then
+    echo "FAIL - $description (exited 0)"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+
+expect_usage_error "an unknown option is refused rather than ignored" --downgrade=none "$WORK/downgrade"
+expect_usage_error "a second plugin directory is refused rather than silently winning" "$WORK/downgrade" "$WORK/downgrade"
+
+# The action's own step, run against a stand-in script, so the arguments it builds are what is tested.
+tests=$((tests + 1))
+fake="$WORK/fake-repo"
+mkdir -p "$fake/actions/scope-dependencies" "$fake/scripts/bash"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@"\n' > "$fake/scripts/bash/scope_plugin_dependencies.sh"
+python3 - "$ACTION" > "$WORK/action-step.sh" <<'PY'
+import sys
+import yaml
+
+print(yaml.safe_load(open(sys.argv[1]))['runs']['steps'][0]['run'])
+PY
+got=$(GITHUB_ACTION_PATH="$fake/actions/scope-dependencies" PLUGIN_PATH=plugin DOWNGRADE_INPUT=none \
+  ALLOWED=$'Composer\\Autoload\n  GPBMetadata ' SCOPER_REF=v1 TOOLS=/t bash -e "$WORK/action-step.sh" 2>&1)
+want=$'--downgrade-php=none\n--scoper-ref=v1\n--tools-dir=/t\n--allow-namespace=Composer\\Autoload\n--allow-namespace=GPBMetadata\nplugin'
+if [ "$got" = "$want" ]; then
+  echo "ok - the action passes each allowed namespace, and the plugin path last, to the script"
+else
+  echo "FAIL - the action passes each allowed namespace, and the plugin path last, to the script (got: $got)"
+  failures+=("the action passes its inputs to the script")
+fi
+
+# The guards the script leans on. Each of these has a failure that looks like success.
+expect_true() {
+  local description="$1"
+  shift
+  tests=$((tests + 1))
+  if "$@"; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description"
+    failures+=("$description")
+  fi
+}
+code=$(grep -vE '^[[:space:]]*(#|$)' "$SCOPE")
+line_of() {
+  printf '%s\n' "$code" | grep -nE -- "$1" | cut -d: -f1
+}
+xdebug_line=$(line_of '^export XDEBUG_MODE=off$')
+first_php_line=$(line_of '(^|[[:space:]!])(php|composer) ' | head -1)
+expect_true "Xdebug is off before the script runs any PHP" [ "${xdebug_line:-999}" -lt "${first_php_line:-0}" ]
+scope_line=$(line_of 'bin/matomo-scoper" scope')
+phar_check_line=$(line_of '^if ! php "[$]phar" --version')
+expect_true "the script checks php-scoper.phar actually runs after scoping" [ "${scope_line:-999}" -lt "${phar_check_line:-0}" ]
+expect_true "the script checks the tree after everything that writes to it" \
+  [ "$(line_of 'check_scoped_tree\.sh')" = "$(printf '%s\n' "$code" | wc -l)" ]
+
+# The workflow's guards.
+yaml_output=$(python3 - "$WORKFLOW" <<'PY' 2>&1
 import sys
 import yaml
 
 workflow = yaml.safe_load(open(sys.argv[1]))
 steps = workflow['jobs']['update']['steps']
-action_steps = yaml.safe_load(open(sys.argv[2]))['runs']['steps']
 
 def check(description, condition):
     print(("ok - " if condition else "FAIL - ") + description)
 
-def step(name, within=steps):
-    found = [s for s in within if s.get('name') == name]
+def step(name):
+    found = [s for s in steps if s.get('name') == name]
     assert len(found) == 1, f"expected one step named {name!r}, found {len(found)}"
     return found[0]
-
-def code(s):
-    return '\n'.join(l for l in s['run'].splitlines() if not l.lstrip().startswith('#'))
-
-for name in ('Scope', 'Downgrade'):
-    check(f"Xdebug is off for the action's {name} step",
-          str(step(name, action_steps).get('env', {}).get('XDEBUG_MODE')) == 'off')
-check("the action checks php-scoper.phar actually runs",
-      'php-scoper.phar" --version' in code(step('Scope', action_steps)))
-check("the action checks the tree after everything that writes to it",
-      action_steps[-1].get('name') == 'Check the scoped tree')
 
 check("setup-php loads no coverage driver", step('Setup PHP')['with'].get('coverage') == 'none')
 

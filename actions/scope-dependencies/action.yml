@@ -1,10 +1,9 @@
 # Scopes a plugin's installed dependencies into vendor/prefixed, transpiles them down to the PHP the
 # plugin supports, and checks the result.
 #
-# These are the steps DevPluginCommands' process-dependencies command runs, taken out of Matomo's
-# console: matomo-scoper and Rector are both standalone, so neither Matomo core nor a private
-# repository is needed. Run composer install or composer update in the plugin first; the scoper
-# prefixes whatever the unprefixed vendor/ tree holds.
+# The work is scripts/bash/scope_plugin_dependencies.sh, which developers run locally to rebuild the
+# same tree. Run composer install or composer update in the plugin first; the scoper prefixes
+# whatever the unprefixed vendor/ tree holds.
 #
 # Needs php, composer, jq and git on PATH. It sets up no PHP of its own, so it never changes the PHP
 # that later steps of the caller's job run on.
@@ -22,9 +21,9 @@ inputs:
     required: false
     default: 'auto'
   allowed-unprefixed-namespaces:
-    description: "Whitespace-separated namespaces allowed to remain outside Matomo\\Dependencies\\<plugin> in vendor/prefixed. Composer's own generated autoloader is always one."
+    description: "Whitespace-separated namespaces allowed to remain outside Matomo\\Dependencies\\<plugin> in vendor/prefixed, besides Composer\\Autoload, which is always allowed."
     required: false
-    default: 'Composer\Autoload'
+    default: ''
   scoper-ref:
     description: "Ref of matomo-org/matomo-scoper."
     required: false
@@ -33,119 +32,28 @@ inputs:
 outputs:
   plugin-name:
     description: "The plugin's name, read from plugin.json."
-    value: ${{ steps.resolve.outputs.plugin-name }}
+    value: ${{ steps.scope.outputs.plugin-name }}
   downgrade-php-version:
     description: "The PHP version vendor/prefixed was transpiled to, or empty when Rector was skipped."
-    value: ${{ steps.resolve.outputs.downgrade }}
+    value: ${{ steps.scope.outputs.downgrade }}
 
 runs:
   using: composite
   steps:
-    - name: Resolve the plugin and downgrade target
-      id: resolve
+    - name: Scope, downgrade and check
+      id: scope
       shell: bash
       env:
         PLUGIN_PATH: ${{ inputs.plugin-path }}
         DOWNGRADE_INPUT: ${{ inputs.downgrade-php }}
-      run: |
-        for tool in php composer jq git; do
-          if ! command -v "$tool" >/dev/null; then
-            echo "::error::$tool is not on PATH. Set up PHP and composer before this action."
-            exit 1
-          fi
-        done
-        if [ ! -f "$PLUGIN_PATH/plugin.json" ]; then
-          echo "::error::No plugin.json in $PLUGIN_PATH."
-          exit 1
-        fi
-        name=$(jq -r '.name // empty' "$PLUGIN_PATH/plugin.json")
-        if [ -z "$name" ]; then
-          echo "::error file=plugin.json::plugin.json has no name, and matomo-scoper builds the namespace prefix from it."
-          exit 1
-        fi
-
-        case "$DOWNGRADE_INPUT" in
-          none) downgrade='' ;;
-          7.3|8.1) downgrade="$DOWNGRADE_INPUT" ;;
-          auto)
-            # Only the lower bound matters: it is the oldest Matomo, so the oldest PHP, the plugin
-            # runs on. The same rule as DevPluginCommands, so the output matches a local rebuild.
-            constraint=$(jq -r '.require.matomo // empty' "$PLUGIN_PATH/plugin.json")
-            major=$(printf '%s' "$constraint" | sed -nE 's/.*>=[[:space:]]*([0-9]+)\..*/\1/p' | head -1)
-            if [ -n "$major" ] && [ "$major" -ge 6 ]; then
-              downgrade=8.1
-            else
-              downgrade=7.3
-            fi
-            echo "Transpiling down to PHP $downgrade, from the Matomo requirement '$constraint'."
-            ;;
-          *)
-            echo "::error::downgrade-php must be auto, none, 7.3 or 8.1, not '$DOWNGRADE_INPUT'."
-            exit 1
-            ;;
-        esac
-
-        {
-          echo "plugin-name=$name"
-          echo "downgrade=$downgrade"
-          echo "plugin-dir=$(cd "$PLUGIN_PATH" && pwd)"
-        } >> "$GITHUB_OUTPUT"
-
-    # Fetched rather than checked out with actions/checkout, which can only write inside the
-    # workspace -- where the caller's plugin checkout, and whatever else it globs, also lives.
-    - name: Install matomo-scoper and Rector
-      shell: bash
-      env:
-        SCOPER_REF: ${{ inputs.scoper-ref }}
-        TOOLS: ${{ runner.temp }}/scope-dependencies
-      run: |
-        rm -rf "$TOOLS"
-        mkdir -p "$TOOLS/matomo-scoper"
-        git -C "$TOOLS/matomo-scoper" init -q
-        git -C "$TOOLS/matomo-scoper" fetch -q --depth 1 https://github.com/matomo-org/matomo-scoper.git "$SCOPER_REF"
-        git -C "$TOOLS/matomo-scoper" checkout -q FETCH_HEAD
-        echo "matomo-scoper at $(git -C "$TOOLS/matomo-scoper" rev-parse HEAD)"
-        composer install --working-dir="$TOOLS/matomo-scoper" --no-dev --no-interaction --no-progress
-
-        cp -r "$GITHUB_ACTION_PATH/tools" "$TOOLS/rector"
-        composer install --working-dir="$TOOLS/rector" --no-interaction --no-progress
-
-    - name: Scope
-      shell: bash
-      env:
-        # Xdebug's nesting limit makes php-scoper copy deeply nested files through unprefixed while
-        # still reporting success.
-        XDEBUG_MODE: 'off'
-        PLUGIN_DIR: ${{ steps.resolve.outputs.plugin-dir }}
-        TOOLS: ${{ runner.temp }}/scope-dependencies
-      run: |
-        php "$TOOLS/matomo-scoper/bin/matomo-scoper" scope "$PLUGIN_DIR" --yes --ignore-platform-check
-
-        # The scoper downloads php-scoper on first use, and an empty or truncated phar runs as a
-        # no-op that exits 0 -- after the scoper has already deleted the unprefixed packages.
-        if ! php "$TOOLS/matomo-scoper/php-scoper.phar" --version >/dev/null 2>&1; then
-          echo "::error::php-scoper.phar did not download intact, so nothing was scoped."
-          exit 1
-        fi
-
-    - name: Downgrade
-      if: ${{ steps.resolve.outputs.downgrade != '' }}
-      shell: bash
-      env:
-        XDEBUG_MODE: 'off'
-        PLUGIN_DIR: ${{ steps.resolve.outputs.plugin-dir }}
-        RECTOR_DOWNGRADE_PHP_VERSION: ${{ steps.resolve.outputs.downgrade }}
-        TOOLS: ${{ runner.temp }}/scope-dependencies
-      run: |
-        "$TOOLS/rector/vendor/bin/rector" process "$PLUGIN_DIR/vendor/prefixed" \
-          --config="$GITHUB_ACTION_PATH/rector.php" --no-progress-bar
-
-    - name: Check the scoped tree
-      shell: bash
-      env:
-        PLUGIN_DIR: ${{ steps.resolve.outputs.plugin-dir }}
-        PLUGIN_NAME: ${{ steps.resolve.outputs.plugin-name }}
         ALLOWED: ${{ inputs.allowed-unprefixed-namespaces }}
+        SCOPER_REF: ${{ inputs.scoper-ref }}
+        # In the runner's temp directory rather than the workspace, where the caller's plugin
+        # checkout, and whatever else it globs, also lives.
+        TOOLS: ${{ runner.temp }}/scope-dependencies
       run: |
-        # shellcheck disable=SC2086 # split into one argument per namespace
-        bash "$GITHUB_ACTION_PATH/../../scripts/bash/check_scoped_tree.sh" "$PLUGIN_DIR" "$PLUGIN_NAME" $ALLOWED
+        args=(--downgrade-php="$DOWNGRADE_INPUT" --scoper-ref="$SCOPER_REF" --tools-dir="$TOOLS")
+        for namespace in $ALLOWED; do
+          args+=(--allow-namespace="$namespace")
+        done
+        bash "$GITHUB_ACTION_PATH/../../scripts/bash/scope_plugin_dependencies.sh" "${args[@]}" "$PLUGIN_PATH"
