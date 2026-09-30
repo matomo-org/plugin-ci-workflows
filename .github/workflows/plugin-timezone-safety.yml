@@ -113,7 +113,9 @@ jobs:
           }
           coverage="$RUNNER_TEMP/check_timezone_regression_coverage.sh"
           if [ ! -f "$coverage" ]; then
-            not_checked "Timezone regression coverage was not checked: the scan step did not stage scripts/bash/check_timezone_regression_coverage.sh, either because it did not run or because workflows-ref '$WORKFLOWS_REF' predates the script."
+            # Caller input: flattened so a newline cannot start a workflow command.
+            ref=$(tr -s '\r\n' ' ' <<< "$WORKFLOWS_REF" | sed 's/ $//')
+            not_checked "Timezone regression coverage was not checked: the scan step did not stage scripts/bash/check_timezone_regression_coverage.sh, either because it did not run or because workflows-ref '$ref' predates the script."
           fi
           # apt rather than pip, for the same reasons as in this repository's own tests workflow.
           if ! python3 -c 'import yaml' 2>/dev/null; then

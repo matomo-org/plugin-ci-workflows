@@ -31,6 +31,25 @@ check() {
   fi
 }
 
+# check_no_command <description> <expected output> <dir> <injected command> [VAR=value]: a passing
+# run whose output holds no line that the runner would read as the injected workflow command.
+check_no_command() {
+  local description="$1" expected_output="$2" dir="$3" injected="$4"
+  shift 4
+  tests=$((tests + 1))
+  local output actual
+  output=$(env "$@" bash "$SCRIPT" "$dir" 2>&1)
+  actual=$?
+  if [ "$actual" -eq 0 ] && grep -qF -- "$expected_output" <<< "$output" \
+    && ! grep -q "^[[:space:]]*$injected" <<< "$output"; then
+    echo "ok - $description"
+  else
+    failures=$((failures + 1))
+    echo "FAIL - $description (exit $actual)"
+    while IFS= read -r line; do printf '    %s\n' "$line"; done <<< "$output"
+  fi
+}
+
 # new_repo <name> <path> <php body>: a git repository whose one tracked PHP file holds the body.
 new_repo() {
   local dir="$WORK/$1"
@@ -60,6 +79,9 @@ check 'enforcement fails a plugin with date logic and no suite' 1 '::error::This
 
 dir=$(new_repo visit-time Model.php '$where = "visit_last_action_time < ?";')
 check 'visit action times are date logic' 0 "$MISSING" "$dir"
+
+dir=$(new_repo upper-case Model.php '$where = "SERVER_TIME >= ?"; $tz = $site->GETTIMEZONE();')
+check 'upper-case columns and method names are date logic' 0 "$MISSING" "$dir"
 
 dir=$(new_repo qualified-column Model.php '$where = "log_link_visit_action.server_time >= ?";')
 check 'a table-qualified event time is date logic' 0 "$MISSING" "$dir"
@@ -132,25 +154,13 @@ check 'an apostrophe in inline HTML does not turn a comment into a string' 0 "$N
 dir=$(new_repo newline-path API.php 'return 1;')
 printf '<?php\n$where = "server_time >= ?";\n' > "$dir/Evil"$'\n'"::error::x.php"
 git -C "$dir" add .
-tests=$((tests + 1))
-if bash "$SCRIPT" "$dir" 2>&1 | grep -q '^[[:space:]]*::error::x'; then
-  failures=$((failures + 1))
-  echo 'FAIL - a file name cannot start a workflow command'
-else
-  echo 'ok - a file name cannot start a workflow command'
-fi
+check_no_command 'a file name cannot start a workflow command' "$MISSING" "$dir" '::error::x'
 
 dir=$(new_repo colon-path 'Reports/a:b.php' '$where = "server_time >= ?";')
 check 'a path containing a colon is reported whole' 0 '  - Reports/a:b.php' "$dir"
 
 dir=$(new_repo command-path '::warning::x.php' '$where = "server_time >= ?";')
-tests=$((tests + 1))
-if bash "$SCRIPT" "$dir" 2>&1 | grep -q '^[[:space:]]*::warning::x'; then
-  failures=$((failures + 1))
-  echo 'FAIL - a file name starting with :: cannot start a workflow command'
-else
-  echo 'ok - a file name starting with :: cannot start a workflow command'
-fi
+check_no_command 'a file name starting with :: cannot start a workflow command' "$MISSING" "$dir" '::warning::x'
 
 dir=$(new_repo symlinks Archiver.php '$where = "server_time >= ?";')
 mkdir "$dir/lib"
@@ -177,6 +187,7 @@ check 'only PHP files are scanned' 0 "$NOT_REQUIRED" "$dir"
 
 dir=$(new_repo enabled Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yml <<'YAML'
+on: pull_request
 jobs:
   timezone:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
@@ -188,16 +199,33 @@ YAML
 check 'a caller with a timezone test command enables the suite' 0 'enabled by .github/workflows/tests.yml' "$dir" --enforce
 
 mv "$dir/.github/workflows/tests.yml" "$dir/.github/workflows/a"$'\n'"::error::x.yml"
-tests=$((tests + 1))
-if bash "$SCRIPT" "$dir" 2>&1 | grep -q '^[[:space:]]*::error::x'; then
-  failures=$((failures + 1))
-  echo 'FAIL - a workflow file name cannot start a workflow command'
-else
-  echo 'ok - a workflow file name cannot start a workflow command'
-fi
+check_no_command 'a workflow file name cannot start a workflow command' 'enabled by .github/workflows/a\n::error::x.yml' "$dir" '::error::x'
+
+# caller_on <name> <on value>: a repository with date logic whose only suite caller has these triggers.
+caller_on() {
+  local dir
+  dir=$(new_repo "$1" Archiver.php '$where = "server_time >= ?";')
+  add_workflow "$dir" tests.yml <<YAML
+on: $2
+jobs:
+  timezone:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
+    with:
+      plugin-name: Example
+      timezone-test-command: ./tests/run-timezone-suite.sh
+YAML
+  echo "$dir"
+}
+
+check 'a push-only caller does not cover pull requests' 1 '::error::' "$(caller_on on-push push)" --enforce
+check 'a dispatch-only caller does not cover pull requests' 1 '::error::' "$(caller_on on-dispatch '[workflow_dispatch]')" --enforce
+check 'a trigger list with pull_request enables the suite' 0 'enabled by' "$(caller_on on-list '[push, pull_request]')" --enforce
+check 'a trigger mapping with pull_request enables the suite' 0 'enabled by' "$(caller_on on-map '{pull_request: {branches: [main]}}')" --enforce
+check 'a reusable workflow caller enables the suite' 0 'enabled by' "$(caller_on on-call workflow_call)" --enforce
 
 dir=$(new_repo enabled-folded Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yaml <<'YAML'
+on: pull_request
 jobs:
   timezone:
     uses: 'matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@0123456789abcdef0123456789abcdef01234567'
@@ -211,6 +239,7 @@ check 'a folded command in a .yaml caller pinned by SHA enables the suite' 0 'en
 for empty in "''" '""' '' "'' # not yet"; do
   dir=$(new_repo "empty-command-$tests" Archiver.php '$where = "server_time >= ?";')
   add_workflow "$dir" tests.yml <<YAML
+on: pull_request
 jobs:
   timezone:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
@@ -223,6 +252,7 @@ done
 
 dir=$(new_repo commented-caller Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yml <<'YAML'
+on: pull_request
 jobs:
   timezone:
     # uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
@@ -234,6 +264,7 @@ check 'a commented-out caller does not enable the suite' 1 '::error::' "$dir" --
 
 dir=$(new_repo command-in-other-job Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yml <<'YAML'
+on: pull_request
 jobs:
   timezone:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
@@ -265,6 +296,7 @@ check 'a caller that is not the first job enables the suite' 0 'enabled by .gith
 
 dir=$(new_repo flow-style Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yml <<'YAML'
+on: pull_request
 jobs:
   timezone:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
@@ -274,6 +306,7 @@ check 'a flow-style with block enables the suite' 0 'enabled by .github/workflow
 
 dir=$(new_repo next-line-value Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yml <<'YAML'
+on: pull_request
 jobs:
   timezone:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main
@@ -286,6 +319,7 @@ check 'a command on the next line enables the suite' 0 'enabled by .github/workf
 for condition in false "'false'" '${{ false }}'; do
   dir=$(new_repo "disabled-$tests" Archiver.php '$where = "server_time >= ?";')
   add_workflow "$dir" tests.yml <<YAML
+on: pull_request
 jobs:
   timezone:
     if: $condition
@@ -298,6 +332,7 @@ done
 
 dir=$(new_repo conditional Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" tests.yml <<'YAML'
+on: pull_request
 jobs:
   timezone:
     if: ${{ github.event_name == 'pull_request' }}
@@ -313,6 +348,7 @@ check 'a runner without PyYAML fails closed' 2 'PyYAML is not available' "$dir" 
 
 dir=$(new_repo umbrella-only Archiver.php '$where = "server_time >= ?";')
 add_workflow "$dir" ci.yml <<'YAML'
+on: pull_request
 jobs:
   ci:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ci.yml@main
@@ -326,15 +362,8 @@ check 'an exemption reason satisfies the check' 0 'exempted by the caller: Gener
   --enforce TIMEZONE_REGRESSION_EXEMPT='Generates fixture data only'
 check 'a blank exemption is not an exemption' 1 '::error::' "$dir" --enforce TIMEZONE_REGRESSION_EXEMPT='   '
 
-tests=$((tests + 1))
-output=$(TIMEZONE_REGRESSION_EXEMPT=$'reason\n::error::injected' bash "$SCRIPT" "$dir" 2>&1)
-if grep -q '^::' <<< "$output"; then
-  failures=$((failures + 1))
-  echo 'FAIL - an exemption reason cannot start a workflow command'
-  while IFS= read -r line; do printf '    %s\n' "$line"; done <<< "$output"
-else
-  echo 'ok - an exemption reason cannot start a workflow command'
-fi
+check_no_command 'an exemption reason cannot start a workflow command' 'exempted by the caller: reason ::error::injected' "$dir" \
+  '::error::injected' TIMEZONE_REGRESSION_EXEMPT=$'reason\n::error::injected'
 
 mkdir -p "$WORK/not-a-repo"
 # The ceiling stops git finding a repository that happens to enclose the temporary directory.

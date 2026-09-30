@@ -58,7 +58,7 @@ import sys
 
 # Event-time columns of the log tables, period boundaries and the site's timezone: code touching
 # any of them computes something per site day, which is where server-timezone bugs surface.
-SENSITIVE = re.compile(r'\b(server_time|visit_(first|last)_action_time)\b|\bgetDate(Time)?(Start|End)(UTC)?\s*\(|\bgetTimezone(For)?\s*\(')
+SENSITIVE = re.compile(r'\b(server_time|visit_(first|last)_action_time)\b|\bgetDate(Time)?(Start|End)(UTC)?\s*\(|\bgetTimezone(For)?\s*\(', re.I)
 # Updates/ holds one-off migrations, which run once rather than per report.
 EXCLUDED = re.compile(r'(^|/)([Tt]ests?|vendor|libs|node_modules|vue/dist|Updates)/')
 # Comments describe date logic without running it. Strings and heredocs are matched first so a
@@ -124,13 +124,24 @@ import re
 import yaml
 
 CALLER = re.compile(r'^matomo-org/plugin-ci-workflows/\.github/workflows/plugin-timezone-safety\.yml@')
+# The gate judges pull requests, so a suite that only runs on push or dispatch does not cover them.
+# A workflow_call caller is taken at face value rather than traced to its own triggers.
+PR_TRIGGERS = {'pull_request', 'pull_request_target', 'workflow_call'}
 for path in sorted(glob.glob('.github/workflows/*.yml') + glob.glob('.github/workflows/*.yaml')):
     try:
         with open(path) as handle:
             workflow = yaml.safe_load(handle)
     except (OSError, yaml.YAMLError):
         continue
-    jobs = workflow.get('jobs') if isinstance(workflow, dict) else None
+    if not isinstance(workflow, dict):
+        continue
+    # YAML 1.1 reads a bare `on` key as the boolean true.
+    triggers = workflow.get('on', workflow.get(True))
+    if isinstance(triggers, str):
+        triggers = [triggers]
+    if not isinstance(triggers, (list, dict)) or not PR_TRIGGERS.intersection(map(str, triggers)):
+        continue
+    jobs = workflow.get('jobs')
     if not isinstance(jobs, dict):
         continue
     for job in jobs.values():

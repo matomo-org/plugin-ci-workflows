@@ -72,6 +72,7 @@ check 'an enforced verdict fails the step' 1 'coverage called with: --enforce .'
 
 check 'a missing script warns in warn mode' 0 "::warning::Timezone regression coverage was not checked: the scan step did not stage" no
 check 'a missing script names the pinned ref' 0 "workflows-ref 'v1' predates the script" no
+check 'a pinned ref cannot start a workflow command' 0 "workflows-ref 'v1 ::error::injected' predates" no WORKFLOWS_REF=$'v1\n::error::injected'
 check 'a missing script fails an enforced pull request' 2 '::error::Timezone regression coverage was not checked' no COVERAGE_MODE=enforce
 check 'a missing script warns outside a pull request' 0 '::warning::' no COVERAGE_MODE=enforce BASE_BRANCH=
 

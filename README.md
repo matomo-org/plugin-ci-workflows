@@ -318,10 +318,11 @@ The regression suite is opt-in per plugin, so the static job also runs
 missed. A plugin needs one when its tracked production PHP reads a log table's event time
 (`server_time`, `visit_first_action_time`, `visit_last_action_time`), a period boundary
 (`getDateStart()`, `getDateTimeEndUTC()` and the like) or a site's timezone (`getTimezone()`,
-`Site::getTimezoneFor()`). Tests, `vendor/`, `libs/`, `Updates/` and PHP comments are not counted.
-Such a plugin passes when a job in one of its `.github/workflows` files calls
-`plugin-timezone-safety.yml` with a non-empty `timezone-test-command`, or when Plugins CI is given
-the reason it does not need one:
+`Site::getTimezoneFor()`), in any letter case. Tests, `vendor/`, `libs/`, `Updates/` and PHP
+comments are not counted. Such a plugin passes when a job in one of its `.github/workflows` files
+calls `plugin-timezone-safety.yml` with a non-empty `timezone-test-command` from a workflow that
+runs on `pull_request`, `pull_request_target` or `workflow_call`, or when Plugins CI is given the
+reason it does not need one:
 
 ```yaml
 jobs:
