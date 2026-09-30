@@ -41,6 +41,9 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
+| [`plugin-vendored-deps-update.yml`](#vendored-dependencies-update) | Reusable workflow | Updates a plugin's scoped dependencies, rebuilds `vendor/prefixed` and opens a pull request |
+| [`actions/scope-dependencies`](#scope-dependencies) | Composite action | Scopes a plugin's dependencies with matomo-scoper, downgrades them with Rector, and checks the result |
+| [`scripts/bash/check_scoped_tree.sh`](#scope-dependencies) | Standalone script | Checks a rebuilt `vendor/prefixed` tree is really scoped and really new |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
 ### Plugins CI
@@ -486,6 +489,89 @@ Two preconditions are the caller's to meet, and both fail loudly rather than sil
 One bound is worth knowing before adopting this: GitHub disables scheduled workflows in a public repository after 60 days without repository activity. A plugin in pure maintenance is both the case this sweep is for and the case that reaches 60 days, and when the cron is disabled the sweep stops without announcing it — the same shape of silence the section above is about. Re-enabling it is a click in the Actions tab, but nothing prompts you to.
 
 The branch list is deliberately explicit rather than every `*.x-dev` branch a repository has: most still carry dead `2.x-dev`, `3.x-dev` and `4.x-dev` lines. Dispatching `4.x-dev` queues for 24 hours and is then auto-cancelled, because its workflow requests a runner label that no longer exists, and the older two carry no test workflow at all.
+
+### Vendored dependencies update
+
+Dependabot cannot update a plugin that commits only `vendor/prefixed`, such as SearchEngineKeywordsPerformance or GoogleAnalyticsImporter. It edits `composer.json` and `composer.lock` and nothing else, so its pull request would test the old prefixed code under a new lock file and pass. This workflow does what a developer does locally instead: `composer update`, then the [scope-dependencies](#scope-dependencies) action, which runs matomo-scoper and Rector and checks the result. It then opens a pull request with the rebuilt tree, or refreshes the one already open.
+
+Keep Dependabot alerts on for these repositories, since they still report advisories against `composer.lock`, but don't give them a `composer` entry in `dependabot.yml`.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `branch` | no | the caller's ref | Branch to update and open the pull request against |
+| `php-version` | no | `8.3` | PHP to run the tooling on. Resolution follows `config.platform.php`, which the plugin's `composer.json` must set |
+| `downgrade-php` | no | `auto` | Passed to the action: `auto`, `none`, `7.3` or `8.1` |
+| `allowed-unprefixed-namespaces` | no | `Composer\Autoload` | Passed to the action |
+| `scoper-ref` | no | `main` | Ref of matomo-org/matomo-scoper |
+| `workflows-ref` | no | `main` | Ref of this repository to take the action from |
+
+| Secret | Required | Description |
+| --- | --- | --- |
+| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, and the plugin's CI does not start until someone pushes to the pull request or closes and reopens it |
+
+```yaml
+name: Vendored dependencies update
+on:
+  schedule:
+    - cron: '20 4 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  update:
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ['6.x-dev', '5.x-dev']
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-vendored-deps-update.yml@main
+    with:
+      branch: ${{ matrix.branch }}
+    secrets:
+      DEPS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN }}
+```
+
+Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. A run skips the branch once anyone other than the workflow has committed to it, such as for the changelog entry and version bump the pull request still needs, so that work is never overwritten. The plugin's `composer.json` has to pin `config.platform.php`, because composer otherwise resolves against the runner's PHP.
+
+### Scope dependencies
+
+`actions/scope-dependencies` rebuilds `vendor/prefixed` from whatever the plugin's unprefixed `vendor/` holds, so run `composer install` or `composer update` in the plugin first. It runs the steps DevPluginCommands' `process-dependencies` command runs, without Matomo's console:
+
+1. It scopes the dependencies with matomo-scoper, which also writes the `vendor/autoload.php` proxy.
+2. It transpiles `vendor/prefixed` with Rector, using the Rector version locked in `actions/scope-dependencies/tools` and the config in `actions/scope-dependencies/rector.php`. With `auto`, the target is 8.1 when plugin.json requires Matomo 6 or later and 7.3 otherwise, the same rule DevPluginCommands applies.
+3. It runs `scripts/bash/check_scoped_tree.sh`, which fails on any of the following, each of which has happened locally while the tools reported success:
+   - `vendor/autoload.php` is no longer the scoper's proxy.
+   - A namespace under `vendor/prefixed` is outside `Matomo\Dependencies\<plugin>` and not on the allowed list.
+   - `composer.lock` resolved different packages from `HEAD`, but the tree did not change.
+
+It needs `php`, `composer`, `jq` and `git` on `PATH`, and sets up no PHP of its own, so the PHP of the steps after it is unchanged. Matomo core and DevPluginCommands aren't needed, and neither is any secret.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `plugin-path` | no | `.` | Path to the plugin, which must be a git checkout |
+| `downgrade-php` | no | `auto` | `auto` reads the target from plugin.json, `none` skips Rector, or pass `7.3` or `8.1` |
+| `allowed-unprefixed-namespaces` | no | `Composer\Autoload` | Whitespace-separated namespaces allowed to stay global in `vendor/prefixed` |
+| `scoper-ref` | no | `main` | Ref of matomo-org/matomo-scoper |
+
+The outputs are `plugin-name`, read from plugin.json, and `downgrade-php-version`, which is empty when Rector was skipped.
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+    with:
+      persist-credentials: false
+  - uses: shivammathur/setup-php@v2
+    with:
+      php-version: '8.3'
+      coverage: none
+  - run: composer install --no-interaction
+  - uses: matomo-org/plugin-ci-workflows/actions/scope-dependencies@main
+```
+
+Set up PHP with `coverage: none`. Under Xdebug, php-scoper can copy deeply nested files through unprefixed while still reporting success. The action turns Xdebug off for its own steps, but `coverage: none` keeps it off for the `composer` steps as well.
 
 ## The pre-push hook
 

@@ -1,0 +1,248 @@
+# Updates a plugin's scoped dependencies and opens (or refreshes) a pull request with the result.
+#
+# Dependabot cannot do this for a plugin that commits only vendor/prefixed. It edits composer.json
+# and composer.lock and nothing else, so its pull request would test the old prefixed code under a
+# new lock file and pass. The tree has to be rebuilt the way a developer rebuilds it locally:
+# composer update, then matomo-scoper, then Rector. The last two are the scope-dependencies action
+# in this repository, which needs neither Matomo core nor DevPluginCommands.
+#
+# The caller keeps the `schedule` trigger, because a reusable workflow's own cron would fire in this
+# repository rather than the plugin's.
+
+name: Vendored dependencies update
+
+on:
+  workflow_call:
+    inputs:
+      branch:
+        description: "Branch to update and to open the pull request against. Defaults to the ref the caller ran on, which for a schedule is the default branch."
+        required: false
+        type: string
+        default: ''
+      php-version:
+        description: "PHP to run composer, matomo-scoper and Rector on. This is not the plugin's floor: dependency resolution follows config.platform.php in the plugin's composer.json, which this workflow requires to be set."
+        required: false
+        type: string
+        default: '8.3'
+      downgrade-php:
+        description: "PHP version to transpile vendor/prefixed down to with Rector: 'auto' reads it from plugin.json, 'none' skips Rector, or pass 7.3 or 8.1."
+        required: false
+        type: string
+        default: 'auto'
+      allowed-unprefixed-namespaces:
+        description: "Whitespace-separated namespaces allowed to remain outside Matomo\\Dependencies\\<plugin> in vendor/prefixed. Composer's own generated autoloader is always one."
+        required: false
+        type: string
+        default: 'Composer\Autoload'
+      scoper-ref:
+        description: "Ref of matomo-org/matomo-scoper."
+        required: false
+        type: string
+        default: 'main'
+      workflows-ref:
+        description: "Ref of this repository to take the scope-dependencies action from."
+        required: false
+        type: string
+        default: 'main'
+    secrets:
+      DEPS_PR_TOKEN:
+        description: >-
+          Pushes the update branch and opens the pull request. Optional, but without it the
+          pull request is opened with GITHUB_TOKEN, and GitHub starts no workflow runs for events
+          that token causes -- so the plugin's CI does not run on the pull request until someone
+          pushes to it or closes and reopens it.
+        required: false
+
+permissions:
+  contents: write # push the update branch
+  pull-requests: write # open or update the pull request
+
+# Named without ${{ github.workflow }}: in a reusable workflow that resolves to the CALLER's
+# workflow name, which collides with a caller group of the same name.
+concurrency:
+  group: plugin-vendored-deps-update-${{ inputs.branch || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Update scoped dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      BASE_BRANCH: ${{ inputs.branch || github.ref_name }}
+      PLUGIN_DIR: plugin
+      UPDATE_BRANCH: automated/vendored-dependencies-${{ inputs.branch || github.ref_name }}
+      BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    steps:
+      - name: Check out the plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          path: ${{ env.PLUGIN_DIR }}
+          lfs: false
+          persist-credentials: false
+
+      # Checked out rather than referenced as matomo-org/plugin-ci-workflows/actions/...@ref, because
+      # a `uses:` ref cannot come from an input, and workflows-ref has to reach the action too.
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: .plugin-ci-workflows
+          persist-credentials: false
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ inputs.php-version }}
+          coverage: none
+          tools: composer:v2
+
+      # Composer resolves against the PHP it runs on, not require.php, so without the pin a run on
+      # the tooling PHP above would lock packages the plugin's own floor cannot install.
+      - name: Require a platform PHP pin
+        shell: bash
+        env:
+          PHP_VERSION: ${{ inputs.php-version }}
+        run: |
+          pin=$(jq -r '.config.platform.php // empty' "$PLUGIN_DIR/composer.json")
+          if [ -z "$pin" ]; then
+            echo "::error file=composer.json::composer.json has no config.platform.php, so dependencies would resolve against PHP $PHP_VERSION rather than the plugin's minimum. Pin it to the plugin's minimum PHP."
+            exit 1
+          fi
+          echo "Resolving against platform PHP $pin."
+
+      # Refreshing the branch force-pushes it, so anything a person added since -- a changelog entry,
+      # a version bump, a fix to the scoped tree -- would be lost. Leave such a branch alone.
+      - name: Check the update branch has no human commits
+        id: branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Only a 404 means there is no branch yet. Reading any failure as absence would let a rate
+          # limit or an outage wave the force-push through.
+          if ! error=$(gh api "repos/$GITHUB_REPOSITORY/branches/$UPDATE_BRANCH" --silent 2>&1); then
+            case "$error" in
+              *"HTTP 404"*)
+                echo "skip=false" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+            esac
+            echo "::error::Could not check whether $UPDATE_BRANCH exists: $error"
+            exit 1
+          fi
+          if ! others=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$UPDATE_BRANCH" \
+            --jq "[.commits[] | select(.commit.author.email != \"$BOT_EMAIL\")] | length"); then
+            echo "::error::Could not list the commits on $UPDATE_BRANCH."
+            exit 1
+          fi
+          if [ "$others" != "0" ]; then
+            echo "::notice::$UPDATE_BRANCH carries $others commit(s) not made by this workflow, so it was left as it is. Merge or close its pull request, or delete the branch, to get a fresh update."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A full update also runs post-update-cmd, which is where plugins trim
+      # google/apiclient-services with Google\Task\Composer::cleanup.
+      - name: Update dependencies
+        id: update
+        if: ${{ steps.branch.outputs.skip != 'true' }}
+        shell: bash
+        run: |
+          log=$(mktemp)
+          composer update --working-dir="$PLUGIN_DIR" --no-interaction --no-progress 2>&1 | tee "$log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            exit "$status"
+          fi
+
+          lock_packages() {
+            jq -S '[(.packages // [])[] | {name, version}]'
+          }
+          if cmp -s <(git -C "$PLUGIN_DIR" show HEAD:composer.lock | lock_packages) <(lock_packages < "$PLUGIN_DIR/composer.lock"); then
+            echo "::notice::Every dependency is already at the newest version composer.json allows."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+          # Only the lock file operations: after "Installing dependencies from lock file" composer
+          # lists every package it extracts, which is the whole tree for an unprefixed vendor/ that
+          # is never committed.
+          sed -n '/^Lock file operations/,/^Installing dependencies from lock file/p' "$log" \
+            | grep -E '^  - (Upgrading|Downgrading|Locking|Removing)' \
+            | sed -E 's/^  - /- /' > "$RUNNER_TEMP/package-changes.md"
+          rm -f "$log"
+
+      - name: Scope, downgrade and check
+        id: scope
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        uses: ./.plugin-ci-workflows/actions/scope-dependencies
+        with:
+          plugin-path: ${{ env.PLUGIN_DIR }}
+          downgrade-php: ${{ inputs.downgrade-php }}
+          allowed-unprefixed-namespaces: ${{ inputs.allowed-unprefixed-namespaces }}
+          scoper-ref: ${{ inputs.scoper-ref }}
+
+      - name: Write the pull request body
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        shell: bash
+        env:
+          DOWNGRADE: ${{ steps.scope.outputs.downgrade-php-version }}
+        run: |
+          body="$RUNNER_TEMP/pull-request-body.md"
+          if [ -n "$DOWNGRADE" ]; then
+            tools="matomo-scoper, transpiled down to PHP $DOWNGRADE with Rector"
+          else
+            tools="matomo-scoper"
+          fi
+          {
+            echo "Updates the plugin's scoped dependencies to the newest versions composer.json allows, and regenerates \`vendor/prefixed\` with $tools."
+            echo
+            cat "$RUNNER_TEMP/package-changes.md"
+            echo
+            echo "This changes code the plugin ships, so it needs the usual changelog entry and version bump before release. Pushing either to this branch stops the scheduled update from refreshing it."
+            echo
+            echo "Opened by the [vendored dependencies update](https://github.com/matomo-org/plugin-ci-workflows#vendored-dependencies-update) workflow, run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
+            # The repository's own template, so the checklist gate finds its items. They are left for
+            # whoever takes the pull request over to answer.
+            if [ -f "$PLUGIN_DIR/pull_request_template.md" ]; then
+              echo
+              cat "$PLUGIN_DIR/pull_request_template.md"
+            fi
+          } > "$body"
+
+      - name: Open or update the pull request
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          path: ${{ env.PLUGIN_DIR }}
+          token: ${{ secrets.DEPS_PR_TOKEN || github.token }}
+          base: ${{ env.BASE_BRANCH }}
+          branch: ${{ env.UPDATE_BRANCH }}
+          delete-branch: true
+          # Only what a rebuild changes. The unprefixed vendor/ tree is gitignored, so naming vendor
+          # adds just the prefixed tree and the proxy autoloader.
+          add-paths: |
+            composer.lock
+            vendor
+          commit-message: Update scoped dependencies
+          # Both set to the bot, because the human-commit check above tells the workflow's own
+          # commits apart by author email; the default author is whoever triggered the run.
+          author: github-actions[bot] <${{ env.BOT_EMAIL }}>
+          committer: github-actions[bot] <${{ env.BOT_EMAIL }}>
+          title: Update scoped dependencies (${{ env.BASE_BRANCH }})
+          body-path: ${{ runner.temp }}/pull-request-body.md
+
+      - name: Warn when the plugin's CI will not start
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        shell: bash
+        env:
+          HAS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN != '' }}
+        run: |
+          if [ "$HAS_PR_TOKEN" != 'true' ]; then
+            echo "::warning::No DEPS_PR_TOKEN, so the pull request was opened with GITHUB_TOKEN and the plugin's CI will not start on it by itself. Close and reopen it, or push to it, to run CI."
+          fi
