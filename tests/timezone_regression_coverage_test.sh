@@ -151,6 +151,9 @@ dir=$(new_repo inline-html views.php "?><p>Don't forget the site day.</p><?php
 \$label = 'x';")
 check 'an apostrophe in inline HTML does not turn a comment into a string' 0 "$NOT_REQUIRED" "$dir"
 
+dir=$(new_repo upper-open-tag view.php '?><p>x</p><?PHP $tz = $site->getTimezone();')
+check 'an upper-case open tag ends inline HTML' 0 "$MISSING" "$dir"
+
 dir=$(new_repo newline-path API.php 'return 1;')
 printf '<?php\n$where = "server_time >= ?";\n' > "$dir/Evil"$'\n'"::error::x.php"
 git -C "$dir" add .

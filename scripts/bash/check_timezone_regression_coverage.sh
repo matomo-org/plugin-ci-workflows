@@ -67,7 +67,7 @@ EXCLUDED = re.compile(r'(^|/)([Tt]ests?|vendor|libs|node_modules|vue/dist|Update
 TOKEN = re.compile(r'''
     (?P<keep> '(?:\\.|[^'\\])*' | "(?:\\.|[^"\\])*"
             | <<<[ \t]*(?P<quote>["']?)(?P<label>[A-Za-z_]\w*)(?P=quote)\n.*?\n[ \t]*(?P=label)\b )
-  | (?P<comment> /\*.*?(?:\*/|\Z) | (?://|\#(?!\[)).*?(?=\?>|\n|\Z) | \?>.*?(?:<\?php|<\?=|\Z) )
+  | (?P<comment> /\*.*?(?:\*/|\Z) | (?://|\#(?!\[)).*?(?=\?>|\n|\Z) | \?>.*?(?:(?i:<\?php)|<\?=|\Z) )
 ''', re.S | re.X)
 
 with open(sys.argv[1], 'rb') as handle:
