@@ -508,7 +508,7 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, and the plugin's CI does not start until someone pushes to the pull request or closes and reopens it |
+| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests", off by default, and the plugin's CI does not start until someone pushes to the pull request or closes and reopens it |
 
 ```yaml
 name: Vendored dependencies update
@@ -536,6 +536,8 @@ jobs:
 ```
 
 Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for the changelog entry and version bump the pull request still needs, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. The plugin's `composer.json` has to pin `config.platform.php`, because composer otherwise resolves against the runner's PHP.
+
+The rebuild can run code the dependencies it installs ship, such as a Composer plugin, so it runs in a job with read-only permissions and hands the rebuilt `composer.lock` and `vendor/` to a second job as an artifact. Only that second job holds the write token, and it runs nothing but git and the pull request action. The caller still grants `contents: write` and `pull-requests: write`, as in the example, for the second job to use.
 
 ### Scope dependencies
 

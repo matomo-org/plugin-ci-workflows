@@ -344,13 +344,15 @@ import sys
 import yaml
 
 workflow = yaml.safe_load(open(sys.argv[1]))
-steps = workflow['jobs']['update']['steps']
+jobs = workflow['jobs']
+steps = jobs['update']['steps']
+pr_steps = jobs['pull-request']['steps']
 
 def check(description, condition):
     print(("ok - " if condition else "FAIL - ") + description)
 
-def step(name):
-    found = [s for s in steps if s.get('name') == name]
+def step(name, in_steps=None):
+    found = [s for s in (steps if in_steps is None else in_steps) if s.get('name') == name]
     assert len(found) == 1, f"expected one step named {name!r}, found {len(found)}"
     return found[0]
 
@@ -364,14 +366,24 @@ check("the action comes from the checkout at workflows-ref, not a fixed ref",
       and this_repo['with']['ref'] == '${{ inputs.workflows-ref }}')
 
 order = [s.get('name') for s in steps]
-check("the tree is checked before the pull request is opened",
-      order.index('Scope, downgrade and check') < order.index('Open or update the pull request'))
+check("the tree is checked before it is packaged for the pull request",
+      order.index('Scope, downgrade and check') < order.index('Upload the rebuilt tree'))
 
-checkouts = [s for s in steps if str(s.get('uses', '')).startswith('actions/checkout@')]
+checkouts = [s for s in steps + pr_steps if str(s.get('uses', '')).startswith('actions/checkout@')]
 check("no checkout leaves credentials in a git config the scoped tree is committed next to",
-      all(s.get('with', {}).get('persist-credentials') is False for s in checkouts))
+      len(checkouts) == 3 and all(s.get('with', {}).get('persist-credentials') is False for s in checkouts))
 
-pr = step('Open or update the pull request')['with']
+writes = lambda job: [k for k, v in (job.get('permissions') or {}).items() if v == 'write']
+check("the job that runs dependency code holds no write permission", writes(jobs['update']) == [])
+check("only the pull-request job can write, and it runs after the update job",
+      jobs['pull-request'].get('needs') == 'update' and workflow.get('permissions') == {'contents': 'read'})
+pr_runs = ' '.join(s.get('run', '') for s in pr_steps)
+pr_uses = ' '.join(s.get('uses', '') for s in pr_steps)
+check("the pull-request job runs no composer, php or scoper",
+      'composer ' not in pr_runs and 'php ' not in pr_runs
+      and 'scope-dependencies' not in pr_uses and 'setup-php' not in pr_uses)
+
+pr = step('Open or update the pull request', pr_steps)['with']
 check("the workflow's commits are authored by the address the human-commit check filters on",
       '${{ env.BOT_EMAIL }}' in pr['author'] and '${{ env.BOT_EMAIL }}' in pr['committer'])
 check("the human-commit check runs before anything is rebuilt",

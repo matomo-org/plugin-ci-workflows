@@ -49,14 +49,17 @@ on:
       DEPS_PR_TOKEN:
         description: >-
           Pushes the update branch and opens the pull request. Optional, but without it the
-          pull request is opened with GITHUB_TOKEN, and GitHub starts no workflow runs for events
-          that token causes -- so the plugin's CI does not run on the pull request until someone
-          pushes to it or closes and reopens it.
+          pull request is opened with GITHUB_TOKEN, which needs the repository or organisation
+          setting "Allow GitHub Actions to create and approve pull requests", off by default.
+          GitHub also starts no workflow runs for events that token causes -- so the plugin's CI
+          does not run on the pull request until someone pushes to it or closes and reopens it.
         required: false
 
+# The job that runs composer update can also run code the newly resolved packages ship, such as a
+# Composer plugin, so it gets no write access. Only the pull-request job holds a write token, and
+# it runs nothing from the dependencies.
 permissions:
-  contents: write # push the update branch
-  pull-requests: write # open or update the pull request
+  contents: read
 
 # Named without ${{ github.workflow }}: in a reusable workflow that resolves to the CALLER's
 # workflow name, which collides with a caller group of the same name.
@@ -64,16 +67,23 @@ concurrency:
   group: plugin-vendored-deps-update-${{ inputs.branch || github.ref_name }}
   cancel-in-progress: false
 
+env:
+  BASE_BRANCH: ${{ inputs.branch || github.ref_name }}
+  PLUGIN_DIR: plugin
+  UPDATE_BRANCH: automated/vendored-dependencies-${{ inputs.branch || github.ref_name }}
+  BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+
 jobs:
   update:
     name: Update scoped dependencies
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      BASE_BRANCH: ${{ inputs.branch || github.ref_name }}
-      PLUGIN_DIR: plugin
-      UPDATE_BRANCH: automated/vendored-dependencies-${{ inputs.branch || github.ref_name }}
-      BOT_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+    permissions:
+      contents: read
+      pull-requests: read # the human-commit check lists open pull requests
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
+      base-sha: ${{ steps.update.outputs.base-sha }}
     steps:
       - name: Check out the plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -177,6 +187,7 @@ jobs:
             exit 0
           fi
           echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "base-sha=$(git -C "$PLUGIN_DIR" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
           # Only the lock file operations: after "Installing dependencies from lock file" composer
           # lists every package it extracts, which is the whole tree for an unprefixed vendor/ that
@@ -227,8 +238,66 @@ jobs:
             fi
           } > "$body"
 
-      - name: Open or update the pull request
+      # Only what a rebuild changes, which is also what the pull request commits. The unprefixed
+      # vendor/ tree is gitignored, so listing vendor gives just the prefixed tree and the proxy
+      # autoloader. A tar rather than the files themselves, because an artifact drops file modes.
+      - name: Package the rebuilt tree
         if: ${{ steps.update.outputs.changed == 'true' }}
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/rebuilt"
+          cp "$RUNNER_TEMP/pull-request-body.md" "$RUNNER_TEMP/rebuilt/"
+          cd "$PLUGIN_DIR"
+          # --cached still lists a tracked file the rebuild deleted, which tar would fail on.
+          git ls-files -z --cached --others --exclude-standard -- composer.lock vendor \
+            | while IFS= read -r -d '' file; do
+                if [ -e "$file" ] || [ -L "$file" ]; then printf '%s\0' "$file"; fi
+              done \
+            | tar --null -T - -cf "$RUNNER_TEMP/rebuilt/tree.tar"
+
+      - name: Upload the rebuilt tree
+        if: ${{ steps.update.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rebuilt-tree
+          path: ${{ runner.temp }}/rebuilt
+          retention-days: 1
+          if-no-files-found: error
+
+  pull-request:
+    name: Open or update the pull request
+    needs: update
+    if: ${{ needs.update.outputs.changed == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # push the update branch
+      pull-requests: write # open or update the pull request
+    steps:
+      # The commit the update job resolved against, not the branch head, which may have moved since.
+      - name: Check out the plugin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.update.outputs.base-sha }}
+          path: ${{ env.PLUGIN_DIR }}
+          lfs: false
+          persist-credentials: false
+
+      - name: Download the rebuilt tree
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rebuilt-tree
+          path: ${{ runner.temp }}/rebuilt
+
+      # Tracked files first, so one the rebuild deleted stays deleted.
+      - name: Apply the rebuilt tree
+        shell: bash
+        run: |
+          cd "$PLUGIN_DIR"
+          git ls-files -z -- vendor | xargs -0 -r rm -f --
+          tar -xf "$RUNNER_TEMP/rebuilt/tree.tar"
+
+      - name: Open or update the pull request
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: ${{ env.PLUGIN_DIR }}
@@ -247,10 +316,9 @@ jobs:
           author: github-actions[bot] <${{ env.BOT_EMAIL }}>
           committer: github-actions[bot] <${{ env.BOT_EMAIL }}>
           title: Update scoped dependencies (${{ env.BASE_BRANCH }})
-          body-path: ${{ runner.temp }}/pull-request-body.md
+          body-path: ${{ runner.temp }}/rebuilt/pull-request-body.md
 
       - name: Warn when the plugin's CI will not start
-        if: ${{ steps.update.outputs.changed == 'true' }}
         shell: bash
         env:
           HAS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN != '' }}

@@ -70,7 +70,7 @@ lock_packages() {
   jq -S '[(.packages // [])[] | {name, version, source: .source.reference, dist: (.dist.reference // .dist.url)}]'
 }
 # Against HEAD, not the index, so a rebuild already staged still counts as a change.
-if ! cmp -s <(git -C "$plugin_dir" show HEAD:composer.lock | lock_packages) <(lock_packages < "$plugin_dir/composer.lock") \
+if ! cmp -s <(git -C "$plugin_dir" show HEAD:./composer.lock | lock_packages) <(lock_packages < "$plugin_dir/composer.lock") \
   && git -C "$plugin_dir" diff --quiet HEAD -- vendor/prefixed \
   && [ -z "$(git -C "$plugin_dir" ls-files --others --exclude-standard -- vendor/prefixed)" ]; then
   echo "::error::composer.lock resolved different packages but vendor/prefixed did not change, so the scoped tree is stale."

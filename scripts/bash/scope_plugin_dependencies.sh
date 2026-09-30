@@ -184,15 +184,16 @@ if [ -z "$own_scoper" ] && [ "$(git -C "$scoper_dir" rev-parse HEAD)" = "$SCOPER
     fi
     mv "$download" "$phar"
   fi
-else
-  echo "::warning::matomo-scoper is not the pinned commit, so the php-scoper.phar it runs is not checked against a known hash."
-  if [ -z "$own_scoper" ]; then
-    # Another ref may download another build, so a kept copy, perhaps the pinned one, is not reused.
-    rm -f "$phar"
-  elif [ -e "$phar" ] && ! phar_runs; then
+elif [ -n "$own_scoper" ]; then
+  echo "::warning::The php-scoper.phar in $scoper_dir is left as it is, so it is not checked against a known hash."
+  if [ -e "$phar" ] && ! phar_runs; then
     echo "Removing a php-scoper.phar that does not run, so the scoper downloads it again."
     rm -f "$phar"
   fi
+else
+  echo "::warning::matomo-scoper is not the pinned commit, so the php-scoper.phar it runs is not checked against a known hash."
+  # Another ref may download another build, so a kept copy, perhaps the pinned one, is not reused.
+  rm -f "$phar"
 fi
 
 php "$scoper_dir/bin/matomo-scoper" scope "$plugin_dir" --yes --ignore-platform-check
