@@ -51,7 +51,9 @@ if ! git ls-files -z -- '*.php' > "$listing"; then
   exit 2
 fi
 
-evidence_files=$(python3 - "$listing" <<'PY'
+# Every python3 runs with -P: the working directory is the checked-out plugin, and without it a
+# yaml.py or re.py there would be imported in place of the real module and could decide the verdict.
+evidence_files=$(python3 -P - "$listing" <<'PY'
 import os
 import re
 import sys
@@ -110,7 +112,7 @@ if [ "$(wc -l <<< "$evidence_files")" -gt 10 ]; then
   echo '  ...'
 fi
 
-if ! python3 -c 'import yaml' 2>/dev/null; then
+if ! python3 -P -c 'import yaml' 2>/dev/null; then
   echo '::error::PyYAML is not available, so the timezone regression coverage check cannot read the workflows.' >&2
   exit 2
 fi
@@ -118,7 +120,7 @@ fi
 # Parsed rather than matched line by line: YAML spreads the same call over flow mappings, values
 # on the next line and folded scalars. The call and its command must sit in one job that is not
 # switched off; any other condition, and an expression command, is taken at face value.
-enabled_by=$(python3 - <<'PY'
+enabled_by=$(python3 -P - <<'PY'
 import glob
 import re
 import yaml

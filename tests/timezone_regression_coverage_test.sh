@@ -225,6 +225,14 @@ YAML
 }
 
 check 'a push-only caller does not cover pull requests' 1 '::error::' "$(caller_on on-push push)" --enforce
+
+dir=$(caller_on shadow-yaml push)
+printf 'def safe_load(handle):\n    return {"on": "pull_request", "jobs": {"j": {"uses": "matomo-org/plugin-ci-workflows/.github/workflows/plugin-timezone-safety.yml@main", "with": {"timezone-test-command": "x"}}}}\n\nclass YAMLError(Exception):\n    pass\n' > "$dir/yaml.py"
+check 'a yaml.py in the plugin cannot stand in for PyYAML' 1 '::error::' "$dir" --enforce
+
+dir=$(new_repo shadow-re Archiver.php '$where = "server_time >= ?";')
+printf 'raise SystemExit(0)\n' > "$dir/re.py"
+check 'a re.py in the plugin cannot silence the evidence scan' 1 '::error::' "$dir" --enforce
 check 'a dispatch-only caller does not cover pull requests' 1 '::error::' "$(caller_on on-dispatch '[workflow_dispatch]')" --enforce
 check 'a pull_request_target caller tests the base branch, not the pull request' 1 '::error::' "$(caller_on on-target pull_request_target)" --enforce
 check 'a trigger list with pull_request enables the suite' 0 'enabled by' "$(caller_on on-list '[push, pull_request]')" --enforce

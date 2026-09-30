@@ -118,7 +118,8 @@ jobs:
             not_checked "Timezone regression coverage was not checked: the scan step did not stage scripts/bash/check_timezone_regression_coverage.sh, either because it did not run or because workflows-ref '$ref' predates the script."
           fi
           # apt rather than pip, for the same reasons as in this repository's own tests workflow.
-          if ! python3 -c 'import yaml' 2>/dev/null; then
+          # -P, so a yaml.py in the plugin cannot pass for PyYAML.
+          if ! python3 -P -c 'import yaml' 2>/dev/null; then
             { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; } > /dev/null \
               || not_checked 'Timezone regression coverage was not checked: PyYAML could not be installed.'
           fi
