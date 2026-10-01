@@ -41,6 +41,10 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
+| [`plugin-vendored-deps-update.yml`](#vendored-dependencies-update) | Reusable workflow | Updates a plugin's scoped dependencies, rebuilds `vendor/prefixed` and opens a pull request |
+| [`actions/scope-dependencies`](#scope-dependencies) | Composite action | Scopes a plugin's dependencies with matomo-scoper, downgrades them with Rector, and checks the result |
+| [`scripts/bash/scope_plugin_dependencies.sh`](#scope-dependencies) | Standalone script | What the action runs, and how a developer rebuilds `vendor/prefixed` locally |
+| [`scripts/bash/check_scoped_tree.sh`](#scope-dependencies) | Standalone script | Checks a rebuilt `vendor/prefixed` tree is really scoped and really new |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
 ### Plugins CI
@@ -530,6 +534,115 @@ One bound is worth knowing before adopting this: GitHub disables scheduled workf
 
 The branch list is deliberately explicit rather than every `*.x-dev` branch a repository has: most still carry dead `2.x-dev`, `3.x-dev` and `4.x-dev` lines. Dispatching `4.x-dev` queues for 24 hours and is then auto-cancelled, because its workflow requests a runner label that no longer exists, and the older two carry no test workflow at all.
 
+### Vendored dependencies update
+
+Dependabot cannot update a plugin that commits only `vendor/prefixed`, such as SearchEngineKeywordsPerformance or GoogleAnalyticsImporter. It edits `composer.json` and `composer.lock` and nothing else, so its pull request would test the old prefixed code under a new lock file and pass. This workflow does what a developer does locally instead: `composer update`, then the [scope-dependencies](#scope-dependencies) action, which runs matomo-scoper and Rector and checks the result. It then opens a pull request with the rebuilt tree, or refreshes the one already open.
+
+Keep Dependabot alerts on for these repositories, since they still report advisories against `composer.lock`, but don't give them a `composer` entry in `dependabot.yml`.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `branch` | no | the caller's ref | Branch to update and open the pull request against |
+| `php-version` | no | `8.3` | PHP to run the tooling on, 8.1 or later. Resolution follows `config.platform.php`, which the plugin's `composer.json` must set |
+| `downgrade-php` | no | `auto` | Passed to the action: `auto`, `none`, `7.3` or `8.1` |
+| `allowed-unprefixed-namespaces` | no | `''` | Passed to the action |
+| `scoper-ref` | no | `''` | Passed to the action |
+| `workflows-ref` | no | `main` | Ref of this repository to take the action from |
+
+| Secret | Required | Description |
+| --- | --- | --- |
+| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests", off by default, and the plugin's CI does not start until someone pushes to the pull request or closes and reopens it |
+
+```yaml
+name: Vendored dependencies update
+on:
+  schedule:
+    - cron: '20 4 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  update:
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ['6.x-dev', '5.x-dev']
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-vendored-deps-update.yml@main
+    with:
+      branch: ${{ matrix.branch }}
+    secrets:
+      DEPS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN }}
+```
+
+Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for the changelog entry and version bump the pull request still needs, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. The plugin's `composer.json` has to pin `config.platform.php`, because composer otherwise resolves against the runner's PHP.
+
+The rebuild can run code the dependencies it installs ship, such as a Composer plugin, so it runs in a job with read-only permissions and hands the rebuilt `composer.lock` and `vendor/` to a second job as an artifact. Only that second job holds the write token, and it runs nothing from the dependencies. The caller still grants `contents: write` and `pull-requests: write`, as in the example, for the second job to use.
+
+### Scope dependencies
+
+`actions/scope-dependencies` rebuilds `vendor/prefixed` from whatever the plugin's unprefixed `vendor/` holds, so run `composer install` or `composer update` in the plugin first. The action runs `scripts/bash/scope_plugin_dependencies.sh`, which does what DevPluginCommands' `process-dependencies` command does, without Matomo's console:
+
+1. It scopes the dependencies with matomo-scoper, which also writes the `vendor/autoload.php` proxy.
+2. It transpiles `vendor/prefixed` with Rector, using the Rector version locked in `actions/scope-dependencies/tools` and the config in `actions/scope-dependencies/rector.php`. With `auto`, the target is 8.1 when the lowest Matomo that plugin.json accepts is 6 or later, and 7.3 otherwise.
+3. It runs `scripts/bash/check_scoped_tree.sh`, which fails on any of the following, each of which has happened locally while the tools reported success:
+   - `vendor/autoload.php` is no longer the scoper's proxy.
+   - A namespace under `vendor/prefixed` is outside `Matomo\Dependencies\<plugin>` and not on the allowed list.
+   - `composer.lock` resolved different packages from `HEAD`, but the tree did not change.
+
+It needs `php` 8.1 or later, `composer`, `jq`, `git` and `curl` on `PATH`, and sets up no PHP of its own, so the PHP of the steps after it is unchanged. Matomo core and DevPluginCommands aren't needed, and neither is any secret.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `plugin-path` | no | `.` | Path to the plugin, which must be a git checkout |
+| `downgrade-php` | no | `auto` | `auto` reads the target from plugin.json, `none` skips Rector, or pass `7.3` or `8.1` |
+| `allowed-unprefixed-namespaces` | no | `''` | Whitespace-separated namespaces allowed to stay global in `vendor/prefixed`, besides `Composer\Autoload`, which is always allowed |
+| `scoper-ref` | no | `''` | Ref of matomo-org/matomo-scoper. Empty uses the commit the script pins |
+
+The outputs are `plugin-name`, read from plugin.json, and `downgrade-php-version`, which is empty when Rector was skipped.
+
+The scoper's output is committed as code the plugin ships, so the script pins what produces it: a matomo-scoper commit, and the sha256 of the php-scoper build that commit downloads. Before the scoper can run it, the script downloads that phar itself, replacing any kept copy with a different hash, and stops if the download does not match. A newer scoper means bumping `SCOPER_PINNED_REF` in `scripts/bash/scope_plugin_dependencies.sh`, and also `PHP_SCOPER_URL` and `PHP_SCOPER_SHA256` if the new scoper uses a different php-scoper build. A `scoper-ref` that resolves to another commit, or a local `--scoper-dir`, runs whatever php-scoper build that scoper fetches, unchecked, and the script warns that it did.
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+    with:
+      persist-credentials: false
+  - uses: shivammathur/setup-php@v2
+    with:
+      php-version: '8.3'
+      coverage: none
+  - run: composer install --no-interaction
+  - uses: matomo-org/plugin-ci-workflows/actions/scope-dependencies@main
+```
+
+Set up PHP with `coverage: none`. Under Xdebug, php-scoper can copy deeply nested files through unprefixed while still reporting success. The script turns Xdebug off for itself, but `coverage: none` keeps it off for the `composer` steps as well.
+
+#### Running it locally
+
+The same script rebuilds the tree on a developer's machine, so a local rebuild matches the one CI produces. From the plugin's directory:
+
+```bash
+composer update
+bash /path/to/plugin-ci-workflows/scripts/bash/scope_plugin_dependencies.sh
+```
+
+It fetches matomo-scoper and installs the locked Rector into `~/.cache/matomo-scope-dependencies` (or under `$XDG_CACHE_HOME`), and reuses them on later runs. Its options mirror the action's inputs:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--downgrade-php=TARGET` | `auto` | `auto`, `none`, `7.3` or `8.1`, as for the action |
+| `--allow-namespace=NS` | | A namespace allowed to stay global, besides `Composer\Autoload`. Repeat it for more than one |
+| `--scoper-ref=REF` | the pinned commit | Ref of matomo-org/matomo-scoper to fetch |
+| `--scoper-dir=PATH` | | Use an existing matomo-scoper checkout instead of fetching one |
+| `--tools-dir=PATH` | `~/.cache/matomo-scope-dependencies` | Where the tools are installed |
+| `--dry-run` | | Print the plugin and the downgrade target, and stop |
+
+A plugin directory can be passed as the last argument instead of running from inside it. The plugin must be a git checkout, because the tree check compares `composer.lock` against `HEAD`.
+
 ## The pre-push hook
 
 `hooks/pre-push` runs PHPStan over the files a push actually changes, before the push leaves the machine. It is a developer convenience, not a gate: CI analyses the whole repository regardless, and never executes this hook.
@@ -606,7 +719,7 @@ Tracking `@main` is the default for Matomo plugin repositories, and it is what m
 
 Pin to a tag where a repository needs to hold a check steady — for example while a plugin is mid-migration to a new Matomo major version and cannot yet take an updated check.
 
-Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml`, `plugin-min-php-lint.yml` and `plugin-compatibility.yml` also run helper scripts checked out at `scripts-ref`; `plugin-phpstan.yml`, `plugin-min-php-lint.yml`, `plugin-compatibility.yml`, `plugin-hook-check.yml` and `plugin-timezone-safety.yml` take files from this repository at `workflows-ref`; and `plugin-license-check.yml` takes its script at `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
+Pinning the `uses:` reference alone is not a full pin. `plugin-phpcs.yml`, `plugin-phpstan.yml`, `plugin-min-php-lint.yml` and `plugin-compatibility.yml` also run helper scripts checked out at `scripts-ref`; `plugin-phpstan.yml`, `plugin-min-php-lint.yml`, `plugin-compatibility.yml`, `plugin-hook-check.yml`, `plugin-timezone-safety.yml` and `plugin-vendored-deps-update.yml` take files from this repository at `workflows-ref`; and `plugin-license-check.yml` takes its script at `script-ref`. Those default to `main`, so a caller that pins only the workflow still executes mutable helper code. A caller that needs an immutable pin has to set every ref it uses — and `scripts-ref` takes a SHA from `github-action-tests`, which is a different repository with different SHAs. One thing stays mutable regardless: `plugin-phpcs.yml` installs `matomo-org/matomo-coding-standards:dev-master`, deliberately, so that a coding-standards change reaches the fleet without a pull request per repository. No input pins it, so a fully immutable PHPCS run is not on offer — pin the rest and accept that one, or run PHPCS from your own pinned install.
 
 ## Contributing
 
