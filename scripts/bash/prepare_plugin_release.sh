@@ -85,7 +85,7 @@ read_tag_release_date() {
         return 1
     fi
     if ! parsed_date=$(python3 "$SCRIPT_DIR/../python/update_changelog_date.py" \
-        --read-date "$tag_changelog" "$VERSION"); then
+        --read-date --plugin-name "$PLUGIN_NAME" "$tag_changelog" "$VERSION"); then
         rm -f "$tag_changelog"
         return 1
     fi

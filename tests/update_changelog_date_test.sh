@@ -10,7 +10,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 assert_contains() {
     local expected="$1" file="$2"
-    grep -Fqx "$expected" "$file" || {
+    grep -Fqx -- "$expected" "$file" || {
         echo "Expected '$expected' in $file" >&2
         exit 1
     }
@@ -45,6 +45,33 @@ assert_contains '## 6.0.2 (2026-09-21)' "$WORK/parenthesized-date.md"
 printf '## Changelog\n\n## Version 6.0.2\n' > "$WORK/version-label.md"
 python3 "$SCRIPT" "$WORK/version-label.md" 6.0.2 2026-09-21
 assert_contains '## Version 6.0.2 - 2026-09-21' "$WORK/version-label.md"
+
+printf '## Changelog\n\n#### LoginLdap 6.0.2\n\n#### LoginLdap 6.0.1 - 2026-09-14\n' > "$WORK/plugin-label.md"
+if python3 "$SCRIPT" "$WORK/plugin-label.md" 6.0.2 2026-09-21 2> /dev/null; then
+    echo 'A plugin-name label must only be recognised for the named plugin' >&2
+    exit 1
+fi
+python3 "$SCRIPT" --plugin-name LoginLdap "$WORK/plugin-label.md" 6.0.2 2026-09-21
+assert_contains '#### LoginLdap 6.0.2 - 2026-09-21' "$WORK/plugin-label.md"
+python3 "$SCRIPT" --plugin-name LoginLdap "$WORK/plugin-label.md" 6.0.1 2026-09-15
+assert_contains '#### LoginLdap 6.0.1 - 2026-09-15' "$WORK/plugin-label.md"
+[[ "$(python3 "$SCRIPT" --read-date --plugin-name LoginLdap "$WORK/plugin-label.md" 6.0.2)" == '2026-09-21' ]]
+
+printf '## Changelog\n\n- 6.0.0 Compatibility with Matomo 6\n' > "$WORK/free-text.md"
+python3 "$SCRIPT" "$WORK/free-text.md" 6.0.0 2026-09-21
+assert_contains '- 6.0.0 - 2026-09-21 - Compatibility with Matomo 6' "$WORK/free-text.md"
+python3 "$SCRIPT" "$WORK/free-text.md" 6.0.0 2026-09-22
+assert_contains '- 6.0.0 - 2026-09-22 - Compatibility with Matomo 6' "$WORK/free-text.md"
+
+printf '## Changelog\n\n## 6.0.0 **Compatibility with Matomo 6**\n' > "$WORK/emphasised-free-text.md"
+python3 "$SCRIPT" "$WORK/emphasised-free-text.md" 6.0.0 2026-09-21
+python3 "$SCRIPT" "$WORK/emphasised-free-text.md" 6.0.0 2026-09-22
+assert_contains '## 6.0.0 - 2026-09-22 - **Compatibility with Matomo 6**' "$WORK/emphasised-free-text.md"
+
+printf '## Changelog\n\n* 6.0.2 - **2026-09-20**\n' > "$WORK/bold-date.md"
+python3 "$SCRIPT" "$WORK/bold-date.md" 6.0.2 2026-09-21
+assert_contains '* 6.0.2 - **2026-09-21**' "$WORK/bold-date.md"
+[[ "$(python3 "$SCRIPT" --read-date "$WORK/bold-date.md" 6.0.2)" == '2026-09-21' ]]
 
 printf '## Changelog\n\n* __6.0.2__ - 2026-09-20\n' > "$WORK/marked.md"
 python3 "$SCRIPT" --check "$WORK/marked.md" 6.0.2 2026-09-20
@@ -107,7 +134,7 @@ for heading in '## 6.0.2 – 2026-09-20' '## 6.0.2 - 20.09.2026' '## 6.0.2 - Sep
     '## 6.0.2 (20th Sept 2026)' '## 6.0.2 - 20th of September, 2026' '## 6.0.2 - Monday, September 20, 2026' \
     '## 6.0.2 - 20-Sep-2026' '## 6.0.2 - Sep-20-2026' '## 6.0.2 - 2026-Sep-20' \
     '## 6.0.2 - September 2026' '## 6.0.2 - Monday, 2026-09-20' '## 6.0.2 - Mon 20/09/2026' \
-    '## 6.0.2 - Monday, 2026-Sep-20'; do
+    '## 6.0.2 - Monday, 2026-Sep-20' '## 6.0.2 - **20.09.2026**' '## 6.0.2 - _September 20, 2026_'; do
     printf '## Changelog\n\n%s\n' "$heading" > "$WORK/unsupported-date.md"
     if python3 "$SCRIPT" "$WORK/unsupported-date.md" 6.0.2 2026-09-21 2> "$WORK/unsupported-date-error"; then
         echo "An unsupported date in '$heading' must fail rather than gain a second date" >&2

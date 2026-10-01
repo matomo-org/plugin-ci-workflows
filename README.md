@@ -225,13 +225,16 @@ an email, and later tags then import automatically. This workflow refuses to mov
 so when the Marketplace rejects a tag, correct the problem and release a new version.
 
 The changelog entry must start at the beginning of a line with the bare version, optionally prefixed
-by a Markdown heading or list marker, `Version `, or `_`/`**` emphasis. A trailing ` - YYYY-MM-DD`,
-` - DD/MM/YYYY`, ` - MM/DD/YYYY`, or `(unreleased)`/`(not yet released)`/a parenthesized date is supported. Keep-a-Changelog
-bracketed versions such as `[6.0.2]` are not recognised. Ambiguous slash dates are interpreted
-day-first. An entry that can only be `MM/DD/YYYY`, because its day is above 12, is rewritten as
-`YYYY-MM-DD` when the new day is 12 or less. Any other numeric date with `-`, `/` or `.` between its
-parts, or an English month-name date with a four-digit year, directly after ` - `, `–`, `—`, `(` or
-`[` fails the release rather than gaining a second date. Other date forms are not detected.
+by a Markdown heading or list marker, `Version ` or the plugin name from `plugin.json`, or `_`/`**`
+emphasis. A trailing ` - YYYY-MM-DD`, ` - DD/MM/YYYY`, ` - MM/DD/YYYY`, any of them in `_`/`**`
+emphasis, or `(unreleased)`/`(not yet released)`/a parenthesized date is supported. Text straight
+after a dateless version that starts with a letter or digit, optionally in `_`/`**` emphasis, other than an unreleased marker, as in
+`6.0.0 Compatibility with Matomo 6`, is kept after the new date and a ` - ` separator. Keep-a-Changelog bracketed versions such as `[6.0.2]` are not recognised.
+Ambiguous slash dates are interpreted day-first. An entry that can only be `MM/DD/YYYY`, because its
+day is above 12, is rewritten as `YYYY-MM-DD` when the new day is 12 or less. Any other numeric date
+with `-`, `/` or `.` between its parts, or an English month-name date with a four-digit year,
+directly after ` - `, `–`, `—`, `(`, `[` or `_`/`**` emphasis fails the release rather than gaining
+a second date. Other date forms are not detected.
 
 Before adding the caller, check that the version in each production branch's `plugin.json` already
 has a tag named exactly after it, with no `v` prefix. The workflow treats a version without that tag

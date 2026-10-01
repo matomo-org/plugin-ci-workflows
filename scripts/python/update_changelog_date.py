@@ -24,6 +24,9 @@ UNSUPPORTED_DATE_PATTERN = re.compile(
     rf"|{WEEKDAY}\d{{4}}{DATE_SEPARATOR}{MONTH_NAME}",
     re.IGNORECASE,
 )
+# Emphasis is skipped so a bold or underlined date is rewritten, or refused, like a plain one.
+DATE_LEAD = " -([*_"
+UNSUPPORTED_DATE_LEAD = " -–—([*_"
 UNRELEASED_PATTERN = re.compile(
     r"^(?P<prefix>\s*(?:-\s*)?)(?:\(?unreleased\)?|\(?not\s+yet\s+released\)?)(?P<suffix>.*)$",
     re.IGNORECASE,
@@ -37,12 +40,14 @@ def parse_args():
     parser.add_argument("release_date", nargs="?")
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--read-date", action="store_true")
+    parser.add_argument("--plugin-name")
     return parser.parse_args()
 
 
-def version_line_pattern(version):
+def version_line_pattern(version, plugin_name=None):
+    labels = ["Version"] + ([re.escape(plugin_name)] if plugin_name else [])
     return re.compile(
-        rf"^(?P<prefix>\s*(?:#{{1,6}}\s+|[-*+]\s+)?)(?P<label>Version\s+)?"
+        rf"^(?P<prefix>\s*(?:#{{1,6}}\s+|[-*+]\s+)?)(?P<label>(?:{'|'.join(labels)})\s+)?"
         rf"(?P<emphasis>_{{0,2}}|\*{{0,2}})"
         rf"{re.escape(version)}(?![0-9.]|[-+][A-Za-z0-9])(?P=emphasis)(?P<rest>.*)$"
     )
@@ -70,8 +75,8 @@ def date_from_match(date_match, release_date=None):
     return parsed_date.isoformat()
 
 
-def read_date(changelog, version):
-    version_line = version_line_pattern(version)
+def read_date(changelog, version, plugin_name=None):
+    version_line = version_line_pattern(version, plugin_name)
     with changelog.open("r", encoding="utf-8", newline="") as changelog_file:
         for line in changelog_file:
             content = line.rstrip("\r\n")
@@ -79,15 +84,15 @@ def read_date(changelog, version):
             if not match:
                 continue
             rest = match.group("rest")
-            date_match = DATE_PATTERN.match(rest.lstrip(" -(["))
+            date_match = DATE_PATTERN.match(rest.lstrip(DATE_LEAD))
             if not date_match:
                 break
             return date_from_match(date_match)
     raise ValueError(f"No release date found for version {version}")
 
 
-def update_date(changelog, version, release_date):
-    version_line = version_line_pattern(version)
+def update_date(changelog, version, release_date, plugin_name=None):
+    version_line = version_line_pattern(version, plugin_name)
 
     with changelog.open("r", encoding="utf-8", newline="") as changelog_file:
         lines = changelog_file.read().splitlines(keepends=True)
@@ -100,9 +105,9 @@ def update_date(changelog, version, release_date):
             continue
 
         rest = match.group("rest")
-        date_match = DATE_PATTERN.match(rest.lstrip(" -(["))
+        date_match = DATE_PATTERN.match(rest.lstrip(DATE_LEAD))
         if date_match:
-            date_offset = len(rest) - len(rest.lstrip(" -(["))
+            date_offset = len(rest) - len(rest.lstrip(DATE_LEAD))
             replacement_date = release_date
             if date_match.group("slash"):
                 replacement_date = date_from_match(date_match, release_date)
@@ -121,11 +126,14 @@ def update_date(changelog, version, release_date):
                 f"{separator}{release_date}"
                 f"{unreleased_match.group('suffix')}"
             )
-        elif UNSUPPORTED_DATE_PATTERN.match(rest.lstrip(" -–—([")):
+        elif UNSUPPORTED_DATE_PATTERN.match(rest.lstrip(UNSUPPORTED_DATE_LEAD)):
             # Prepending here would ship a heading with two dates. A date later in free text is kept.
             raise ValueError(
                 f"The changelog entry for {version} has a date in an unsupported format: {rest.strip()}"
             )
+        elif rest[:1].isspace() and rest.lstrip().lstrip("*_")[:1].isalnum():
+            # Free text straight after the version needs its own separator after the date.
+            updated_rest = f" - {release_date} - {rest.lstrip()}"
         else:
             updated_rest = f" - {release_date}{rest}"
 
@@ -155,7 +163,7 @@ def main():
             print("--read-date cannot be combined with a release date or --check", file=sys.stderr)
             return 1
         try:
-            print(read_date(changelog, args.version))
+            print(read_date(changelog, args.version, args.plugin_name))
         except (OSError, ValueError) as error:
             print(error, file=sys.stderr)
             return 1
@@ -172,7 +180,9 @@ def main():
         return 1
 
     try:
-        changed, updated_lines = update_date(changelog, args.version, args.release_date)
+        changed, updated_lines = update_date(
+            changelog, args.version, args.release_date, args.plugin_name
+        )
     except (OSError, ValueError) as error:
         print(error, file=sys.stderr)
         return 1

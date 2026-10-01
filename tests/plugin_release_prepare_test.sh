@@ -76,6 +76,14 @@ assert_output 'tag_exists=true' "$WORK/resume-output"
 assert_output 'release_needed=false' "$WORK/resume-output"
 assert_output 'publish_release=true' "$WORK/resume-output"
 
+new_repo "$WORK/resume-plugin-label"
+printf '## Changelog\n\n#### TestPlugin 5.0.0 - 2026-09-20\n' > "$WORK/resume-plugin-label/CHANGELOG.md"
+git -C "$WORK/resume-plugin-label" commit -q -am 'label the entry with the plugin name'
+git -C "$WORK/resume-plugin-label" update-ref refs/remotes/origin/5.x-prod HEAD
+git -C "$WORK/resume-plugin-label" tag 5.0.0
+run_prepare "$WORK/resume-plugin-label" "$WORK/resume-plugin-label-output"
+assert_output 'release_date=2026-09-20' "$WORK/resume-plugin-label-output"
+
 new_repo "$WORK/missing-tag-date"
 printf '## Changelog\n\n* 5.0.0\n' > "$WORK/missing-tag-date/CHANGELOG.md"
 git -C "$WORK/missing-tag-date" add CHANGELOG.md

@@ -88,6 +88,12 @@ check(
     == "steps.prepare.outputs.release_needed == 'true'",
 )
 check(
+    "the changelog step recognises entries labelled with the plugin name",
+    '--plugin-name "$PLUGIN_NAME"' in step_run("Add release date to changelog")
+    and steps_by_name.get("Add release date to changelog", {}).get("env", {}).get("PLUGIN_NAME")
+    == "${{ steps.prepare.outputs.plugin_name }}",
+)
+check(
     "the tag step runs only when a release is needed",
     steps_by_name.get("Create release tag", {}).get("if")
     == "steps.prepare.outputs.release_needed == 'true'",

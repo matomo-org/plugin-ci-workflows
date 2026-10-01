@@ -96,6 +96,7 @@ jobs:
         if: steps.prepare.outputs.release_needed == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          PLUGIN_NAME: ${{ steps.prepare.outputs.plugin_name }}
           RELEASE_DATE: ${{ steps.prepare.outputs.release_date }}
           VERSION: ${{ steps.prepare.outputs.version }}
         shell: bash
@@ -107,7 +108,7 @@ jobs:
           export GIT_CONFIG_KEY_0=http.extraheader
           export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
 
-          python3 "$RUNNER_TEMP/update_changelog_date.py" \
+          python3 "$RUNNER_TEMP/update_changelog_date.py" --plugin-name "$PLUGIN_NAME" \
             CHANGELOG.md "$VERSION" "$RELEASE_DATE"
 
           if ! git diff --quiet -- CHANGELOG.md; then
