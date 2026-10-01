@@ -104,6 +104,11 @@ def update_date(changelog, version, release_date):
                 f"{separator}{release_date}"
                 f"{unreleased_match.group('suffix')}"
             )
+        elif re.match(r"\d{1,4}[./-]\d{1,2}[./-]\d{1,4}", rest.lstrip(" -–—([")):
+            # Prepending here would ship a heading with two dates. A date later in free text is kept.
+            raise ValueError(
+                f"The changelog entry for {version} has a date in an unsupported format: {rest.strip()}"
+            )
         else:
             updated_rest = f" - {release_date}{rest}"
 

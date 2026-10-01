@@ -94,4 +94,14 @@ if python3 "$SCRIPT" --check "$WORK/plain.md" 9.9.9 2026-09-21; then
     exit 1
 fi
 
+for heading in '## 6.0.2 – 2026-09-20' '## 6.0.2 - 20.09.2026'; do
+    printf '## Changelog\n\n%s\n' "$heading" > "$WORK/unsupported-date.md"
+    if python3 "$SCRIPT" "$WORK/unsupported-date.md" 6.0.2 2026-09-21 2> "$WORK/unsupported-date-error"; then
+        echo "An unsupported date in '$heading' must fail rather than gain a second date" >&2
+        exit 1
+    fi
+    grep -Fq 'unsupported format' "$WORK/unsupported-date-error"
+    assert_contains "$heading" "$WORK/unsupported-date.md"
+done
+
 echo 'All changelog date tests passed.'
