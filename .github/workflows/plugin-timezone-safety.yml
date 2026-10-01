@@ -22,6 +22,11 @@ on:
         required: false
         type: boolean
         default: false
+      timezone-regression-exempt:
+        description: "Why this plugin needs no timezone regression suite although it has date or site-timezone logic. Empty means it is not exempt. Read by the static scan job, so it has no effect with skip-static-scan."
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -74,8 +79,60 @@ jobs:
           runner="$RUNNER_TEMP/run_timezone_safety_workflow.sh"
           cp "$WORKFLOWS_DIR/scripts/bash/check_timezone_safety.sh" "$checker"
           cp "$WORKFLOWS_DIR/scripts/bash/run_timezone_safety_workflow.sh" "$runner"
+          # Optional here: the coverage step reports a pin without it, by its own rollout rule.
+          if [ -f "$WORKFLOWS_DIR/scripts/bash/check_timezone_regression_coverage.sh" ]; then
+            cp "$WORKFLOWS_DIR/scripts/bash/check_timezone_regression_coverage.sh" "$RUNNER_TEMP/check_timezone_regression_coverage.sh"
+          fi
           rm -rf "$WORKFLOWS_DIR"
           bash "$runner" "$checker"
+
+      - name: Check timezone regression coverage
+        # Reported even when the scan fails, so one run shows both verdicts.
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          WORKFLOWS_REF: ${{ inputs.workflows-ref }}
+          TIMEZONE_REGRESSION_EXEMPT: ${{ inputs.timezone-regression-exempt }}
+          # warn until every plugin that needs the regression suite runs it or is exempt; enforce
+          # then fails a pull request, while pushes and dispatches stay advisory like the scan.
+          COVERAGE_MODE: warn
+        run: |
+          enforcing=false
+          if [ "$COVERAGE_MODE" = enforce ] && [ -n "$BASE_BRANCH" ]; then
+            enforcing=true
+          fi
+          # A check that cannot run fails only where a verdict would, so the rollout stays advisory.
+          not_checked() {
+            if [ "$enforcing" = true ]; then
+              echo "::error::$1"
+              exit 2
+            fi
+            echo "::warning::$1"
+            exit 0
+          }
+          coverage="$RUNNER_TEMP/check_timezone_regression_coverage.sh"
+          if [ ! -f "$coverage" ]; then
+            # Caller input: flattened so a newline cannot start a workflow command.
+            ref=$(tr -s '\r\n' ' ' <<< "$WORKFLOWS_REF" | sed 's/ $//')
+            not_checked "Timezone regression coverage was not checked: the scan step did not stage scripts/bash/check_timezone_regression_coverage.sh, either because it did not run or because workflows-ref '$ref' predates the script."
+          fi
+          # apt rather than pip, for the same reasons as in this repository's own tests workflow.
+          # -P, so a yaml.py in the plugin cannot pass for PyYAML.
+          if ! python3 -P -c 'import yaml' 2>/dev/null; then
+            { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; } > /dev/null \
+              || not_checked 'Timezone regression coverage was not checked: PyYAML could not be installed.'
+          fi
+          args=()
+          if [ "$enforcing" = true ]; then
+            args+=(--enforce)
+          fi
+          status=0
+          bash "$coverage" "${args[@]}" . || status=$?
+          if [ "$status" -eq 2 ]; then
+            not_checked 'Timezone regression coverage was not checked: the check could not run; see the error above.'
+          fi
+          exit "$status"
 
   timezone-regression:
     name: Timezone regression suite (${{ inputs.plugin-name }})
