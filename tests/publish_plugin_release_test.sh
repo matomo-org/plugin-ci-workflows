@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests GitHub Release lookup, update, creation, and error classification with a fake gh CLI.
+# Tests GitHub Release lookup, publication, creation, and error classification with a fake gh CLI.
 
 set -euo pipefail
 
@@ -16,7 +16,19 @@ set -euo pipefail
 
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 if [[ "$1" == api ]]; then
-    if [[ "$FAKE_GH_MODE" == not-found ]]; then
+    if [[ "$*" == *'--method PATCH'* ]]; then
+        exit 0
+    fi
+    # The release listing is the only call made with --jq, so this prints its filtered lines.
+    if [[ "$*" == *'--paginate'* ]]; then
+        printf '122 4.9.0\n'
+        if [[ "$FAKE_GH_MODE" == draft ]]; then
+            printf '123 5.0.0\n'
+        fi
+        exit 0
+    fi
+    # Like GitHub, the tag lookup never returns a draft.
+    if [[ "$FAKE_GH_MODE" == not-found || "$FAKE_GH_MODE" == draft ]]; then
         printf 'HTTP/2 404 Not Found\r\n\r\n{"message":"Not Found"}\n'
         exit 1
     fi
@@ -24,10 +36,11 @@ if [[ "$1" == api ]]; then
         printf 'HTTP/2 500 Internal Server Error\r\n\r\n{"message":"Server error"}\n'
         exit 1
     fi
-    if [[ "$*" == *'--method PATCH'* ]]; then
+    if [[ "$FAKE_GH_MODE" == prerelease ]]; then
+        printf 'HTTP/2 200 OK\r\n\r\n{"id":123,"draft":false,"prerelease":true}\n'
         exit 0
     fi
-    printf 'HTTP/2 200 OK\r\n\r\n{"id":123}\n'
+    printf 'HTTP/2 200 OK\r\n\r\n{"id":123,"draft":false,"prerelease":false}\n'
     exit 0
 fi
 
@@ -53,10 +66,24 @@ run_publisher() {
         bash "$SCRIPT" TestPlugin 5.0.0 2026-09-21
 }
 
-run_publisher existing "$WORK/existing.log"
-grep -Fq -- '--method PATCH' "$WORK/existing.log"
-grep -Fq -- '--raw-field name=TestPlugin 5.0.0' "$WORK/existing.log"
-grep -Fq -- '--raw-field make_latest=false' "$WORK/existing.log"
+run_publisher existing "$WORK/existing.log" > /dev/null
+if grep -Fq -- '--method PATCH' "$WORK/existing.log"; then
+    echo 'A published release must be left unchanged' >&2
+    exit 1
+fi
+test ! -e "$WORK/created-existing"
+
+for mode in draft prerelease; do
+    run_publisher "$mode" "$WORK/$mode.log"
+    grep -Fq -- '--method PATCH repos/matomo-org/TestPlugin/releases/123 ' "$WORK/$mode.log"
+    grep -Fq -- '--field draft=false' "$WORK/$mode.log"
+    grep -Fq -- '--raw-field make_latest=false' "$WORK/$mode.log"
+    test ! -e "$WORK/created-$mode"
+    if grep -Fq -e '--raw-field name=' -e '--raw-field body=' "$WORK/$mode.log"; then
+        echo "Publishing a $mode must keep its name and notes" >&2
+        exit 1
+    fi
+done
 
 run_publisher not-found "$WORK/not-found.log"
 test -f "$WORK/created-not-found"

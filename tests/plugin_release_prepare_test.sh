@@ -98,6 +98,20 @@ assert_output 'tag_exists=true' "$WORK/already-released-output"
 assert_output 'release_needed=false' "$WORK/already-released-output"
 assert_output 'publish_release=true' "$WORK/already-released-output"
 
+new_repo "$WORK/released-undated"
+printf '## Changelog\n\n* 5.0.0\n' > "$WORK/released-undated/CHANGELOG.md"
+git -C "$WORK/released-undated" add CHANGELOG.md
+git -C "$WORK/released-undated" commit -q -m 'undated entry'
+git -C "$WORK/released-undated" tag 5.0.0
+printf 'later change\n' >> "$WORK/released-undated/CHANGELOG.md"
+git -C "$WORK/released-undated" add CHANGELOG.md
+git -C "$WORK/released-undated" commit -q -m later
+git -C "$WORK/released-undated" update-ref refs/remotes/origin/5.x-prod HEAD
+run_prepare "$WORK/released-undated" "$WORK/released-undated-output" > "$WORK/released-undated-log"
+assert_output 'release_needed=false' "$WORK/released-undated-output"
+assert_output 'publish_release=false' "$WORK/released-undated-output"
+grep -Fq 'no readable release date' "$WORK/released-undated-log"
+
 new_repo "$WORK/recover"
 printf 'release date\n' >> "$WORK/recover/CHANGELOG.md"
 git -C "$WORK/recover" add CHANGELOG.md

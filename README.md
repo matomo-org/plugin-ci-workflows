@@ -256,8 +256,10 @@ The workflow refuses to move an existing tag to another commit. If the shared wo
 pass the same ref as its `script-ref` input so the release script is pinned with it. A run resumes when the existing
 tag is the current commit, and it also recovers a tag created by an earlier partial run when the tag is the current
 production branch tip. If the tag is behind the production branch, the workflow does not mutate the branch or tag
-because the version was already released and `plugin.json` has not been bumped yet; it still verifies or creates the
-corresponding GitHub Release so a tag-push/release-publication partial failure can recover.
+because the version was already released and `plugin.json` has not been bumped yet; it still creates the
+corresponding GitHub Release if it is missing, so a tag-push/release-publication partial failure can recover, and skips
+that check with a warning when the tagged changelog entry has no readable date. An existing release is never rewritten:
+a published one is left as it is, and a draft or prerelease is only marked published, keeping its name and notes.
 
 Do not use GitHub's **Re-run failed jobs** for a run that has already pushed its changelog-date commit: GitHub reruns
 the original commit, so the job cannot safely push that commit again. Use **Run workflow** to dispatch a fresh run from

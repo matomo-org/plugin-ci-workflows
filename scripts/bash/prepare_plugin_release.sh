@@ -80,7 +80,7 @@ read_tag_release_date() {
     local parsed_date
     tag_changelog=$(mktemp)
 
-    if ! git show "$tag_commit:CHANGELOG.md" > "$tag_changelog"; then
+    if ! git show "$tag_commit:CHANGELOG.md" > "$tag_changelog" 2>/dev/null; then
         rm -f "$tag_changelog"
         return 1
     fi
@@ -102,30 +102,45 @@ else
     REMOTE_BRANCH_COMMIT=""
 fi
 
-tag_commit=""
-if tag_commit=$(git rev-parse --verify "refs/tags/$VERSION^{commit}" 2>/dev/null); then
+# A resumed release must publish, so an undated tag fails it.
+resume_tagged_release() {
     if ! release_date=$(read_tag_release_date "$tag_commit"); then
         error "The tagged changelog entry for $VERSION has no readable release date."
     fi
+    emit "tag_exists=true"
+    emit "release_needed=false"
+    emit "publish_release=true"
+}
 
+# An already-released version is published again only to recover a missing GitHub Release, which
+# needs the tagged date. Without one, an ordinary push to the branch must not fail.
+skip_released_version() {
+    echo "Version $VERSION is already released and its tag is behind this production branch; nothing to release."
+    emit "tag_exists=true"
+    emit "release_needed=false"
+    if release_date=$(read_tag_release_date "$tag_commit"); then
+        emit "publish_release=true"
+    else
+        echo "::warning::The tagged changelog entry for $VERSION has no readable release date; not checking its GitHub Release."
+        release_date=""
+        emit "publish_release=false"
+    fi
+}
+
+tag_commit=""
+if tag_commit=$(git rev-parse --verify "refs/tags/$VERSION^{commit}" 2>/dev/null); then
     if [[ "$tag_commit" == "$HEAD_COMMIT" ]]; then
         echo "A tag for $VERSION already points at HEAD; the release can be safely resumed."
-        emit "tag_exists=true"
-        emit "release_needed=false"
+        resume_tagged_release
     elif git merge-base --is-ancestor "$tag_commit" "$HEAD_COMMIT"; then
-        echo "Version $VERSION is already released and its tag is behind this production branch; nothing to release."
-        emit "tag_exists=true"
-        emit "release_needed=false"
+        skip_released_version
     elif git merge-base --is-ancestor "$HEAD_COMMIT" "$tag_commit"; then
         if [[ "$REMOTE_BRANCH_COMMIT" == "$tag_commit" ]]; then
             git checkout --detach "$tag_commit"
             echo "Recovered the previously tagged commit for $VERSION; the release can be safely resumed."
-            emit "tag_exists=true"
-            emit "release_needed=false"
+            resume_tagged_release
         elif [[ -n "$REMOTE_BRANCH_COMMIT" ]] && git merge-base --is-ancestor "$tag_commit" "$REMOTE_BRANCH_COMMIT"; then
-            echo "Version $VERSION is already released and its tag is behind this production branch; nothing to release."
-            emit "tag_exists=true"
-            emit "release_needed=false"
+            skip_released_version
         else
             error "A tag for $VERSION exists on a commit unrelated to the current production branch. Refusing to move or rebuild it."
         fi
@@ -144,9 +159,9 @@ else
     echo "Preparing a new release for $VERSION."
     emit "tag_exists=false"
     emit "release_needed=true"
+    emit "publish_release=true"
 fi
 
 emit "version=$VERSION"
 emit "plugin_name=$PLUGIN_NAME"
 emit "release_date=$release_date"
-emit "publish_release=true"
