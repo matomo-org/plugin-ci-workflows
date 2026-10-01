@@ -112,19 +112,14 @@ resume_tagged_release() {
     emit "publish_release=true"
 }
 
-# An already-released version is published again only to recover a missing GitHub Release, which
-# needs the tagged date. Without one, an ordinary push to the branch must not fail.
+# A tag behind the branch may predate this workflow, so a missing GitHub Release is not recreated:
+# that would publish an old version the plugin never released on GitHub.
 skip_released_version() {
     echo "Version $VERSION is already released and its tag is behind this production branch; nothing to release."
+    release_date=""
     emit "tag_exists=true"
     emit "release_needed=false"
-    if release_date=$(read_tag_release_date "$tag_commit"); then
-        emit "publish_release=true"
-    else
-        echo "::warning::The tagged changelog entry for $VERSION has no readable release date; not checking its GitHub Release."
-        release_date=""
-        emit "publish_release=false"
-    fi
+    emit "publish_release=false"
 }
 
 tag_commit=""
