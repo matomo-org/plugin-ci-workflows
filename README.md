@@ -218,11 +218,11 @@ the Matomo Marketplace for distributed plugins.
 
 For InnoCraft premium plugins the tag is the release: the Marketplace queues the tag pushed by this
 workflow and adds the version from that commit's `plugin.json` without a further review step, so
-merging a version bump into `N.x-prod` publishes the plugin. The Marketplace only imports tags from a private
-InnoCraft repository for a plugin it already lists, so the first release of a new premium plugin is
-still uploaded by hand through the shop; its tag is ignored without an email, and later tags then
-import automatically. This workflow refuses to move an existing tag, so when the Marketplace
-rejects a tag, correct the problem and release a new version.
+merging a version bump into `N.x-prod` publishes the plugin. The Marketplace only imports tags from
+a private InnoCraft repository for a plugin it already lists, so the first release of a new premium
+plugin is still uploaded by hand through the shop; the Marketplace ignores that tag without sending
+an email, and later tags then import automatically. This workflow refuses to move an existing tag,
+so when the Marketplace rejects a tag, correct the problem and release a new version.
 
 The changelog entry must start at the beginning of a line with the bare version, optionally prefixed
 by a Markdown heading or list marker, `Version `, or `_`/`**` emphasis. A trailing ` - YYYY-MM-DD`,
