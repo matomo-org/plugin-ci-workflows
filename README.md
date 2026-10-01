@@ -230,6 +230,12 @@ by a Markdown heading or list marker, `Version `, or `_`/`**` emphasis. A traili
 bracketed versions such as `[6.0.2]` are not recognised. Ambiguous slash dates are interpreted
 day-first.
 
+Before adding the caller, check that the version in each production branch's `plugin.json` already
+has a tag named exactly after it, with no `v` prefix. The workflow treats a version without that tag
+as unreleased, so a version that was uploaded by hand or tagged `v6.0.2` would be re-dated, tagged
+and published again on the first push. If the tag is missing, add the caller in the same change as
+the next version bump.
+
 ```yaml
 name: Release plugin
 
