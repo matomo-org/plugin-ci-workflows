@@ -41,6 +41,11 @@ jobs:
           path: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
           persist-credentials: false
 
+      # The guard fails closed without PyYAML; see plugin-ci.yml for why the install is conditional.
+      - name: Install the YAML parser the guard needs
+        shell: bash
+        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+
       - name: Check caller concurrency
         env:
           SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
