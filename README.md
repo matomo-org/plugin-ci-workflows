@@ -228,12 +228,15 @@ The changelog entry must start at the beginning of a line with the bare version,
 by a Markdown heading or list marker, `Version `, or `_`/`**` emphasis. A trailing ` - YYYY-MM-DD`,
 ` - DD/MM/YYYY`, ` - MM/DD/YYYY`, or `(unreleased)`/`(not yet released)`/a parenthesized date is supported. Keep-a-Changelog
 bracketed versions such as `[6.0.2]` are not recognised. Ambiguous slash dates are interpreted
-day-first.
+day-first. An entry that can only be `MM/DD/YYYY`, because its day is above 12, is rewritten as
+`YYYY-MM-DD` when the new day is 12 or less. Any other numeric date with `-`, `/` or `.` between its
+parts, or an English month-name date with a four-digit year, directly after ` - `, `–`, `—`, `(` or
+`[` fails the release rather than gaining a second date. Other date forms are not detected.
 
 Before adding the caller, check that the version in each production branch's `plugin.json` already
 has a tag named exactly after it, with no `v` prefix. The workflow treats a version without that tag
 as unreleased, so a version that was uploaded by hand or tagged `v6.0.2` would be re-dated, tagged
-and published again on the first push. If the tag is missing, add the caller in the same change as
+and given a new GitHub Release on the first push. If the tag is missing, add the caller in the same change as
 the next version bump.
 
 ```yaml

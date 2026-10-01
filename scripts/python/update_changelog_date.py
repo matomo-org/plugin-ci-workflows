@@ -9,6 +9,21 @@ DATE_PATTERN = re.compile(
     r"(?P<iso>(?<!\d)\d{4}-\d{2}-\d{2}(?!\d))"
     r"|(?P<slash>(?<!\d)\d{2}/\d{2}/\d{4}(?!\d))"
 )
+# A month name or abbreviation must end the word, so "Marketplace 5 compatibility" still gets a date.
+MONTH_NAME = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
+    r"|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?(?![a-z])"
+)
+WEEKDAY = r"(?:(?:mon|tues?|wed(?:nes)?|thu(?:rs?)?|fri|sat(?:ur)?|sun)(?:day)?\.?,?\s+)?"
+DATE_SEPARATOR = r"[\s./,-]+"
+UNSUPPORTED_DATE_PATTERN = re.compile(
+    rf"{WEEKDAY}\d{{1,4}}[./-]\d{{1,2}}[./-]\d{{1,4}}"
+    # Month-name dates need a year, so prose such as "May 5 compatibility" still gets a date.
+    rf"|{WEEKDAY}{MONTH_NAME}{DATE_SEPARATOR}(?:\d{{1,2}}(?:st|nd|rd|th)?{DATE_SEPARATOR})?\d{{4}}(?!\d)"
+    rf"|{WEEKDAY}\d{{1,2}}(?:st|nd|rd|th)?{DATE_SEPARATOR}(?:of\s+)?{MONTH_NAME}{DATE_SEPARATOR}\d{{4}}(?!\d)"
+    rf"|{WEEKDAY}\d{{4}}{DATE_SEPARATOR}{MONTH_NAME}",
+    re.IGNORECASE,
+)
 UNRELEASED_PATTERN = re.compile(
     r"^(?P<prefix>\s*(?:-\s*)?)(?:\(?unreleased\)?|\(?not\s+yet\s+released\)?)(?P<suffix>.*)$",
     re.IGNORECASE,
@@ -47,9 +62,11 @@ def date_from_match(date_match, release_date=None):
         day, month = first, second
     parsed_date = date(year, month, day)
     if release_date is not None:
+        new_date = date.fromisoformat(release_date)
         if second > 12 and first <= 12:
-            return date.fromisoformat(release_date).strftime("%m/%d/%Y")
-        return date.fromisoformat(release_date).strftime("%d/%m/%Y")
+            # A month-first date with a day of 12 or less would read back day-first.
+            return new_date.strftime("%m/%d/%Y") if new_date.day > 12 else new_date.isoformat()
+        return new_date.strftime("%d/%m/%Y")
     return parsed_date.isoformat()
 
 
@@ -104,7 +121,7 @@ def update_date(changelog, version, release_date):
                 f"{separator}{release_date}"
                 f"{unreleased_match.group('suffix')}"
             )
-        elif re.match(r"\d{1,4}[./-]\d{1,2}[./-]\d{1,4}", rest.lstrip(" -–—([")):
+        elif UNSUPPORTED_DATE_PATTERN.match(rest.lstrip(" -–—([")):
             # Prepending here would ship a heading with two dates. A date later in free text is kept.
             raise ValueError(
                 f"The changelog entry for {version} has a date in an unsupported format: {rest.strip()}"

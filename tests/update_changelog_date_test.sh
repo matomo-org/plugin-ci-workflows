@@ -61,10 +61,19 @@ printf '## Changelog\n\n* **6.0.2** - 09/20/2026\n' > "$WORK/us-slash-date.md"
 python3 "$SCRIPT" "$WORK/us-slash-date.md" 6.0.2 2026-09-21
 assert_contains '* **6.0.2** - 09/21/2026' "$WORK/us-slash-date.md"
 [[ "$(python3 "$SCRIPT" --read-date "$WORK/us-slash-date.md" 6.0.2)" == '2026-09-21' ]]
+python3 "$SCRIPT" "$WORK/us-slash-date.md" 6.0.2 2026-10-01
+assert_contains '* **6.0.2** - 2026-10-01' "$WORK/us-slash-date.md"
+[[ "$(python3 "$SCRIPT" --read-date "$WORK/us-slash-date.md" 6.0.2)" == '2026-10-01' ]]
 
 printf '## Changelog\n\n* 6.0.2 - see PR 2026-01-01 backport\n' > "$WORK/embedded-date.md"
 python3 "$SCRIPT" "$WORK/embedded-date.md" 6.0.2 2026-09-21
 assert_contains '* 6.0.2 - 2026-09-21 - see PR 2026-01-01 backport' "$WORK/embedded-date.md"
+
+for text in 'Marketplace 5 compatibility' 'Separate 2 reports' 'May contain fixes' 'May 5 compatibility'; do
+    printf '## Changelog\n\n* 6.0.2 - %s\n' "$text" > "$WORK/month-like.md"
+    python3 "$SCRIPT" "$WORK/month-like.md" 6.0.2 2026-09-21
+    assert_contains "* 6.0.2 - 2026-09-21 - $text" "$WORK/month-like.md"
+done
 
 printf '## Changelog\n\n### 6.0.2-rc1\n\n### 6.0.2\n' > "$WORK/prerelease.md"
 python3 "$SCRIPT" "$WORK/prerelease.md" 6.0.2 2026-09-21
@@ -94,7 +103,11 @@ if python3 "$SCRIPT" --check "$WORK/plain.md" 9.9.9 2026-09-21; then
     exit 1
 fi
 
-for heading in '## 6.0.2 – 2026-09-20' '## 6.0.2 - 20.09.2026'; do
+for heading in '## 6.0.2 – 2026-09-20' '## 6.0.2 - 20.09.2026' '## 6.0.2 - September 20, 2026' \
+    '## 6.0.2 (20th Sept 2026)' '## 6.0.2 - 20th of September, 2026' '## 6.0.2 - Monday, September 20, 2026' \
+    '## 6.0.2 - 20-Sep-2026' '## 6.0.2 - Sep-20-2026' '## 6.0.2 - 2026-Sep-20' \
+    '## 6.0.2 - September 2026' '## 6.0.2 - Monday, 2026-09-20' '## 6.0.2 - Mon 20/09/2026' \
+    '## 6.0.2 - Monday, 2026-Sep-20'; do
     printf '## Changelog\n\n%s\n' "$heading" > "$WORK/unsupported-date.md"
     if python3 "$SCRIPT" "$WORK/unsupported-date.md" 6.0.2 2026-09-21 2> "$WORK/unsupported-date-error"; then
         echo "An unsupported date in '$heading' must fail rather than gain a second date" >&2
