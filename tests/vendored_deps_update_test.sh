@@ -657,7 +657,7 @@ expect_floor "an alias table that fails warns and carries on" \
   '{"require":{"matomo":">=6.0.0-b1,<7.0.0-b1"}}' '{}' 8.2.0 "could not resolve 'matomo6_min_php'" failing-alias-table
 expect_floor "a plugin without plugin.json warns and carries on" \
   '' '{}' 8.2.0 "the plugin has no plugin.json" no-plugin-json
-expect_floor "a plugin.json the resolver cannot read warns and carries on" \
+expect_floor "a plugin.json with no minimum warns and carries on" \
   '{"require":{}}' '{}' 8.2.0 "::warning::Could not compare platform PHP 8.2.0 with the plugin's minimum: Could not determine a minimum PHP version for 'plugin' "
 expect_floor "a plugin.json with no minimum is not blamed on a composer.json the comparison never read" \
   '{"require":{}}' '{"config":{"platform":{"php":"8.2.0"}}}' 8.2.0 "no usable require.matomo). This comparison reads plugin.json alone."
