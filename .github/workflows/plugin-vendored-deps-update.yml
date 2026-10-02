@@ -227,6 +227,8 @@ jobs:
         shell: bash
         env:
           DOWNGRADE: ${{ steps.scope.outputs.downgrade-php-version }}
+          PLUGIN_NAME: ${{ steps.scope.outputs.plugin-name }}
+          BASE_SHA: ${{ steps.update.outputs.base-sha }}
         run: |
           body="$RUNNER_TEMP/pull-request-body.md"
           if [ -n "$DOWNGRADE" ]; then
@@ -234,11 +236,29 @@ jobs:
           else
             tools="matomo-scoper"
           fi
+          strings_checked=true
+          strings=$(bash .plugin-ci-workflows/scripts/bash/find_new_unprefixed_strings.sh "$PLUGIN_DIR" "$PLUGIN_NAME" "$BASE_SHA") \
+            || strings_checked=false
           {
             echo "Updates the plugin's scoped dependencies to the newest versions composer.json allows, and regenerates \`vendor/prefixed\` with $tools."
             echo
             cat "$RUNNER_TEMP/package-changes.md"
             echo
+            if [ -n "$strings" ]; then
+              echo "The rebuild added strings that name a scoped namespace without the prefix. Check each one before merging: if it builds a class name, \`scoper.inc.php\` needs a patcher to prefix it, or the class is not found at runtime."
+              echo
+              # Capped, because a pull request body is limited in size and the template still follows.
+              # A here-string, not printf into head: under pipefail, printf's SIGPIPE fails the step.
+              head -n 50 <<< "$strings" | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
+              count=$(wc -l <<< "$strings")
+              if [ "$count" -gt 50 ]; then
+                echo "- and $((count - 50)) more, which the log of the scope step lists."
+              fi
+              echo
+            elif [ "$strings_checked" = false ]; then
+              echo "The rebuilt tree could not be checked for strings that name a scoped namespace without the prefix; the run's log says why."
+              echo
+            fi
             echo "This changes code the plugin ships, so it needs the usual changelog entry and version bump before release. Pushing either to this branch stops the scheduled update from refreshing it."
             echo
             echo "Opened by the [vendored dependencies update](https://github.com/matomo-org/plugin-ci-workflows#vendored-dependencies-update) workflow, run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."

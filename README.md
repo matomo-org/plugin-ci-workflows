@@ -45,6 +45,7 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`actions/scope-dependencies`](#scope-dependencies) | Composite action | Scopes a plugin's dependencies with matomo-scoper, downgrades them with Rector, and checks the result |
 | [`scripts/bash/scope_plugin_dependencies.sh`](#scope-dependencies) | Standalone script | What the action runs, and how a developer rebuilds `vendor/prefixed` locally |
 | [`scripts/bash/check_scoped_tree.sh`](#scope-dependencies) | Standalone script | Checks a rebuilt `vendor/prefixed` tree is really scoped and really new |
+| [`scripts/bash/find_new_unprefixed_strings.sh`](#scope-dependencies) | Standalone script | Lists strings a rebuild added that name a scoped namespace without the prefix |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
 ### Plugins CI
@@ -592,6 +593,8 @@ The rebuild can run code the dependencies it installs ship, such as a Composer p
    - `vendor/autoload.php` is no longer the scoper's proxy.
    - A namespace under `vendor/prefixed` is outside `Matomo\Dependencies\<plugin>` and not on the allowed list.
    - `composer.lock` resolved different packages from `HEAD`, but the tree did not change.
+
+   It also warns, without failing, about each string literal the rebuild added that names a scoped namespace without the prefix, such as `'phpseclib3\\Math\\BigInteger'`. php-scoper does not rewrite class names built in strings, so a plugin's `scoper.inc.php` patchers do, and a patcher matching literal text silently stops working when a release builds the name another way. Every scoped tree already holds harmless strings like these, in error messages and comments, so only strings the tree at `HEAD` held nowhere are reported, which also keeps a file a release moved from being reported again. The [vendored dependencies update](#vendored-dependencies-update) also lists the first 50 in its pull request, for whoever merges it to check.
 
 It needs `php` 8.1 or later, `composer`, `jq`, `git` and `curl` on `PATH`, and sets up no PHP of its own, so the PHP of the steps after it is unchanged. Matomo core and DevPluginCommands aren't needed, and neither is any secret.
 
