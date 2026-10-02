@@ -211,7 +211,8 @@ jobs:
             echo "Scoped dependencies do not parse on PHP $PHP_VERSION, taken from $PHP_VERSION_SOURCE."
             echo "The scoper prefixes but does not downgrade, so re-running it changes nothing."
             echo "Either the tree was resolved too high -- lower config.platform.php in"
-            echo "composer.json and re-resolve -- or the declared floor is stale, in which case"
+            echo "composer.json, or the platform-php passed to the vendored dependencies update,"
+            echo "and re-resolve -- or the declared floor is stale, in which case"
             echo "raise require.php in plugin.json to what the tree actually needs."
           fi
           exit "$status"
