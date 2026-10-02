@@ -602,6 +602,13 @@ expect_floor() {
     ALIAS_RESOLVER=.github-action-tests/scripts/bash/resolve_php_version.sh \
     bash --noprofile --norc -eo pipefail "$WORK/floor-step.sh" 2>&1)
   status=$?
+  # The pull request body gets what the run's annotation said: a warning for a gap, a note for a skip.
+  local kind='' check="$dir/runner/platform-check.md"
+  if printf '%s\n' "$output" | grep -q '^::warning file=plugin.json::'; then
+    kind=WARNING
+  elif printf '%s\n' "$output" | grep -q '^::warning::'; then
+    kind=NOTE
+  fi
   if [ "$status" -ne 0 ]; then
     echo "FAIL - $description (exited $status; the comparison must never fail the run): $output"
     failures+=("$description")
@@ -614,13 +621,12 @@ expect_floor() {
   elif [ "$want" != none ] && ! printf '%s\n' "$output" | grep -qF -- "$want"; then
     echo "FAIL - $description (output did not contain '$want'): $output"
     failures+=("$description")
-  elif printf '%s\n' "$output" | grep -q '^::warning file=plugin.json::' \
-    && { [ "$(wc -l < "$dir/runner/platform-gap.md" 2>/dev/null)" != 1 ] \
-      || ! printf '%s\n' "$output" | grep -qF -- "$(sed 's/%/%25/g' "$dir/runner/platform-gap.md")"; }; then
-    echo "FAIL - $description (the warning was not left for the pull request body as one line)"
+  elif [ -n "$kind" ] && { [ "$(wc -l < "$check" 2>/dev/null)" != 2 ] || [ "$(head -n 1 "$check")" != "> [!$kind]" ] \
+      || ! printf '%s\n' "$output" | grep -qF -- "$(sed -n '2s/^> //p' "$check" | sed 's/%/%25/g')"; }; then
+    echo "FAIL - $description (the pull request body did not get the $kind as one quoted line): $(cat "$check" 2>&1)"
     failures+=("$description")
-  elif ! printf '%s\n' "$output" | grep -q '^::warning file=plugin.json::' && [ -e "$dir/runner/platform-gap.md" ]; then
-    echo "FAIL - $description (left a platform gap for the pull request body without warning)"
+  elif [ -z "$kind" ] && [ -e "$check" ]; then
+    echo "FAIL - $description (left the pull request body a result the run did not report): $(cat "$check")"
     failures+=("$description")
   else
     echo "ok - $description"
@@ -653,6 +659,8 @@ expect_floor "a plugin without plugin.json warns and carries on" \
   '' '{}' 8.2.0 "the plugin has no plugin.json" no-plugin-json
 expect_floor "a plugin.json the resolver cannot read warns and carries on" \
   '{"require":{}}' '{}' 8.2.0 "::warning::Could not compare platform PHP 8.2.0 with the plugin's minimum: Could not determine a minimum PHP version for 'plugin' "
+expect_floor "a plugin.json with no minimum is not blamed on a composer.json the comparison never read" \
+  '{"require":{}}' '{"config":{"platform":{"php":"8.2.0"}}}' 8.2.0 "no usable require.matomo). This comparison reads plugin.json alone."
 expect_floor "a Matomo major the alias table does not know warns and carries on" \
   '{"require":{"matomo":"^9.0"}}' '{}' 8.2.0 "'matomo9_min_php' is not a PHP version the alias table knows"
 expect_floor "a line break in plugin.json starts no workflow command" \
@@ -676,8 +684,14 @@ expect_floor "a platform from platform-php names the input as the setting to cha
 expect_floor "with no require.php, the advice names the release the Matomo requirement allows" \
   '{"require":{"matomo":">=5.0.0,<6.0.0-b1"}}' '{"config":{"platform":{"php":"8.2.0"}}}' 8.2.0 \
   "Set config.platform.php in composer.json to the lowest PHP 7.2 release plugin.json's Matomo requirement allows"
+expect_floor "a scripts-ref without the alias table warns and carries on" \
+  '{"require":{"php":">=8.1.0"}}' '{}' 8.2.0 "scripts-ref 'main' does not carry scripts/bash/resolve_php_version.sh" no-alias-table
+expect_floor "a resolver that crashes is reported by its last line, not the traceback's first" \
+  '{"require":"x"}' '{}' 8.2.0 "AttributeError"
+expect_floor "a line break in a platform at the minimum stays on the result's line" \
+  '{"require":{"php":">=8.1.0"}}' '{}' $'8.1.0\n::stop-commands::x' 'Platform PHP 8.1.0 ::stop-commands::x is not above'
 
-# The pull request body carries the gap, since nobody reads a scheduled run's annotations.
+# The pull request body carries the comparison's result, since nobody reads a scheduled run's annotations.
 python3 - "$WORKFLOW" > "$WORK/body-step.sh" <<'PY'
 import sys
 import yaml
@@ -686,32 +700,29 @@ steps = yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']
 print(next(s for s in steps if s.get('name') == 'Write the pull request body')['run'])
 PY
 expect_body() {
-  local description="$1" gap="$2" want="$3"
+  local description="$1" check="$2" want="$3"
   tests=$((tests + 1))
   local dir="$WORK/body-$tests"
   mkdir -p "$dir/runner" "$dir/plugin"
   echo '- Upgrading foo/bar (1.0.0 => 1.1.0)' > "$dir/runner/package-changes.md"
-  [ -z "$gap" ] || printf '%s\n' "$gap" > "$dir/runner/platform-gap.md"
+  [ -z "$check" ] || printf '%s\n' "$check" > "$dir/runner/platform-check.md"
   if ! RUNNER_TEMP="$dir/runner" PLUGIN_DIR="$dir/plugin" DOWNGRADE='' GITHUB_RUN_ID=1 GITHUB_SERVER_URL=https://github.com \
     GITHUB_REPOSITORY=matomo-org/plugin-Example bash --noprofile --norc -eo pipefail "$WORK/body-step.sh" > /dev/null 2>&1; then
     echo "FAIL - $description (the body step failed)"
     failures+=("$description")
-  elif [ "$want" = none ] && grep -q 'WARNING' "$dir/runner/pull-request-body.md"; then
-    echo "FAIL - $description (the body carries a warning): $(cat "$dir/runner/pull-request-body.md")"
+  elif [ "$want" = none ] && grep -q '^> ' "$dir/runner/pull-request-body.md"; then
+    echo "FAIL - $description (the body carries a quote): $(cat "$dir/runner/pull-request-body.md")"
     failures+=("$description")
-  elif [ "$want" != none ] && ! grep -A1 -F '> [!WARNING]' "$dir/runner/pull-request-body.md" | grep -qxF -- "$want"; then
+  elif [ "$want" != none ] && ! grep -A2 -F -- '- Upgrading foo/bar' "$dir/runner/pull-request-body.md" | tr '\n' '|' | grep -qF -- "$want"; then
     echo "FAIL - $description (the body did not carry '$want'): $(cat "$dir/runner/pull-request-body.md")"
     failures+=("$description")
   else
     echo "ok - $description"
   fi
 }
-expect_body "a platform gap is quoted as a warning in the pull request body" 'Dependencies resolve against PHP 8.2.0.' '> Dependencies resolve against PHP 8.2.0.'
-expect_body "without a platform gap the pull request body carries no warning" '' none
-expect_floor "a scripts-ref without the alias table warns and carries on" \
-  '{"require":{"php":">=8.1.0"}}' '{}' 8.2.0 "scripts-ref 'main' does not carry scripts/bash/resolve_php_version.sh" no-alias-table
-expect_floor "a resolver that crashes is reported by its last line, not the traceback's first" \
-  '{"require":"x"}' '{}' 8.2.0 "AttributeError"
+expect_body "the comparison's result follows the package changes in the pull request body" \
+  $'> [!WARNING]\n> Dependencies resolve against PHP 8.2.0.' '- Upgrading foo/bar (1.0.0 => 1.1.0)||> [!WARNING]|'
+expect_body "without a result the pull request body carries no quote" '' none
 
 # The workflow decides whether to rescope with the same lock comparison the checker fails on, so the
 # two must not drift apart.

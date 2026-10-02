@@ -232,8 +232,13 @@ jobs:
           # % first: GitHub unescapes %25 too, so a literal %0A in a value would otherwise come back
           # out as a real newline.
           escape() { local s=${1//%/%25}; printf '%s' "${s//[$'\r\n']/ }"; }
+          # Scheduled runs' annotations go unread, so whoever merges the update sees the result in the
+          # pull request body too.
+          to_body() { printf '> [!%s]\n> %s\n' "$1" "${2//[$'\r\n']/ }" > "$RUNNER_TEMP/platform-check.md"; }
           skip() {
-            echo "::warning::$(escape "Could not compare platform PHP $PLATFORM with the plugin's minimum: $1")"
+            local reason="Could not compare platform PHP $PLATFORM with the plugin's minimum: $1"
+            echo "::warning::$(escape "$reason")"
+            to_body NOTE "$reason"
             exit 0
           }
           [ -f "$RESOLVER" ] || skip "workflows-ref '$WORKFLOWS_REF' does not carry scripts/bash/resolve_plugin_min_php.sh."
@@ -248,7 +253,7 @@ jobs:
           manifest=$(mktemp -d)
           trap 'rm -rf "$manifest"' EXIT
           cp "$PLUGIN_DIR/plugin.json" "$manifest/"
-          declared=$(bash "$RESOLVER" "$manifest" 2>"$manifest/notes") || skip "$(tail -n 1 "$manifest/notes" | sed "s#$manifest#$PLUGIN_DIR#g")"
+          declared=$(bash "$RESOLVER" "$manifest" 2>"$manifest/notes") || skip "$(tail -n 1 "$manifest/notes" | sed "s#$manifest#$PLUGIN_DIR#g") This comparison reads plugin.json alone."
           # The resolver answers with an alias such as matomo6_min_php when plugin.json declares no PHP.
           if [[ "$declared" == matomo* ]]; then
             source="plugin.json's Matomo requirement" remedy='set a minimum in plugin.json require.php'
@@ -264,10 +269,10 @@ jobs:
             if [ -n "$TEMPORARY_PLATFORM" ]; then setting='the platform-php input'; else setting='config.platform.php in composer.json'; fi
             gap="Dependencies resolve against PHP $PLATFORM, but $source lets the plugin run on PHP $floor, so this update can lock packages that fail there. Set $setting to the lowest PHP $floor release $source allows, or $remedy if the plugin needs PHP $PLATFORM."
             echo "::warning file=plugin.json::$(escape "$gap")"
-            # Scheduled runs' annotations go unread, so whoever merges the update sees it in the body.
-            printf '%s\n' "${gap//[$'\r\n']/ }" > "$RUNNER_TEMP/platform-gap.md"
+            to_body WARNING "$gap"
           else
-            echo "Platform PHP $PLATFORM is not above the plugin's minimum, PHP $floor from $source."
+            escape "Platform PHP $PLATFORM is not above the plugin's minimum, PHP $floor from $source."
+            echo
           fi
 
       # A full update also runs post-update-cmd, which is where plugins trim
@@ -355,9 +360,8 @@ jobs:
             echo
             cat "$RUNNER_TEMP/package-changes.md"
             echo
-            if [ -f "$RUNNER_TEMP/platform-gap.md" ]; then
-              echo "> [!WARNING]"
-              echo "> $(cat "$RUNNER_TEMP/platform-gap.md")"
+            if [ -f "$RUNNER_TEMP/platform-check.md" ]; then
+              cat "$RUNNER_TEMP/platform-check.md"
               echo
             fi
             echo "This changes code the plugin ships, so it needs the usual changelog entry and version bump before release. Pushing either to this branch stops the scheduled update from refreshing it."
