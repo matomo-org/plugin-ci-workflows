@@ -552,7 +552,7 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests", off by default, and the plugin's CI does not start until someone pushes to the pull request or closes and reopens it |
+| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests", off by default, and the plugin's CI does not start by itself. After each refresh, close and reopen the pull request to run Plugins CI, and run `matomo-tests.yml` on the update branch from the Actions tab, since the `matomo-tests.yml` that `generate:test-action` writes does not subscribe to `reopened`. Pushing to the branch starts both, but stops the scheduled update refreshing it |
 
 ```yaml
 name: Vendored dependencies update

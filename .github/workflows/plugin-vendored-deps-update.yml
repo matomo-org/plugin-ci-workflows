@@ -52,7 +52,10 @@ on:
           pull request is opened with GITHUB_TOKEN, which needs the repository or organisation
           setting "Allow GitHub Actions to create and approve pull requests", off by default.
           GitHub also starts no workflow runs for events that token causes -- so the plugin's CI
-          does not run on the pull request until someone pushes to it or closes and reopens it.
+          does not run on the pull request by itself. After each refresh, close and reopen it to
+          run Plugins CI, and run matomo-tests.yml on the update branch from the Actions tab: the
+          matomo-tests.yml that `generate:test-action` writes does not subscribe to `reopened`.
+          Pushing to it starts both, but stops this workflow refreshing it.
         required: false
 
 # The job that runs composer update can also run code the newly resolved packages ship, such as a
@@ -395,5 +398,5 @@ jobs:
           HAS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN != '' }}
         run: |
           if [ "$HAS_PR_TOKEN" != 'true' ]; then
-            echo "::warning::No DEPS_PR_TOKEN, so the pull request was opened with GITHUB_TOKEN and the plugin's CI will not start on it by itself. Close and reopen it, or push to it, to run CI."
+            echo "::warning::No DEPS_PR_TOKEN, so the pull request was opened or updated with GITHUB_TOKEN and the plugin's CI will not start on it by itself. After each refresh, close and reopen it to run Plugins CI, and run matomo-tests.yml on $UPDATE_BRANCH from the Actions tab, since the matomo-tests.yml that generate:test-action writes does not subscribe to reopened. Pushing to it starts both, but stops this workflow refreshing it."
           fi
