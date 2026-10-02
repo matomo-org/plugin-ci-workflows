@@ -153,7 +153,7 @@ rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
 
 dir=$(make_plugin bare-string-double-quoted)
-rescoped_with '$class = "\\Bar\\Baz";' "$dir"
+rescoped_with "\$class = \"\\\\Bar\\\\Baz\";" "$dir"
 expect "a double-quoted bare string with a leading separator is reported too" 0 "$dir" 'gained the string "\\\\Bar' 'Composer\Autoload'
 
 dir=$(make_plugin known-string)

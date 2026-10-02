@@ -41,7 +41,7 @@ roots=$(grep -rhaoE --include='*.php' '^[[:space:]]*(<\?php[[:space:]]+)?namespa
   | sed -E 's/.*namespace[[:space:]]+//' \
   | grep -F "$prefix" \
   | cut -c$((${#prefix} + 1))- \
-  | cut -d'\' -f1 \
+  | cut -d"\\" -f1 \
   | sort -u \
   | paste -sd'|')
 [ -n "$roots" ] || exit 0
