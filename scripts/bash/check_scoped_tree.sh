@@ -64,6 +64,17 @@ while IFS= read -r namespace; do
 done < <(sed -E 's/.*namespace[[:space:]]+//' "$listing" | sort -u)
 rm -f "$listing"
 
+# A warning, not a failure: a new string is as often an error message as a class name a patcher
+# missed, and only reading the code around it tells the two apart.
+if strings=$(bash "$(dirname "${BASH_SOURCE[0]}")/find_new_unprefixed_strings.sh" "$plugin_dir" "$plugin_name"); then
+  while IFS= read -r found; do
+    [ -n "$found" ] || continue
+    echo "::warning file=${found%%: *}::vendor/prefixed gained the string ${found#*: } without $prefix. If it builds a class name, a scoper.inc.php patcher has to prefix it, or the class is not found at runtime."
+  done <<< "$strings"
+else
+  echo "::warning::vendor/prefixed was not checked for strings that name a scoped namespace without $prefix."
+fi
+
 # Packages rather than the whole file: composer.lock also changes on metadata alone (content-hash,
 # plugin-api-version), and that legitimately leaves vendor/prefixed untouched. The commit counts too,
 # because a branch dependency such as dev-main moves to a new commit without changing its version,

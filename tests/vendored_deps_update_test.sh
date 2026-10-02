@@ -129,6 +129,78 @@ dir=$(make_plugin empty)
 rm -rf "$dir/vendor/prefixed"/*
 expect "a prefixed tree with no namespaces at all fails" 1 "$dir" 'no namespace declarations' 'Composer\Autoload'
 
+# Strings naming a scoped namespace bare. make_plugin's tree declares Matomo\Dependencies\Foo\Bar, so
+# Bar is the scoped root.
+rescoped_with() {
+  printf '<?php\nnamespace Matomo\\Dependencies\\Foo\\Bar;\n// 1.1.0\n%s\n' "$1" > "$2/vendor/prefixed/foo/src/Bar.php"
+}
+expect_no_string_warning() {
+  local description="$1" dir="$2"
+  tests=$((tests + 1))
+  local output status
+  output=$(bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1)
+  status=$?
+  if [ "$status" -ne 0 ] || printf '%s' "$output" | grep -q 'gained the string'; then
+    echo "FAIL - $description (exited $status): $output"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+
+dir=$(make_plugin bare-string)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
+
+dir=$(make_plugin bare-string-double-quoted)
+rescoped_with "\$class = \"\\\\Bar\\\\Baz\";" "$dir"
+expect "a double-quoted bare string with a leading separator is reported too" 0 "$dir" 'gained the string "\\\\Bar' 'Composer\Autoload'
+
+dir=$(make_plugin known-string)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm known -- vendor/prefixed
+printf '%s\n' "// rescoped again" >> "$dir/vendor/prefixed/foo/src/Bar.php"
+expect_no_string_warning "a bare string the tree already had is not reported again" "$dir"
+
+dir=$(make_plugin prefixed-string)
+rescoped_with "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Bar\\\\Baz';" "$dir"
+expect_no_string_warning "a string that carries the prefix is not reported" "$dir"
+
+dir=$(make_plugin lookalike-string)
+rescoped_with "\$class = 'BarX\\\\Baz';" "$dir"
+expect_no_string_warning "a string whose namespace merely starts with a scoped root is not reported" "$dir"
+
+dir=$(make_plugin root-only-string)
+rescoped_with "\$class = 'Bar\\\\' . \$name;" "$dir"
+expect "a string that is only a scoped root and a separator is reported" 0 "$dir" "gained the string 'Bar" 'Composer\Autoload'
+
+dir=$(make_plugin first-scope)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+git -C "$dir" rm -rq --cached vendor/prefixed
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
+expect "a first rebuild, with no earlier tree, is a warning, not a list of every string" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+
+dir=$(make_plugin moved-string)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm known -- vendor/prefixed
+mkdir -p "$dir/vendor/prefixed/foo/lib"
+git -C "$dir" mv vendor/prefixed/foo/src/Bar.php vendor/prefixed/foo/lib/Bar.php
+printf '%s\n' "\$again = 'Bar\\\\Baz';" >> "$dir/vendor/prefixed/foo/lib/Bar.php"
+expect_no_string_warning "a known string in a moved file, or twice in one, is not reported again" "$dir"
+
+dir=$(make_plugin matomo-root)
+printf '<?php\nnamespace Matomo\\Dependencies\\Foo\\Matomo\\Network;\n%s\n' \
+  "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Matomo\\\\Network\\\\IP';" > "$dir/vendor/prefixed/foo/src/IP.php"
+expect_no_string_warning "a prefixed string is not reported when a scoped root is Matomo" "$dir"
+printf '%s\n' "\$bare = 'Matomo\\\\Network\\\\IP';" >> "$dir/vendor/prefixed/foo/src/IP.php"
+expect "a bare string is still reported when a scoped root is Matomo" 0 "$dir" "gained the string 'Matomo" 'Composer\Autoload'
+
+dir=$(make_plugin no-history)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+rm -rf "$dir/.git"
+git -C "$dir" init -q
+expect "a tree with no commit to compare with is a warning, not a list of every string" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+
 # The downgrade target, from the script's dry run, which stops before anything is installed.
 expect_downgrade() {
   local description="$1" matomo_constraint="$2" input="$3" want="$4"
@@ -407,6 +479,55 @@ expect_summary "the pull request lists the packages composer changed" \
 expect_summary "a change composer listed no operation for still gets a summary" \
   $'Nothing to modify in lock file\nInstalling dependencies from lock file\n' \
   "Composer listed no package operations; the \`composer.lock\` diff shows what changed."
+
+# The workflow's body step, run from a workspace laid out as the runner's is.
+python3 - "$WORKFLOW" > "$WORK/body-step.sh" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']
+print(next(s for s in steps if s.get('name') == 'Write the pull request body')['run'])
+PY
+mkdir -p "$WORK/workspace"
+ln -sfn "$ROOT" "$WORK/workspace/.plugin-ci-workflows"
+expect_body() {
+  local description="$1" dir="$2" want="$3" present="$4" base="${5:-HEAD}"
+  tests=$((tests + 1))
+  mkdir -p "$WORK/body-runner"
+  echo '- Upgrading foo/bar (1.0.0 => 1.1.0)' > "$WORK/body-runner/package-changes.md"
+  local body="$WORK/body-runner/pull-request-body.md"
+  rm -f "$body"
+  if ! (cd "$WORK/workspace" && RUNNER_TEMP="$WORK/body-runner" PLUGIN_DIR="$dir" PLUGIN_NAME=Foo BASE_SHA="$base" DOWNGRADE=8.1 \
+    GITHUB_RUN_ID=1 GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r bash -eo pipefail "$WORK/body-step.sh") > /dev/null 2>&1; then
+    echo "FAIL - $description (the step failed)"
+    failures+=("$description")
+  elif [ "$present" = yes ] && ! grep -qF -- "$want" "$body"; then
+    echo "FAIL - $description (the body has no '$want')"
+    failures+=("$description")
+  elif [ "$present" = no ] && grep -qF -- "$want" "$body"; then
+    echo "FAIL - $description (the body has '$want')"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+dir=$(make_plugin body-string)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+expect_body "the pull request lists a bare string the rebuild added" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`'Bar\\\\Baz\`" yes
+dir=$(make_plugin body-clean)
+expect_body "the pull request says nothing about strings when the rebuild added none" "$dir" 'without the prefix' no
+dir=$(make_plugin body-many)
+rescoped_with "$(for i in $(seq 1 52); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
+expect_body "the pull request lists at most 50 strings" "$dir" "- and 2 more, which the log of the scope step lists." yes
+# In sort order Baz7 is the 50th string and Baz8 the 51st.
+expect_body "the pull request lists the 50th string" "$dir" 'Baz7`' yes
+expect_body "the pull request leaves out the strings past 50" "$dir" 'Baz8`' no
+dir=$(make_plugin body-overflow)
+rescoped_with "$(for i in $(seq 1 3000); do printf '%s\n' "\$c$i = 'Bar\\\\Baz\\\\SomeLongClassNameThatFillsThePipe$i';"; done)" "$dir"
+expect_body "a list longer than a pipe holds is still capped, not a failed step" "$dir" "- and 2950 more" yes
+dir=$(make_plugin body-unreadable)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+expect_body "the pull request says when the strings could not be checked" "$dir" 'could not be checked' yes 0000000000000000000000000000000000000000
 
 # The workflow decides whether to rescope with the same lock comparison the checker fails on, so the
 # two must not drift apart.
