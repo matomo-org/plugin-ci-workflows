@@ -262,7 +262,10 @@ jobs:
           # 10#, or bash reads a zero-padded 08 as a malformed octal number.
           if (( 10#$platform_major > 10#$floor_major || (10#$platform_major == 10#$floor_major && 10#$platform_minor > 10#$floor_minor) )); then
             if [ -n "$TEMPORARY_PLATFORM" ]; then setting='the platform-php input'; else setting='config.platform.php in composer.json'; fi
-            echo "::warning file=plugin.json::$(escape "Dependencies resolve against PHP $PLATFORM, but $source lets the plugin run on PHP $floor, so this update can lock packages that fail there. Set $setting to the PHP $floor release $source names, or $remedy if the plugin needs PHP $PLATFORM.")"
+            gap="Dependencies resolve against PHP $PLATFORM, but $source lets the plugin run on PHP $floor, so this update can lock packages that fail there. Set $setting to the lowest PHP $floor release $source allows, or $remedy if the plugin needs PHP $PLATFORM."
+            echo "::warning file=plugin.json::$(escape "$gap")"
+            # Scheduled runs' annotations go unread, so whoever merges the update sees it in the body.
+            printf '%s\n' "${gap//[$'\r\n']/ }" > "$RUNNER_TEMP/platform-gap.md"
           else
             echo "Platform PHP $PLATFORM is not above the plugin's minimum, PHP $floor from $source."
           fi
@@ -352,6 +355,11 @@ jobs:
             echo
             cat "$RUNNER_TEMP/package-changes.md"
             echo
+            if [ -f "$RUNNER_TEMP/platform-gap.md" ]; then
+              echo "> [!WARNING]"
+              echo "> $(cat "$RUNNER_TEMP/platform-gap.md")"
+              echo
+            fi
             echo "This changes code the plugin ships, so it needs the usual changelog entry and version bump before release. Pushing either to this branch stops the scheduled update from refreshing it."
             echo
             echo "Opened by the [vendored dependencies update](https://github.com/matomo-org/plugin-ci-workflows#vendored-dependencies-update) workflow, run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
