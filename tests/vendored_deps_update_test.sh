@@ -201,6 +201,232 @@ rm -rf "$dir/.git"
 git -C "$dir" init -q
 expect "a tree with no commit to compare with is a warning, not a list of every string" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
 
+# Uses of PHP the floor lacks, found by a stand-in PHPStan that reports each "// FINDING <identifier>
+# <message>" comment in the tree it analyses, in PHPStan's JSON, and records the phpVersion it got.
+mkdir -p "$WORK/phpstan"
+cat > "$WORK/phpstan/phpstan" <<'SH'
+#!/bin/bash
+[ -z "${PHPSTAN_FAILS:-}" ] || { echo "PHPStan crashed" >&2; exit 255; }
+[ -z "${PHPSTAN_SLEEP:-}" ] || sleep "$PHPSTAN_SLEEP"
+config="$3"
+sed -n 's/^  phpVersion: //p' "$config" > "$PHPSTAN_VERSION"
+paths=$(sed -n 's/^  paths: \[\(.*\)\]$/\1/p' "$config" | jq -r .)
+{ grep -r --include='*.php' -H '// FINDING ' "$paths" || true; } | jq -Rn '
+  [inputs | capture("^(?<file>[^:]+):.*// FINDING (?<identifier>[^ ]+) (?<message>.*)$")]
+  | {totals: {errors: 0, file_errors: length},
+     files: (group_by(.file) | map({key: .[0].file, value: {messages: map({message, identifier})}}) | from_entries),
+     errors: (if env.PHPSTAN_ERRORS then ["Child process error"] else [] end)}'
+SH
+chmod +x "$WORK/phpstan/phpstan"
+GAPS="$ROOT/scripts/bash/find_new_floor_php_gaps.sh"
+
+# A plugin whose committed Bar.php holds the first lines, rescoped to hold the second.
+floor_plugin() {
+  local dir
+  dir=$(make_plugin "$1")
+  printf '<?php\n%s\n' "$2" > "$dir/vendor/prefixed/foo/src/Bar.php"
+  git -C "$dir" -c user.email=t@t -c user.name=t commit -qm base -- vendor/prefixed
+  printf '<?php\n%s\n' "$3" > "$dir/vendor/prefixed/foo/src/Bar.php"
+  echo "$dir"
+}
+expect_gaps() {
+  local description="$1" want_status="$2" want="$3" dir="$4" floor="${5:-8.1}" phpstan="${6:-$WORK/phpstan/phpstan}"
+  tests=$((tests + 1))
+  local output status
+  output=$(PHPSTAN_VERSION="$WORK/phpstan-version" bash "$GAPS" "$dir" "$floor" "$phpstan" 2>/dev/null)
+  status=$?
+  if [ "$status" -ne "$want_status" ] || [ "$output" != "$want" ]; then
+    echo "FAIL - $description (exited $status, wanted $want_status): '$output'"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+FN='// FINDING function.notFound Function array_find not found.'
+
+dir=$(floor_plugin floor-new '' "$FN")
+expect_gaps "a PHP function the rebuild starts calling is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+tests=$((tests + 1))
+if [ "$(cat "$WORK/phpstan-version")" = 80100 ]; then
+  echo "ok - PHPStan analyses for the floor"
+else
+  echo "FAIL - PHPStan analyses for the floor (got phpVersion $(cat "$WORK/phpstan-version"))"
+  failures+=("PHPStan analyses for the floor")
+fi
+
+dir=$(floor_plugin floor-known "$FN" "$FN")
+expect_gaps "a use the earlier tree already made is not listed again" 0 '' "$dir"
+
+dir=$(floor_plugin floor-moved "$FN" '')
+mkdir -p "$dir/vendor/prefixed/foo/lib"
+printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/lib/Moved.php"
+expect_gaps "a known use in a moved file is not listed again" 0 '' "$dir"
+
+dir=$(floor_plugin floor-elsewhere "$FN" "$FN")
+mkdir -p "$dir/vendor/prefixed/foo/lib"
+printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/lib/New.php"
+expect_gaps "a known use the rebuild adds in another file is listed there" 0 "vendor/prefixed/foo/lib/New.php: Function array_find not found." "$dir"
+dir=$(floor_plugin floor-twice "$FN" "$FN"$'\n'"$FN")
+expect_gaps "a known use the rebuild makes again in the same file is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+dir=$(floor_plugin floor-new-ns '' $'// FINDING class.notFound Class Dba\\Connection not found.\n// FINDING class.notFound Instantiated class Pcntl\\QosClass not found.')
+expect_gaps "a class in a namespace PHP added lately is listed" 0 $'vendor/prefixed/foo/src/Bar.php: Class Dba\\Connection not found.\nvendor/prefixed/foo/src/Bar.php: Instantiated class Pcntl\\QosClass not found.' "$dir"
+
+dir=$(floor_plugin floor-package '' '// FINDING class.notFound Instantiated class Matomo\Dependencies\Foo\Optional not found.')
+expect_gaps "a class from a package the tree does not install is not listed" 0 '' "$dir"
+
+dir=$(floor_plugin floor-constant '' '// FINDING constant.notFound Constant FOO_DEFINED not found.')
+expect_gaps "a constant is not listed, since packages define their own" 0 '' "$dir"
+
+dir=$(floor_plugin floor-php-namespace '' '// FINDING class.notFound Instantiated class Random\Randomizer not found.')
+expect_gaps "a class in a namespace PHP ships is listed" 0 "vendor/prefixed/foo/src/Bar.php: Instantiated class Random\\Randomizer not found." "$dir"
+
+dir=$(floor_plugin floor-method '' '// FINDING method.notFound Call to an undefined method DateTime::modifyOrFail().')
+expect_gaps "a method the floor's own class lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime::modifyOrFail()." "$dir"
+
+dir=$(floor_plugin floor-73 '' "$FN")
+expect_gaps "a 7.3 floor is passed on as 70300" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir" 7.3
+tests=$((tests + 1))
+if [ "$(cat "$WORK/phpstan-version")" = 70300 ]; then
+  echo "ok - a 7.3 floor is analysed as 70300"
+else
+  echo "FAIL - a 7.3 floor is analysed as 70300 (got phpVersion $(cat "$WORK/phpstan-version"))"
+  failures+=("a 7.3 floor is analysed as 70300")
+fi
+
+dir=$(floor_plugin floor-bad-floor '' "$FN")
+expect_gaps "a floor that is not major.minor is a usage error" 2 '' "$dir" 8
+
+dir=$(floor_plugin floor-first-scope '' "$FN")
+git -C "$dir" rm -rq --cached vendor/prefixed
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
+expect_gaps "a first rebuild, with no earlier tree, fails rather than listing every use" 1 '' "$dir"
+
+dir=$(floor_plugin floor-crash '' "$FN")
+tests=$((tests + 1))
+if PHPSTAN_FAILS=1 PHPSTAN_VERSION="$WORK/phpstan-version" bash "$GAPS" "$dir" 8.1 "$WORK/phpstan/phpstan" > /dev/null 2>&1; then
+  echo "FAIL - a PHPStan that does not run fails the check rather than finding nothing"
+  failures+=("a PHPStan that does not run fails the check")
+else
+  echo "ok - a PHPStan that does not run fails the check rather than finding nothing"
+fi
+tests=$((tests + 1))
+if PHPSTAN_ERRORS=1 PHPSTAN_VERSION="$WORK/phpstan-version" bash "$GAPS" "$dir" 8.1 "$WORK/phpstan/phpstan" > /dev/null 2>&1; then
+  echo "FAIL - a PHPStan that leaves files unanalysed fails the check"
+  failures+=("a PHPStan that leaves files unanalysed fails the check")
+else
+  echo "ok - a PHPStan that leaves files unanalysed fails the check"
+fi
+
+dir=$(floor_plugin floor-interface '' '// FINDING interface.notFound Class Matomo\Dependencies\Foo\Engine implements unknown interface Random\Engine.')
+expect_gaps "an unknown PHP interface is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class Matomo\\Dependencies\\Foo\\Engine implements unknown interface Random\\Engine." "$dir"
+dir=$(floor_plugin floor-arguments '' '// FINDING arguments.count Function str_contains invoked with 1 parameter, 2 required.')
+expect_gaps "a PHP function called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function str_contains invoked with 1 parameter, 2 required." "$dir"
+dir=$(floor_plugin floor-method-arguments '' '// FINDING arguments.count Method DateTime::format() invoked with 0 parameters, 1 required.')
+expect_gaps "a PHP method called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php: Method DateTime::format() invoked with 0 parameters, 1 required." "$dir"
+dir=$(floor_plugin floor-phpdoc '' '// FINDING class.notFound PHPDoc tag @return contains unknown class Random\Randomizer.')
+expect_gaps "a class named only in a docblock is not listed" 0 '' "$dir"
+
+# A blob the earlier tree points at but the repository no longer has.
+dir=$(floor_plugin floor-archive "$FN" "$FN")
+blob=$(git -C "$dir" rev-parse HEAD:vendor/prefixed/foo/src/Bar.php)
+rm -f "$dir/.git/objects/${blob:0:2}/${blob:2}"
+expect_gaps "an earlier tree that cannot be extracted fails the check" 1 '' "$dir"
+
+dir=$(floor_plugin floor-export-ignore "$FN" "$FN")
+echo 'vendor/prefixed/foo/src/Bar.php export-ignore' > "$dir/.gitattributes"
+git -C "$dir" add .gitattributes
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm attributes
+expect_gaps "a file the plugin marks export-ignore is still compared with its earlier version" 0 '' "$dir"
+
+dir=$(floor_plugin floor-ftp '' '// FINDING class.notFound Class FTP\Connection not found.')
+expect_gaps "a class in PHP's FTP namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class FTP\\Connection not found." "$dir"
+dir=$(floor_plugin floor-lowercase '' '// FINDING class.notFound Instantiated class random\Randomizer not found.')
+expect_gaps "a PHP namespace written in lower case is listed" 0 "vendor/prefixed/foo/src/Bar.php: Instantiated class random\\Randomizer not found." "$dir"
+dir=$(floor_plugin floor-soap '' '// FINDING class.notFound Class Soap\Url not found.')
+expect_gaps "a class in PHP's Soap namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class Soap\\Url not found." "$dir"
+dir=$(floor_plugin floor-union '' '// FINDING method.notFound Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail().')
+expect_gaps "a method the floor lacks on a union of PHP classes is listed" 0 "vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail()." "$dir"
+
+dir=$(floor_plugin floor-slow '' "$FN")
+tests=$((tests + 1))
+if PHPSTAN_TIMEOUT=1 PHPSTAN_SLEEP=5 PHPSTAN_VERSION="$WORK/phpstan-version" bash "$GAPS" "$dir" 8.1 "$WORK/phpstan/phpstan" > /dev/null 2> "$WORK/slow.err"; then
+  echo "FAIL - a PHPStan that runs past the time limit fails the check"
+  failures+=("a PHPStan that runs past the time limit fails the check")
+elif ! grep -q 'ran past 1s' "$WORK/slow.err"; then
+  echo "FAIL - a PHPStan that runs past the time limit fails the check (the log does not say so)"
+  failures+=("a PHPStan that runs past the time limit fails the check")
+else
+  echo "ok - a PHPStan that runs past the time limit fails the check"
+fi
+
+# A use both trees make, so an earlier tree that came out empty would list it.
+src=$(floor_plugin floor-nested-src "$FN" "$FN")
+outer="$WORK/floor-nested"
+mkdir -p "$outer/plugins"
+git -C "$outer" init -q
+cp -r "$src" "$outer/plugins/Foo"
+rm -rf "$outer/plugins/Foo/.git"
+git -C "$src" show HEAD:vendor/prefixed/foo/src/Bar.php > "$outer/plugins/Foo/vendor/prefixed/foo/src/Bar.php"
+git -C "$outer" add plugins
+git -C "$outer" -c user.email=t@t -c user.name=t commit -qm base
+cp "$src/vendor/prefixed/foo/src/Bar.php" "$outer/plugins/Foo/vendor/prefixed/foo/src/Bar.php"
+expect_gaps "a plugin in a subdirectory of its repository is compared with its own earlier tree" 0 '' "$outer/plugins/Foo"
+
+# The stand-in prints what each test gives it, so only the real PHPStan shows the patterns match its
+# wording. Everything the fixture uses is PHP 8.4's, so a runner on 8.3 or older lacks it too.
+real_phpstan="${REAL_PHPSTAN:-}"
+if [ -z "$real_phpstan" ] && [ -n "${CI:-}" ]; then
+  mkdir "$WORK/tools"
+  cp "$ROOT/actions/scope-dependencies/tools/composer.json" "$ROOT/actions/scope-dependencies/tools/composer.lock" "$WORK/tools/"
+  composer install --working-dir="$WORK/tools" --no-interaction --no-progress --quiet
+  real_phpstan="$WORK/tools/vendor/bin/phpstan"
+fi
+if [ -n "$real_phpstan" ]; then
+  # shellcheck disable=SC2016 # PHP's $, not the shell's.
+  dir=$(floor_plugin floor-real '' '/** @phpstan-type Mode \RoundingMode */
+class K {
+    public function f() {
+        try { $this->g(); } catch (\RoundingMode $e) {}
+        $a = \RoundingMode::HalfAwayFromZero;
+        $b = new \Dom\HTMLDocument();
+        $c = (new \DateTime())->getMicrosecond();
+        $d = \DateTime::createFromTimestamp(1);
+        $e = array_find([1], function ($v) { return $v; });
+        return [$a, $b, $c, $d, $e];
+    }
+    private function g() {}
+}')
+  want='vendor/prefixed/foo/src/Bar.php: Access to constant HalfAwayFromZero on an unknown class RoundingMode.
+vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime::getMicrosecond().
+vendor/prefixed/foo/src/Bar.php: Call to an undefined static method DateTime::createFromTimestamp().
+vendor/prefixed/foo/src/Bar.php: Function array_find not found.
+vendor/prefixed/foo/src/Bar.php: Instantiated class Dom\HTMLDocument not found.'
+  expect_gaps "PHPStan's own messages are listed, and those for a type alias or a caught class are not" 0 "$want" "$dir" 8.1 "$real_phpstan"
+
+  tests=$((tests + 1))
+  phar="${REAL_PHPSTAN_PHAR:-$WORK/tools/vendor/phpstan/phpstan/phpstan.phar}"
+  # shellcheck disable=SC2016 # PHP's $, not the shell's.
+  stubbed=$(php -r '$ns = [];
+    foreach (new RecursiveIteratorIterator(new Phar($argv[1])) as $f) {
+      $p = $f->getPathname();
+      if (strpos($p, "/php-8-stubs/stubs/ext/") !== false && substr($p, -5) === ".stub"
+        && preg_match_all("~^namespace\s+([A-Za-z_]+)~m", file_get_contents($p), $m)) {
+        foreach ($m[1] as $n) { $ns[strtolower($n)] = 1; }
+      }
+    }
+    ksort($ns);
+    echo implode(" ", array_keys($ns));' "$phar")
+  listed=$(sed -n 's/.*or any((\(.*\));$/\1/p' "$GAPS" | grep -o '[a-z]\+' | sort | paste -sd ' ')
+  if [ -n "$stubbed" ] && [ "$stubbed" = "$listed" ]; then
+    echo "ok - the namespaces kept as PHP's are those PHPStan has stubs for"
+  else
+    echo "FAIL - the namespaces kept as PHP's are those PHPStan has stubs for (stubs '$stubbed', listed '$listed')"
+    failures+=("the namespaces kept as PHP's are those PHPStan has stubs for")
+  fi
+else
+  echo "skip - PHPStan's own messages, without REAL_PHPSTAN or CI"
+fi
+
 # The downgrade target, from the script's dry run, which stops before anything is installed.
 expect_downgrade() {
   local description="$1" matomo_constraint="$2" input="$3" want="$4"
@@ -491,13 +717,15 @@ PY
 mkdir -p "$WORK/workspace"
 ln -sfn "$ROOT" "$WORK/workspace/.plugin-ci-workflows"
 expect_body() {
-  local description="$1" dir="$2" want="$3" present="$4" base="${5:-HEAD}"
+  local description="$1" dir="$2" want="$3" present="$4" base="${5:-HEAD}" floor_php="${6:-success}"
   tests=$((tests + 1))
+  rm -f "$WORK/phpstan-version"
   mkdir -p "$WORK/body-runner"
   echo '- Upgrading foo/bar (1.0.0 => 1.1.0)' > "$WORK/body-runner/package-changes.md"
   local body="$WORK/body-runner/pull-request-body.md"
   rm -f "$body"
-  if ! (cd "$WORK/workspace" && RUNNER_TEMP="$WORK/body-runner" PLUGIN_DIR="$dir" PLUGIN_NAME=Foo BASE_SHA="$base" DOWNGRADE=8.1 \
+  if ! (cd "$WORK/workspace" && RUNNER_TEMP="$WORK/body-runner" PLUGIN_DIR="$dir" PLUGIN_NAME=Foo BASE_SHA="$base" DOWNGRADE="${BODY_DOWNGRADE-8.1}" \
+    PHPSTAN="$WORK/phpstan/phpstan" PHPSTAN_VERSION="$WORK/phpstan-version" FLOOR_PHP="$floor_php" \
     GITHUB_RUN_ID=1 GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r bash -eo pipefail "$WORK/body-step.sh") > /dev/null 2>&1; then
     echo "FAIL - $description (the step failed)"
     failures+=("$description")
@@ -528,6 +756,37 @@ expect_body "a list longer than a pipe holds is still capped, not a failed step"
 dir=$(make_plugin body-unreadable)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 expect_body "the pull request says when the strings could not be checked" "$dir" 'could not be checked' yes 0000000000000000000000000000000000000000
+dir=$(floor_plugin body-gap '' "$FN")
+expect_body "the pull request lists a PHP function the floor lacks" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`Function array_find not found.\`" yes
+expect_body "the pull request names instanceof and ::class as written" "$dir" "A class named only in \`instanceof\` or \`::class\` cannot." yes
+dir=$(floor_plugin body-no-gap "$FN" "$FN")
+expect_body "the pull request says nothing about the floor when the rebuild added nothing it lacks" "$dir" 'PHP 8.1 does not have' no
+dir=$(floor_plugin body-many-gaps '' "$(for i in $(seq 1 52); do printf '%s\n' "// FINDING function.notFound Function array_find$i not found."; done)")
+expect_body "the pull request lists at most 50 floor gaps" "$dir" "- and 2 more, which the log of this step lists." yes
+dir=$(floor_plugin body-gap-crash '' "$FN")
+PHPSTAN_FAILS=1 expect_body "the pull request says when the floor could not be checked" "$dir" 'could not be checked for PHP functions' yes
+dir=$(floor_plugin body-no-floor-php '' "$FN")
+expect_body "the pull request says when the floor PHP could not be set up" "$dir" 'could not be checked for PHP functions' yes HEAD failure
+tests=$((tests + 1))
+if [ -e "$WORK/phpstan-version" ]; then
+  echo "FAIL - PHPStan does not run when the floor PHP could not be set up"
+  failures+=("PHPStan does not run without the floor PHP")
+else
+  echo "ok - PHPStan does not run when the floor PHP could not be set up"
+fi
+dir=$(floor_plugin body-73 "$FN" "$FN")
+BODY_DOWNGRADE=7.3 expect_body "the pull request says a 7.3 floor was checked on 7.4" "$dir" 'does not report what PHP 7.4 added' yes
+dir=$(floor_plugin body-81 "$FN" "$FN")
+expect_body "the pull request says nothing about a later PHP when the floor itself ran" "$dir" 'does not report what' no
+dir=$(floor_plugin body-no-downgrade '' "$FN")
+BODY_DOWNGRADE='' expect_body "without a downgrade the pull request says nothing about a floor" "$dir" 'PHP functions' no
+tests=$((tests + 1))
+if [ -e "$WORK/phpstan-version" ]; then
+  echo "FAIL - PHPStan does not run without a downgrade"
+  failures+=("PHPStan does not run without a downgrade")
+else
+  echo "ok - PHPStan does not run without a downgrade"
+fi
 
 # The workflow decides whether to rescope with the same lock comparison the checker fails on, so the
 # two must not drift apart.
@@ -540,6 +799,18 @@ if [ -n "$(lock_filter "$CHECK")" ] && [ "$(lock_filter "$CHECK")" = "$(lock_fil
 else
   echo "FAIL - the workflow and the checker compare composer.lock the same way"
   failures+=("the lock comparisons match")
+fi
+
+# The body step takes PHPStan from where the action installs Rector, so the two must not drift apart.
+tests=$((tests + 1))
+# shellcheck disable=SC2016 # literal text in the files, not expansions.
+if grep -qF 'TOOLS: ${{ runner.temp }}/scope-dependencies' "$ACTION" \
+  && grep -qF 'rector_dir="$tools_dir/rector"' "$SCOPE" \
+  && grep -qF 'PHPSTAN: ${{ runner.temp }}/scope-dependencies/rector/vendor/bin/phpstan' "$WORKFLOW"; then
+  echo "ok - the workflow runs the PHPStan the action installs"
+else
+  echo "FAIL - the workflow runs the PHPStan the action installs"
+  failures+=("the workflow runs the PHPStan the action installs")
 fi
 
 # The workflow's guards.
@@ -561,6 +832,19 @@ def step(name, in_steps=None):
     return found[0]
 
 check("setup-php loads no coverage driver", step('Setup PHP')['with'].get('coverage') == 'none')
+
+floor = step('Setup the floor PHP')
+body = step('Write the pull request body')
+names = [s.get('name') for s in steps]
+check("a floor PHP that cannot be set up skips the check, not the pull request",
+      floor.get('id') == 'floor-php' and floor.get('continue-on-error') is True
+      and body['env'].get('FLOOR_PHP') == '${{ steps.floor-php.outcome }}'
+      and names.index('Setup the floor PHP') + 1 == names.index('Write the pull request body'))
+check("the floor PHP is set up only when there is a floor, with no coverage driver",
+      "steps.scope.outputs.downgrade-php-version != ''" in floor['if'] and floor['with'].get('coverage') == 'none')
+check("the body names the PHP a 7.3 floor was set up on",
+      "downgrade-php-version == '7.3' && '7.4'" in floor['with']['php-version']
+      and '[ "$DOWNGRADE" != 7.3 ] || checked_on=7.4' in body['run'])
 
 scope = step('Scope, downgrade and check')
 this_repo = step('Check out plugin-ci-workflows repository')
