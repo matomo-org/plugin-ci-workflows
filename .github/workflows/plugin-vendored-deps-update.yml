@@ -271,8 +271,8 @@ jobs:
             echo "::warning file=plugin.json::$(escape "$gap")"
             to_body WARNING "$gap"
           else
-            escape "Platform PHP $PLATFORM is not above the plugin's minimum, PHP $floor from $source."
-            echo
+            result="Platform PHP $PLATFORM is not above the plugin's minimum, PHP $floor from $source."
+            printf '%s\n' "${result//[$'\r\n']/ }"
           fi
 
       # A full update also runs post-update-cmd, which is where plugins trim
