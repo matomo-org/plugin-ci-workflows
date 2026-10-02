@@ -225,6 +225,20 @@ jobs:
           allowed-unprefixed-namespaces: ${{ inputs.allowed-unprefixed-namespaces }}
           scoper-ref: ${{ inputs.scoper-ref }}
 
+      # For find_new_floor_php_gaps.sh, which has to run on the floor: PHPStan counts whatever the
+      # running PHP has as present. PHPStan needs 7.4, so a 7.3 floor runs on that. Nothing after the
+      # check in this job runs PHP. The check only warns, so a failed setup skips it rather than the pull
+      # request; running it on the runner's PHP instead would report nothing, falsely.
+      - name: Setup the floor PHP
+        id: floor-php
+        if: ${{ steps.update.outputs.changed == 'true' && steps.scope.outputs.downgrade-php-version != '' }}
+        continue-on-error: true
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ steps.scope.outputs.downgrade-php-version == '7.3' && '7.4' || steps.scope.outputs.downgrade-php-version }}
+          coverage: none
+          tools: none
+
       - name: Write the pull request body
         if: ${{ steps.update.outputs.changed == 'true' }}
         shell: bash
@@ -232,6 +246,9 @@ jobs:
           DOWNGRADE: ${{ steps.scope.outputs.downgrade-php-version }}
           PLUGIN_NAME: ${{ steps.scope.outputs.plugin-name }}
           BASE_SHA: ${{ steps.update.outputs.base-sha }}
+          # Installed by the scope-dependencies action along with Rector, which depends on it.
+          PHPSTAN: ${{ runner.temp }}/scope-dependencies/rector/vendor/bin/phpstan
+          FLOOR_PHP: ${{ steps.floor-php.outcome }}
         run: |
           body="$RUNNER_TEMP/pull-request-body.md"
           if [ -n "$DOWNGRADE" ]; then
@@ -242,6 +259,19 @@ jobs:
           strings_checked=true
           strings=$(bash .plugin-ci-workflows/scripts/bash/find_new_unprefixed_strings.sh "$PLUGIN_DIR" "$PLUGIN_NAME" "$BASE_SHA") \
             || strings_checked=false
+          # Without a downgrade there is no floor the tree was built for, so nothing to check against.
+          gaps=''
+          gaps_checked=true
+          checked_on="$DOWNGRADE"
+          [ "$DOWNGRADE" != 7.3 ] || checked_on=7.4
+          if [ -n "$DOWNGRADE" ] && [ "$FLOOR_PHP" != success ]; then
+            echo "PHP $checked_on could not be set up, so the floor check did not run."
+            gaps_checked=false
+          elif [ -n "$DOWNGRADE" ]; then
+            gaps=$(bash .plugin-ci-workflows/scripts/bash/find_new_floor_php_gaps.sh "$PLUGIN_DIR" "$DOWNGRADE" "$PHPSTAN" "$BASE_SHA") \
+              || gaps_checked=false
+            [ -z "$gaps" ] || printf '%s\n' "$gaps"
+          fi
           {
             echo "Updates the plugin's scoped dependencies to the newest versions composer.json allows, and regenerates \`vendor/prefixed\` with $tools."
             echo
@@ -261,6 +291,24 @@ jobs:
               echo
             elif [ "$strings_checked" = false ]; then
               echo "The rebuilt tree could not be checked for strings that name a scoped namespace without the prefix; the run's log says why."
+              echo
+            fi
+            if [ -n "$gaps" ]; then
+              echo "The rebuild added uses of PHP functions, classes, methods, properties or class constants that PHP $DOWNGRADE does not have, or calls with arguments it does not accept, which Rector does not transpile. Check each one before merging: unless a version check guards it or a polyfill provides it, it can fail at runtime on PHP $DOWNGRADE. A class named only in \`instanceof\` or \`::class\` cannot. The check cannot tell PHP's own global functions and classes from a package's, so a global one from a package the plugin does not install is listed too."
+              echo
+              # shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
+              head -n 50 <<< "$gaps" | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
+              count=$(wc -l <<< "$gaps")
+              if [ "$count" -gt 50 ]; then
+                echo "- and $((count - 50)) more, which the log of this step lists."
+              fi
+              echo
+            elif [ "$gaps_checked" = false ]; then
+              echo "The rebuilt tree could not be checked for PHP functions and classes newer than PHP $DOWNGRADE; the run's log says why."
+              echo
+            fi
+            if [ "$gaps_checked" = true ] && [ "$checked_on" != "$DOWNGRADE" ]; then
+              echo "The check for PHP $DOWNGRADE ran on PHP $checked_on, the oldest PHPStan supports, so it does not report what PHP $checked_on added."
               echo
             fi
             echo "This changes code the plugin ships, so it needs the usual changelog entry and version bump before release. Pushing either to this branch stops the scheduled update from refreshing it."
