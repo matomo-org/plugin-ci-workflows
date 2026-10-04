@@ -246,6 +246,9 @@ as unreleased, so a version that was uploaded by hand or tagged `v6.0.2` would b
 and given a new GitHub Release on the first push. If the tag is missing, add the caller in the same change as
 the next version bump.
 
+Before the first release, also merge `N.x-prod` into `N.x-dev` once, so that anything only production has is
+already on development. Otherwise the back-merge after every release fails on those files until it is done.
+
 ```yaml
 name: Release plugin
 
@@ -286,6 +289,21 @@ advanced after the original run. Other tag/branch histories fail closed rather t
 
 The protected `N.x-prod` branch must also allow `github-actions[bot]` to push the changelog-date commit; the
 `contents: write` permission does not bypass branch protection rules.
+
+After publishing, the workflow merges the release tag back into `N.x-dev`, so the development branch contains the
+release and its dated changelog line, and the next development-to-production merge does not conflict on it. When
+`N.x-dev` already contains the tag there is nothing to do. The development branch is fast-forwarded when it has
+nothing new, and otherwise gets a merge commit; a plugin without `N.x-dev` is skipped with a notice. Only
+`CHANGELOG.md` is merged back unattended: when the release changes any other file and that file is not identical on
+`N.x-dev`, such as a revert or a hotfix made on `N.x-prod`, the step fails rather than carry it into development. Changes made only on `N.x-dev` do not stop the merge. This relies on `N.x-dev` reaching
+`N.x-prod` through a merge commit or a fast-forward: after a squash or rebase merge the two branches share no recent
+commit, so every back-merge conflicts on `CHANGELOG.md`. The push is never forced. When the release changes other
+files, the merge conflicts (usually because the next changelog entry already landed on `N.x-dev` next to the dated
+line), or the push is rejected, the step fails after the release is already out: merge the tag into `N.x-dev` by
+hand. While the tag is still the branch tip, a dispatched run repeats the merge, so **Run workflow** also retries
+it. `N.x-dev` must let `github-actions[bot]` push past its protection as well, including any required status
+checks: the push is made with `GITHUB_TOKEN`, so it starts no workflow runs and the pushed commit has no checks.
+
 The caller must not declare workflow-level concurrency or concurrency on the job that calls this
 workflow, because a caller's group replaces the reusable workflow's group. Releases are explicitly
 not marked as GitHub's repository-wide Latest because 5.x and 6.x production lines are released in

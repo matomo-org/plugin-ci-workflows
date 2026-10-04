@@ -3,6 +3,8 @@
 # The caller owns the push and workflow_dispatch triggers. The version in plugin.json is
 # authoritative. CHANGELOG.md is checked for the same version and its release date is added or
 # corrected before the tag is created.
+# After publishing, the release tag is merged back into the development branch when it changes
+# only CHANGELOG.md.
 
 name: Plugin release
 
@@ -16,7 +18,7 @@ on:
         default: 'main'
 
 permissions:
-  contents: write # commit the changelog date, create the tag, and publish the release
+  contents: write # commit the changelog date, create the tag, publish the release, and merge it back into N.x-dev
 
 concurrency:
   group: plugin-release-${{ github.repository }}-${{ github.ref }}
@@ -89,6 +91,7 @@ jobs:
           cp "$SCRIPT_CHECKOUT/scripts/python/update_changelog_date.py" "$RUNNER_TEMP/"
           cp "$SCRIPT_CHECKOUT/scripts/bash/create_plugin_release_tag.sh" "$RUNNER_TEMP/"
           cp "$SCRIPT_CHECKOUT/scripts/bash/publish_plugin_release.sh" "$RUNNER_TEMP/"
+          cp "$SCRIPT_CHECKOUT/scripts/bash/backmerge_plugin_release.sh" "$RUNNER_TEMP/"
           # Keep the shared checkout out of the plugin repository before git records the release.
           rm -rf "$SCRIPT_CHECKOUT"
 
@@ -147,3 +150,18 @@ jobs:
         run: |
           set -euo pipefail
           bash "$PUBLISH_SCRIPT" "$PLUGIN_NAME" "$VERSION" "$RELEASE_DATE"
+
+      - name: Merge the release back into the development branch
+        if: steps.prepare.outputs.publish_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          auth_header=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth_header"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header"
+          bash "$RUNNER_TEMP/backmerge_plugin_release.sh" "$VERSION" "$GITHUB_REF_NAME"

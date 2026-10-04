@@ -43,6 +43,8 @@ jobs:
         run: bash tests/create_plugin_release_tag_test.sh
       - name: Check GitHub release publishing
         run: bash tests/publish_plugin_release_test.sh
+      - name: Check the back-merge into the development branch
+        run: bash tests/backmerge_plugin_release_test.sh
 
   plugin-ci-invariants:
     name: Plugins CI invariants

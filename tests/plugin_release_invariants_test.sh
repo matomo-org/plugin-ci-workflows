@@ -107,6 +107,7 @@ check(
             "update_changelog_date.py",
             "create_plugin_release_tag.sh",
             "publish_plugin_release.sh",
+            "backmerge_plugin_release.sh",
         )
     ),
 )
@@ -127,6 +128,12 @@ check(
     and steps_by_name.get("Create GitHub release", {}).get("env", {}).get("PUBLISH_SCRIPT")
     == "${{ runner.temp }}/publish_plugin_release.sh"
     and "--verify-tag" in (workflow_root / "scripts/bash/publish_plugin_release.sh").read_text(),
+)
+check(
+    "the back-merge runs last, whenever a release is published or resumed",
+    steps[-1].get("name") == "Merge the release back into the development branch"
+    and steps[-1].get("if") == "steps.prepare.outputs.publish_release == 'true'"
+    and "backmerge_plugin_release.sh" in step_run("Merge the release back into the development branch"),
 )
 check(
     "the shared release publisher uses a string latest field",
