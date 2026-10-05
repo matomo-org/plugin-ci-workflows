@@ -479,7 +479,7 @@ The floor is derived, not pinned, and it is the **lowest** of the two manifests 
 
 Lowest rather than first-found, and OAuth2 is why. It declares `>=8.1.0` in `plugin.json` while its composer platform is `8.2.0`, and `platform-check` is off in that tree — so Matomo will happily activate it on PHP 8.1 and load code resolved for 8.2, with nothing to stop it. Parsing at 8.2 cannot see that; parsing at 8.1 reports it, and that red is a true positive. The remedy is a choice the maintainer makes: lower the platform and re-resolve, or raise `plugin.json` to what the tree really needs. Branches differ too — ApiReference declares `>=7.4` on `5.x-dev` and `>=8.1` on `6.x-dev` — so a hardcoded version is wrong on one of them whatever it says.
 
-When it fails, the fix is composer-side. Re-running the scoper re-prefixes the same code and produces the same failure; align `config.platform.php` with the floor and re-resolve.
+When it fails, the fix is composer-side. Re-running the scoper re-prefixes the same code and produces the same failure; align `config.platform.php`, or the `platform-php` the vendored dependencies update is passed, with the floor and re-resolve.
 
 **What it catches, and what it cannot.** `php -l` reports what the parser rejects, so at an 8.x floor it catches syntax the older 8.x does not know. At a 7.2 or 7.4 floor it is blinder than the paragraph above implies: `#[Attr]` written on one line is a `#` comment to PHP 7, so the parser accepts it silently, and only a multi-line attribute argument list — where the continuation is no longer commented out — produces an error. So the attribute case that motivates this check is caught on the 8.x branches and, on the 5.x ones, only in its multi-line form. Nothing short of a real static parse would close that, and this check is deliberately not one.
 
@@ -543,7 +543,8 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `branch` | no | the caller's ref | Branch to update and open the pull request against |
-| `php-version` | no | `8.3` | PHP to run the tooling on, 8.1 or later. Resolution follows `config.platform.php`, which the plugin's `composer.json` must set |
+| `php-version` | no | `8.3` | PHP to run the tooling on, 8.1 or later. Resolution follows `config.platform.php` in the plugin's `composer.json`, or `platform-php` when it has none |
+| `platform-php` | when `composer.json` has no `config.platform.php` | `''` | PHP to resolve dependencies against, usually the plugin's minimum, such as `8.1.0`. Set only for the update: neither `composer.json` nor `composer.lock` keeps it. A pin in `composer.json` takes precedence |
 | `downgrade-php` | no | `auto` | Passed to the action: `auto`, `none`, `7.3` or `8.1` |
 | `allowed-unprefixed-namespaces` | no | `''` | Passed to the action |
 | `scoper-ref` | no | `''` | Passed to the action |
@@ -567,24 +568,31 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch: ['6.x-dev', '5.x-dev']
+        include:
+          - branch: '6.x-dev'
+            platform: '8.1.0' # the require.php minimum in this branch's plugin.json
+          - branch: '5.x-dev'
+            platform: '7.2.5' # likewise
     permissions:
       contents: write
       pull-requests: write
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-vendored-deps-update.yml@main
     with:
       branch: ${{ matrix.branch }}
+      platform-php: ${{ matrix.platform }}
     secrets:
       DEPS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN }}
 ```
 
-Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for the changelog entry and version bump the pull request still needs, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. The plugin's `composer.json` has to pin `config.platform.php`, because composer otherwise resolves against the runner's PHP.
+Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for the changelog entry and version bump the pull request still needs, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. Composer otherwise resolves against the runner's PHP, so the example passes each branch's minimum as `platform-php`. A plugin whose `composer.json` pins `config.platform.php` can leave it out.
+
+Without that pin the lock records no platform, so working on the tree locally needs the minimum passed by hand. On a PHP newer than the minimum, `composer install` refuses any locked package whose own PHP constraint stops short of the PHP running it, so install with `composer install --ignore-platform-req='php*'`. To update, resolve against the minimum and then take it back out, as the workflow does: `cp composer.json composer.json.orig && composer config platform.php 8.1.0 && composer update`, then `mv composer.json.orig composer.json && composer update --lock --no-install --ignore-platform-req='php*' --no-scripts`. Restore the copy rather than running `composer config --unset`, which leaves an empty `platform` object that the lock's hash still counts. A plain `composer update` resolves against the local PHP, and the next scheduled run reverts it.
 
 The rebuild can run code the dependencies it installs ship, such as a Composer plugin, so it runs in a job with read-only permissions and hands the rebuilt `composer.lock` and `vendor/` to a second job as an artifact. Only that second job holds the write token, and it runs nothing from the dependencies. The caller still grants `contents: write` and `pull-requests: write`, as in the example, for the second job to use.
 
 ### Scope dependencies
 
-`actions/scope-dependencies` rebuilds `vendor/prefixed` from whatever the plugin's unprefixed `vendor/` holds, so run `composer install` or `composer update` in the plugin first. The action runs `scripts/bash/scope_plugin_dependencies.sh`, which does what DevPluginCommands' `process-dependencies` command does, without Matomo's console:
+`actions/scope-dependencies` rebuilds `vendor/prefixed` from whatever the plugin's unprefixed `vendor/` holds, so run `composer install` or `composer update` in the plugin first, passing the minimum PHP as [above](#vendored-dependencies-update) when `composer.json` pins no platform. The action runs `scripts/bash/scope_plugin_dependencies.sh`, which does what DevPluginCommands' `process-dependencies` command does, without Matomo's console:
 
 1. It scopes the dependencies with matomo-scoper, which also writes the `vendor/autoload.php` proxy.
 2. It transpiles `vendor/prefixed` with Rector, using the Rector version locked in `actions/scope-dependencies/tools` and the config in `actions/scope-dependencies/rector.php`. With `auto`, the target is 8.1 when the lowest Matomo that plugin.json accepts is 6 or later, and 7.3 otherwise.
