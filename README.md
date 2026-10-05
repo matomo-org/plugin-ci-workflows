@@ -217,8 +217,9 @@ In [Plugins CI](#plugins-ci) this runs by default and costs a Matomo install per
 Creates a stable plugin release from a protected `N.x-prod` branch. The caller owns the triggers and
 the `contents: write` permission; the reusable workflow reads the version from `plugin.json`, checks
 that `CHANGELOG.md` contains that version, adds or corrects its UTC release date, then commits that
-date before creating the matching Git tag and GitHub Release. The tag is also the signal consumed by
-the Matomo Marketplace for distributed plugins.
+date before creating the matching Git tag and GitHub Release. It then merges the release back into
+`N.x-dev`, which needs its own branch-protection bypass (see below). The tag is also the signal
+consumed by the Matomo Marketplace for distributed plugins.
 
 For InnoCraft premium plugins the tag is the release: the Marketplace queues the tag pushed by this
 workflow and adds the version from that commit's `plugin.json` without a further review step, so
@@ -297,8 +298,8 @@ nothing new, and otherwise gets a merge commit; a plugin without `N.x-dev` is sk
 `CHANGELOG.md` is merged back unattended: when the release changes any other file and that file is not identical on
 `N.x-dev`, such as a revert or a hotfix made on `N.x-prod`, the step fails rather than carry it into development.
 Changes made only on `N.x-dev` do not stop the merge. This relies on `N.x-dev` reaching `N.x-prod` through a merge
-commit or a fast-forward: after a squash or rebase merge the two branches share no recent commit, so every
-back-merge fails, with "it changes more than CHANGELOG.md" or a `CHANGELOG.md` conflict. The push is never forced.
+commit or a fast-forward: after a squash or rebase merge the two branches share no recent commit, so back-merges
+normally fail, with "it changes more than CHANGELOG.md" or a `CHANGELOG.md` conflict. The push is never forced.
 When the release changes other files, the merge conflicts (usually because the next changelog entry already landed
 on `N.x-dev` next to the dated line), or the push is rejected, the step fails after the release is already out:
 merge the tag into `N.x-dev` by hand. While the tag is still the branch tip, a dispatched run repeats the merge, so
