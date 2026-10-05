@@ -480,6 +480,163 @@ expect_summary "a change composer listed no operation for still gets a summary" 
   $'Nothing to modify in lock file\nInstalling dependencies from lock file\n' \
   "Composer listed no package operations; the \`composer.lock\` diff shows what changed."
 
+# A platform-php the caller passed is set for the update only. The stand-in composer records its
+# arguments and the platform composer.json has when it runs, and writes to composer.json for config as
+# the real one does.
+mkdir -p "$WORK/bin-platform"
+cat > "$WORK/bin-platform/composer" <<'SH'
+#!/bin/bash
+echo "$* $(jq -c '.config.platform // null' "$PLUGIN_DIR/composer.json")" >> "$COMPOSER_CALLS"
+case "$*" in
+  config*) printf '{"config":{"platform":{"php":"%s"}}}\n' "${*: -1}" > "$PLUGIN_DIR/composer.json" ;;
+esac
+SH
+chmod +x "$WORK/bin-platform/composer"
+expect_platform_calls() {
+  local description="$1" platform="$2" want="$3"
+  tests=$((tests + 1))
+  local dir got
+  dir=$(make_plugin "platform")
+  printf '{"require":{"foo/bar":"^1.0"}}\n' > "$dir/composer.json"
+  cp "$dir/composer.json" "$WORK/composer.json.before"
+  mkdir -p "$WORK/runner"
+  : > "$WORK/composer-calls"
+  if ! PATH="$WORK/bin-platform:$PATH" GITHUB_OUTPUT="$WORK/update-output" RUNNER_TEMP="$WORK/runner" PLUGIN_DIR="$dir" \
+    COMPOSER_CALLS="$WORK/composer-calls" TEMPORARY_PLATFORM="$platform" bash -eo pipefail "$WORK/update-step.sh" > /dev/null 2>&1; then
+    got=error
+  elif ! cmp -s "$dir/composer.json" "$WORK/composer.json.before"; then
+    got="composer.json changed: $(cat "$dir/composer.json")"
+  else
+    got=$(sed -E 's/ --working-dir=[^ ]+//; s/ --no-interaction --no-progress//' "$WORK/composer-calls" | paste -sd'|')
+  fi
+  if [ "$got" = "$want" ]; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description (got '$got', wanted '$want')"
+    failures+=("$description")
+  fi
+}
+expect_platform_calls "a passed platform PHP is set for the update, then dropped from composer.json and the lock" \
+  8.1.0 'config platform.php 8.1.0 null|update {"php":"8.1.0"}|update --lock --no-install --ignore-platform-req=php* --no-scripts null'
+expect_platform_calls "without a passed platform PHP, composer only updates" '' 'update null'
+
+# The stand-in above only shows the calls are made. Whether the lock really comes out without the
+# temporary platform takes real composer, which the CI runner has. The restore pass must not check
+# the locked package against the runner's PHP, whichever side of it the package's PHP sits.
+expect_real_platform() {
+  local description="$1" package_php="$2" platform="$3" requirement="${4:-php}"
+  tests=$((tests + 1))
+  if ! command -v composer > /dev/null; then
+    if [ -n "${CI:-}" ]; then
+      echo "FAIL - $description (no composer)"
+      failures+=("$description")
+    else
+      echo "skip - $description (no composer)"
+    fi
+    return
+  fi
+  local dir got
+  dir=$(make_plugin "platform-real-$platform")
+  rm -rf "$WORK/capped"
+  mkdir -p "$WORK/capped"
+  printf '{"name":"t/capped","version":"1.0.0","require":{"%s":"%s"}}\n' "$requirement" "$package_php" > "$WORK/capped/composer.json"
+  printf '{"repositories":[{"type":"path","url":"%s","options":{"symlink":false}},{"packagist.org":false}],"require":{"t/capped":"^1.0"}}\n' \
+    "$WORK/capped" > "$dir/composer.json"
+  rm "$dir/composer.lock"
+  cp "$dir/composer.json" "$WORK/composer.json.before"
+  mkdir -p "$WORK/runner"
+  if ! GITHUB_OUTPUT="$WORK/update-output" RUNNER_TEMP="$WORK/runner" PLUGIN_DIR="$dir" TEMPORARY_PLATFORM="$platform" \
+    bash -eo pipefail "$WORK/update-step.sh" > "$WORK/platform-real.log" 2>&1; then
+    got="the update step failed: $(tail -n 3 "$WORK/platform-real.log")"
+  elif ! cmp -s "$dir/composer.json" "$WORK/composer.json.before"; then
+    got="composer.json changed"
+  elif jq -e 'has("platform-overrides")' "$dir/composer.lock" > /dev/null; then
+    got="the lock kept platform-overrides"
+  elif ! composer validate --working-dir="$dir" --check-lock --no-check-publish --no-check-all > /dev/null 2>&1; then
+    got="the lock does not match composer.json"
+  else
+    got=$(jq -r '[.packages[] | .name + " " + .version] | join(",")' "$dir/composer.lock")
+  fi
+  if [ "$got" = "t/capped 1.0.0" ]; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description ($got)"
+    failures+=("$description")
+  fi
+}
+expect_real_platform "a package capped below the runner's PHP leaves a valid lock without the platform" '^7.2 || ~8.0.0' 7.2.5
+# No runner has PHP 99.
+expect_real_platform "a package needing more than the runner's PHP leaves a valid lock without the platform" '>=99.0' 99.0.0
+expect_real_platform "a package capped by php-64bit leaves a valid lock without the platform" '^7.2 || ~8.0.0' 7.2.5 php-64bit
+
+python3 - "$WORKFLOW" > "$WORK/platform-step.sh" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']
+print(next(s for s in steps if s.get('id') == 'platform')['run'])
+PY
+expect_platform() {
+  local description="$1" composer_json="$2" input="$3" want_status="$4" want_output="$5"
+  tests=$((tests + 1))
+  local dir status got
+  dir="$WORK/platform-resolve"
+  mkdir -p "$dir"
+  printf '%s\n' "$composer_json" > "$dir/composer.json"
+  : > "$WORK/platform-output"
+  GITHUB_OUTPUT="$WORK/platform-output" PLUGIN_DIR="$dir" PHP_VERSION=8.3 PLATFORM_INPUT="$input" \
+    bash -eo pipefail "$WORK/platform-step.sh" > /dev/null 2>&1
+  status=$?
+  got=$(cat "$WORK/platform-output")
+  if [ "$status" -eq "$want_status" ] && [ "$got" = "$want_output" ]; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description (exited $status, output '$got')"
+    failures+=("$description")
+  fi
+}
+expect_platform "a pin in composer.json is used as it is" '{"config":{"platform":{"php":"8.1.0"}}}' '' 0 ''
+expect_platform "a pin in composer.json written as a number is used as it is" '{"config":{"platform":{"php":8.1}}}' '' 0 ''
+expect_platform "a pin in composer.json takes precedence over platform-php" '{"config":{"platform":{"php":"8.1.0"}}}' 8.2.0 0 ''
+expect_platform "platform-php is set for the update when composer.json has no pin" '{}' 8.1.0 0 'temporary=8.1.0'
+expect_platform "neither a pin nor platform-php fails the run" '{}' '' 1 ''
+expect_platform "a platform-php that is not a version fails the run" '{}' $'8.1.0\nfoo=bar' 1 ''
+expect_platform "a platform-php a pin overrides is not checked" '{"config":{"platform":{"php":"8.1.0"}}}' 'eight' 0 ''
+expect_no_command() {
+  local description="$1" composer_json="$2" input="$3"
+  tests=$((tests + 1))
+  printf '%s\n' "$composer_json" > "$WORK/platform-resolve/composer.json"
+  GITHUB_OUTPUT="$WORK/platform-output" PLUGIN_DIR="$WORK/platform-resolve" PHP_VERSION=8.3 PLATFORM_INPUT="$input" \
+    bash -eo pipefail "$WORK/platform-step.sh" > "$WORK/platform-stdout" 2>&1
+  if grep -qE $'(^|\r)::stop-commands' "$WORK/platform-stdout"; then
+    echo "FAIL - $description"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+expect_no_command "a newline in platform-php starts no workflow command beside a pin" '{"config":{"platform":{"php":"8.1.0"}}}' $'eight\n::stop-commands::x'
+expect_no_command "a newline in platform-php starts no workflow command" '{}' $'eight\n::stop-commands::x'
+expect_no_command "a carriage return in platform-php starts no workflow command" '{}' $'eight\r::stop-commands::x'
+expect_no_command "a line break in the composer.json pin starts no workflow command" '{"config":{"platform":{"php":"8.1.0\r\n::stop-commands::x"}}}' 8.2.0
+
+expect_platform_warning() {
+  local description="$1" pin="$2" input="$3" want="$4"
+  tests=$((tests + 1))
+  local got
+  printf '{"config":{"platform":{"php":"%s"}}}\n' "$pin" > "$WORK/platform-resolve/composer.json"
+  got=$(GITHUB_OUTPUT=/dev/null PLUGIN_DIR="$WORK/platform-resolve" PHP_VERSION=8.3 PLATFORM_INPUT="$input" \
+    bash -eo pipefail "$WORK/platform-step.sh" 2>&1 | grep -c '^::warning.*Ignoring platform-php')
+  if [ "$got" = "$want" ]; then
+    echo "ok - $description"
+  else
+    echo "FAIL - $description (got $got warnings, wanted $want)"
+    failures+=("$description")
+  fi
+}
+expect_platform_warning "a platform-php that differs from the composer.json pin is warned about" 8.1.0 8.2.0 1
+expect_platform_warning "8.1 and a pin of 8.1.0 are the same platform" 8.1.0 8.1 0
+
 # The workflow's body step, run from a workspace laid out as the runner's is.
 python3 - "$WORKFLOW" > "$WORK/body-step.sh" <<'PY'
 import sys

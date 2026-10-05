@@ -21,10 +21,15 @@ on:
         type: string
         default: ''
       php-version:
-        description: "PHP to run composer, matomo-scoper and Rector on, 8.1 or later. This is not the plugin's floor: dependency resolution follows config.platform.php in the plugin's composer.json, which this workflow requires to be set."
+        description: "PHP to run composer, matomo-scoper and Rector on, 8.1 or later. This is not the plugin's floor: dependencies resolve against config.platform.php in the plugin's composer.json, or platform-php when it has none."
         required: false
         type: string
         default: '8.3'
+      platform-php:
+        description: "PHP version to resolve dependencies against when the plugin's composer.json has no config.platform.php, usually the plugin's minimum, such as 8.1.0. It is set only for the update, so neither composer.json nor composer.lock keeps it. A config.platform.php in composer.json takes precedence."
+        required: false
+        type: string
+        default: ''
       downgrade-php:
         description: "PHP version to transpile vendor/prefixed down to with Rector: 'auto' reads it from plugin.json, 'none' skips Rector, or pass 7.3 or 8.1."
         required: false
@@ -115,19 +120,37 @@ jobs:
           coverage: none
           tools: composer:v2
 
-      # Composer resolves against the PHP it runs on, not require.php, so without the pin a run on
-      # the tooling PHP above would lock packages the plugin's own floor cannot install.
-      - name: Require a platform PHP pin
+      # Composer resolves against the PHP it runs on, not require.php, so without a platform PHP a run
+      # on the tooling PHP above would lock packages the plugin's own floor cannot install.
+      - name: Resolve the platform PHP
+        id: platform
         shell: bash
         env:
           PHP_VERSION: ${{ inputs.php-version }}
+          PLATFORM_INPUT: ${{ inputs.platform-php }}
         run: |
-          pin=$(jq -r '.config.platform.php // empty' "$PLUGIN_DIR/composer.json")
-          if [ -z "$pin" ]; then
-            echo "::error file=composer.json::composer.json has no config.platform.php, so dependencies would resolve against PHP $PHP_VERSION rather than the plugin's minimum. Pin it to the plugin's minimum PHP."
+          # A line break, or a carriage return, could start a workflow command of its own in what
+          # is echoed.
+          pin=$(jq -r '.config.platform.php // empty | tostring | gsub("[\r\n]"; " ")' "$PLUGIN_DIR/composer.json")
+          shown=${PLATFORM_INPUT//[$'\r\n']/ }
+          # 8.1 and 8.1.0 are the same platform.
+          patch_level() { if [[ "$1" =~ ^[0-9]+\.[0-9]+$ ]]; then echo "$1.0"; else echo "$1"; fi; }
+          if [ -n "$pin" ]; then
+            echo "Resolving against platform PHP $pin, from composer.json."
+            if [ -n "$PLATFORM_INPUT" ] && [ "$(patch_level "$PLATFORM_INPUT")" != "$(patch_level "$pin")" ]; then
+              echo "::warning file=composer.json::Ignoring platform-php $shown, because composer.json pins $pin."
+            fi
+          elif [ -n "$PLATFORM_INPUT" ]; then
+            if ! [[ "$PLATFORM_INPUT" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+              echo "::error::platform-php must be a PHP version such as 8.1.0, not '$shown'."
+              exit 1
+            fi
+            echo "Resolving against platform PHP $PLATFORM_INPUT, from the platform-php input."
+            echo "temporary=$PLATFORM_INPUT" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error file=composer.json::composer.json has no config.platform.php and no platform-php was passed, so dependencies would resolve against PHP $PHP_VERSION rather than the plugin's minimum. Pass platform-php, or pin it in composer.json."
             exit 1
           fi
-          echo "Resolving against platform PHP $pin."
 
       # Refreshing the branch force-pushes it, so anything a person added since -- a changelog entry,
       # a version bump, a fix to the scoped tree -- would be lost. Leave such a branch alone.
@@ -180,12 +203,29 @@ jobs:
         id: update
         if: ${{ steps.branch.outputs.skip != 'true' }}
         shell: bash
+        env:
+          TEMPORARY_PLATFORM: ${{ steps.platform.outputs.temporary }}
         run: |
           log=$(mktemp)
           # Before composer, whose plugins run with this checkout writable and could move HEAD to a
           # commit the pull-request job would then check out.
           base=$(git -C "$PLUGIN_DIR" rev-parse HEAD)
+          if [ -n "$TEMPORARY_PLATFORM" ]; then
+            cp "$PLUGIN_DIR/composer.json" "$RUNNER_TEMP/composer.json"
+            composer config --working-dir="$PLUGIN_DIR" platform.php "$TEMPORARY_PLATFORM"
+          fi
           composer update --working-dir="$PLUGIN_DIR" --no-interaction --no-progress 2>&1 | tee "$log"
+          if [ -n "$TEMPORARY_PLATFORM" ]; then
+            cp "$RUNNER_TEMP/composer.json" "$PLUGIN_DIR/composer.json"
+            # The lock's content hash covers config.platform, and the lock records it as
+            # platform-overrides. --lock rewrites both from the restored composer.json, and keeps
+            # every package at its locked version and reference. It still checks them against the
+            # runner's PHP, though, which can sit on either side of the platform: a package capped
+            # at ^7.2 || ~8.0.0 fails on a newer runner, one needing 8.4 on an older one. php* also
+            # covers php-64bit and the like, which the platform sets too. Nothing is re-resolved, so
+            # ignoring them cannot change what is locked.
+            composer update --lock --no-install --ignore-platform-req='php*' --no-scripts --working-dir="$PLUGIN_DIR" --no-interaction --no-progress
+          fi
 
           # The same comparison as check_scoped_tree.sh, which fails a run whose tree did not follow it.
           lock_packages() {
