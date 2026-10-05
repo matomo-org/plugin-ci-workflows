@@ -45,6 +45,14 @@ date_on_prod() {
     git -C "$REPO" push -q origin refs/tags/6.0.1
 }
 
+reject_dev_pushes() {
+    cat > "$REMOTE/hooks/pre-receive" <<'EOF'
+#!/bin/sh
+while read -r old new ref; do [ "$ref" != refs/heads/6.x-dev ] || exit 1; done
+EOF
+    chmod +x "$REMOTE/hooks/pre-receive"
+}
+
 run_backmerge() {
     git -C "$REPO" checkout -q --detach origin/6.x-prod
     (cd "$REPO" && bash "$SCRIPT" 6.0.1 6.x-prod) > "$WORK/out" 2>&1
@@ -69,7 +77,7 @@ test "$(git -C "$REMOTE" rev-parse 6.x-dev)" = "$dev_before" || fail 'repeat: 6.
 
 # Dev moved on elsewhere in the file: a merge commit brings the date across.
 setup diverged
-commit_on 6.x-dev "Document the next fix" '$a * 5.9.9 - 2026-01-01 Old entry kept at the bottom'
+commit_on 6.x-dev "Document the next fix" "\$a * 5.9.9 - 2026-01-01 Old entry kept at the bottom"
 date_on_prod
 dev_before=$(git -C "$REMOTE" rev-parse 6.x-dev)
 run_backmerge || fail "diverged: $(cat "$WORK/out")"
@@ -118,11 +126,9 @@ grep -Fq '::error::6.0.1 is released, but could not be merged back into 6.x-dev:
 
 # A rejected push, as from a protection rule, fails the step and leaves dev where it was.
 setup rejected
-commit_on 6.x-dev "Document the next fix" '$a * 5.9.9 - 2026-01-01 Old entry kept at the bottom'
+commit_on 6.x-dev "Document the next fix" "\$a * 5.9.9 - 2026-01-01 Old entry kept at the bottom"
 date_on_prod
-printf '#!/bin/sh\nwhile read -r old new ref; do [ "$ref" != refs/heads/6.x-dev ] || exit 1; done\n' \
-    > "$REMOTE/hooks/pre-receive"
-chmod +x "$REMOTE/hooks/pre-receive"
+reject_dev_pushes
 dev_before=$(git -C "$REMOTE" rev-parse 6.x-dev)
 if run_backmerge; then
     fail 'rejected: a rejected push must fail'
@@ -134,9 +140,7 @@ test "$(git -C "$REMOTE" rev-parse 6.x-dev)" = "$dev_before" || fail 'rejected: 
 # The same rejection on the fast-forward path.
 setup rejected-ff
 date_on_prod
-printf '#!/bin/sh\nwhile read -r old new ref; do [ "$ref" != refs/heads/6.x-dev ] || exit 1; done\n' \
-    > "$REMOTE/hooks/pre-receive"
-chmod +x "$REMOTE/hooks/pre-receive"
+reject_dev_pushes
 dev_before=$(git -C "$REMOTE" rev-parse 6.x-dev)
 if run_backmerge; then
     fail 'rejected-ff: a rejected fast-forward must fail'
@@ -149,7 +153,7 @@ test "$(git -C "$REMOTE" rev-parse 6.x-dev)" = "$dev_before" || fail 'rejected-f
 for path in fast-forward diverged; do
     setup "prod-only-$path"
     if [[ "$path" = diverged ]]; then
-        commit_on 6.x-dev "Document the next fix" '$a * 5.9.9 - 2026-01-01 Old entry kept at the bottom'
+        commit_on 6.x-dev "Document the next fix" "\$a * 5.9.9 - 2026-01-01 Old entry kept at the bottom"
     fi
     git -C "$REPO" checkout -q --detach origin/6.x-prod
     echo '<?php // hotfix' > "$REPO/Controller.php"
