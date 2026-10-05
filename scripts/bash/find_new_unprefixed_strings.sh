@@ -36,8 +36,10 @@ fi
 
 # The first segment under the prefix of every namespace the tree declares, such as phpseclib3 or
 # GuzzleHttp: the names php-scoper prefixed, and so the ones a string must not use bare.
-roots=$(grep -rhaoE --include='*.php' '^[[:space:]]*(<\?php[[:space:]]+)?namespace[[:space:]]+[A-Za-z0-9_\\]+' \
-  "$plugin_dir/vendor/prefixed" 2>/dev/null \
+# The rebuilt tree is searched with --untracked, which leaves out what .gitignore excludes, as the pull
+# request does. A plain grep would list strings in those files on every run, since the base never has them.
+roots=$(git -C "$plugin_dir" grep --untracked --text -hoE '^[[:space:]]*(<\?php[[:space:]]+)?namespace[[:space:]]+[A-Za-z0-9_\\]+' \
+  -- 'vendor/prefixed/*.php' 2>/dev/null \
   | sed -E 's/.*namespace[[:space:]]+//' \
   | grep -F "$prefix" \
   | cut -c$((${#prefix} + 1))- \
@@ -70,7 +72,7 @@ if [ "$?" -gt 1 ]; then
 fi
 
 found=$(mktemp)
-(cd "$plugin_dir" && grep -roaE --include='*.php' "$pattern" vendor/prefixed) > "$found"
+git -C "$plugin_dir" grep --untracked --text -oE "$pattern" -- 'vendor/prefixed/*.php' > "$found"
 if [ "$?" -gt 1 ]; then
   echo "Cannot search vendor/prefixed in $plugin_dir." >&2
   rm -f "$known" "$found"

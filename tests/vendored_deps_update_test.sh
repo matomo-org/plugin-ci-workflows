@@ -201,6 +201,15 @@ rm -rf "$dir/.git"
 git -C "$dir" init -q
 expect "a tree with no commit to compare with is a warning, not a list of every string" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
 
+# The pull request leaves out what .gitignore excludes, and the base never has it.
+dir=$(make_plugin ignored-string)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/Ignored.php"
+echo 'vendor/prefixed/foo/src/Ignored.php' > "$dir/.gitignore"
+expect_no_string_warning "a bare string in a file .gitignore keeps out of the pull request is not reported" "$dir"
+dir=$(make_plugin untracked-string)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/New.php"
+expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=vendor/prefixed/foo/src/New.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
+
 # Uses of PHP the floor lacks, found by a stand-in PHPStan that reports each "// FINDING <identifier>
 # <message>" comment in the tree it analyses, in PHPStan's JSON, and records the phpVersion it got.
 mkdir -p "$WORK/phpstan"
@@ -371,6 +380,17 @@ git -C "$outer" add plugins
 git -C "$outer" -c user.email=t@t -c user.name=t commit -qm base
 cp "$src/vendor/prefixed/foo/src/Bar.php" "$outer/plugins/Foo/vendor/prefixed/foo/src/Bar.php"
 expect_gaps "a plugin in a subdirectory of its repository is compared with its own earlier tree" 0 '' "$outer/plugins/Foo"
+
+dir=$(floor_plugin floor-ignored '' '')
+printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/src/Ignored.php"
+echo 'vendor/prefixed/foo/src/Ignored.php' > "$dir/.gitignore"
+expect_gaps "a use in a file .gitignore keeps out of the pull request is not listed" 0 '' "$dir"
+dir=$(floor_plugin floor-deleted '' "$FN")
+printf '<?php\n' > "$dir/vendor/prefixed/foo/src/Gone.php"
+git -C "$dir" add vendor/prefixed/foo/src/Gone.php
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm gone
+rm "$dir/vendor/prefixed/foo/src/Gone.php"
+expect_gaps "a file the rebuild deletes does not stop the comparison" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
 
 # The stand-in prints what each test gives it, so only the real PHPStan shows the patterns match its
 # wording. Everything the fixture uses is PHP 8.4's, so a runner on 8.3 or older lacks it too.
@@ -920,6 +940,9 @@ dir=$(floor_plugin body-no-gap "$FN" "$FN")
 expect_body "the pull request says nothing about the floor when the rebuild added nothing it lacks" "$dir" 'PHP 8.1 does not have' no
 dir=$(floor_plugin body-many-gaps '' "$(for i in $(seq 1 52); do printf '%s\n' "// FINDING function.notFound Function array_find$i not found."; done)")
 expect_body "the pull request lists at most 50 floor gaps" "$dir" "- and 2 more, which the log of this step lists." yes
+dir=$(floor_plugin body-long-gap '' "// FINDING function.notFound Function array_find not found. $(printf 'x%.0s' $(seq 1 1000))TAIL")
+expect_body "the pull request lists a long floor gap" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`Function array_find not found. xxx" yes
+expect_body "the pull request cuts a long floor gap short" "$dir" 'TAIL' no
 dir=$(floor_plugin body-gap-crash '' "$FN")
 PHPSTAN_FAILS=1 expect_body "the pull request says when the floor could not be checked" "$dir" 'could not be checked for PHP functions' yes
 dir=$(floor_plugin body-no-floor-php '' "$FN")

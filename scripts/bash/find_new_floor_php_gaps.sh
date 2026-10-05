@@ -147,10 +147,23 @@ analyse() {
   jq -r --arg root "$root/" "$filter" "$work/$name.json"
 }
 
+# Only the files the pull request commits, so not what .gitignore excludes: the base never has those, so
+# every use in them would read as new on every run.
+mkdir "$work/rebuilt"
+if ! (cd "$plugin_dir" && git ls-files -z --cached --others --exclude-standard -- vendor/prefixed > "$work/rebuilt-files") \
+  || ! (cd "$plugin_dir" \
+    && while IFS= read -r -d '' file; do
+      # --cached still lists a tracked file the rebuild deleted.
+      if [ -f "$file" ]; then printf '%s\0' "$file"; fi
+    done < "$work/rebuilt-files" | xargs -0 -r cp --parents -t "$work/rebuilt") \
+  || ! [ -d "$work/rebuilt/vendor/prefixed" ]; then
+  echo "Cannot copy vendor/prefixed in $plugin_dir." >&2
+  exit 1
+fi
+
 export LC_ALL=C
 analyse "$work/base" base > "$work/known" || exit 1
-root=$(cd "$plugin_dir" && pwd -P)
-analyse "$root" rebuilt > "$work/found" || exit 1
+analyse "$work/rebuilt" rebuilt > "$work/found" || exit 1
 
 # Each line is one use, so the counts are how often each tree makes it.
 awk -F '\t' '

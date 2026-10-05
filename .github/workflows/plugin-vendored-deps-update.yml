@@ -320,10 +320,11 @@ jobs:
             if [ -n "$strings" ]; then
               echo "The rebuild added strings that name a scoped namespace without the prefix. Check each one before merging: if it builds a class name, \`scoper.inc.php\` needs a patcher to prefix it, or the class is not found at runtime."
               echo
-              # Capped, because a pull request body is limited in size and the template still follows.
+              # Capped at 50 entries of 300 characters each, because a pull request body is limited in size
+              # and the template still follows.
               # A here-string, not printf into head: under pipefail, printf's SIGPIPE fails the step.
               # shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
-              head -n 50 <<< "$strings" | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
+              head -n 50 <<< "$strings" | cut -c1-300 | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
               count=$(wc -l <<< "$strings")
               if [ "$count" -gt 50 ]; then
                 echo "- and $((count - 50)) more, which the log of the scope step lists."
@@ -337,7 +338,7 @@ jobs:
               echo "The rebuild added uses of PHP functions, classes, methods, properties or class constants that PHP $DOWNGRADE does not have, or calls with arguments it does not accept, which Rector does not transpile. Check each one before merging: unless a version check guards it or a polyfill provides it, it can fail at runtime on PHP $DOWNGRADE. A class named only in \`instanceof\` or \`::class\` cannot. The check cannot tell PHP's own global functions and classes from a package's, so a global one from a package the plugin does not install is listed too."
               echo
               # shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
-              head -n 50 <<< "$gaps" | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
+              head -n 50 <<< "$gaps" | cut -c1-300 | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
               count=$(wc -l <<< "$gaps")
               if [ "$count" -gt 50 ]; then
                 echo "- and $((count - 50)) more, which the log of this step lists."
