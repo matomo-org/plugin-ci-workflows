@@ -17,8 +17,7 @@ on:
         type: string
         default: 'main'
 
-permissions:
-  contents: write # commit the changelog date, create the tag, publish the release, and merge it back into N.x-dev
+permissions: {}
 
 concurrency:
   group: plugin-release-${{ github.repository }}-${{ github.ref }}
@@ -28,6 +27,8 @@ jobs:
   release:
     name: Build release
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write # commit the changelog date, create the tag, publish the release, and merge it back into N.x-dev
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,7 +69,7 @@ jobs:
           # git asks the helper, which reads the runner-masked token itself, so no value derived from
           # the token reaches the environment and needs masking.
           export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=credential.helper
+          export GIT_CONFIG_KEY_0=credential.https://github.com.helper
           export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
           git fetch --no-tags origin \
             "refs/heads/$GITHUB_REF_NAME:refs/remotes/origin/$GITHUB_REF_NAME"
@@ -106,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=credential.helper
+          export GIT_CONFIG_KEY_0=credential.https://github.com.helper
           export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
 
           python3 "$RUNNER_TEMP/update_changelog_date.py" --plugin-name "$PLUGIN_NAME" \
@@ -129,7 +130,7 @@ jobs:
         run: |
           set -euo pipefail
           export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=credential.helper
+          export GIT_CONFIG_KEY_0=credential.https://github.com.helper
           export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
           bash "$RUNNER_TEMP/create_plugin_release_tag.sh" "$VERSION" "$GITHUB_REF_NAME"
 
@@ -156,6 +157,6 @@ jobs:
         run: |
           set -euo pipefail
           export GIT_CONFIG_COUNT=1
-          export GIT_CONFIG_KEY_0=credential.helper
+          export GIT_CONFIG_KEY_0=credential.https://github.com.helper
           export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
           bash "$RUNNER_TEMP/backmerge_plugin_release.sh" "$VERSION" "$GITHUB_REF_NAME"
