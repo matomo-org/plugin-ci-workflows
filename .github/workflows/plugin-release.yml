@@ -3,8 +3,8 @@
 # The caller owns the push and workflow_dispatch triggers. The version in plugin.json is
 # authoritative. CHANGELOG.md is checked for the same version and its release date is added or
 # corrected before the tag is created.
-# After publishing, the release tag is merged back into the development branch when it changes
-# only CHANGELOG.md.
+# After publishing, the release tag is merged back into the development branch when everything it
+# changes besides CHANGELOG.md is already identical there.
 
 name: Plugin release
 
