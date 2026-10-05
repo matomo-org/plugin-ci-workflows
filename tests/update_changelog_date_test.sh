@@ -130,6 +130,14 @@ if python3 "$SCRIPT" --check "$WORK/plain.md" 9.9.9 2026-09-21; then
     exit 1
 fi
 
+for release_date in 20260921 2026-W39-1 2026-9-21; do
+    printf '## Changelog\n\n* 6.0.2\n' > "$WORK/non-iso-date.md"
+    if python3 "$SCRIPT" "$WORK/non-iso-date.md" 6.0.2 "$release_date" 2> /dev/null; then
+        echo "A release date given as '$release_date' must fail rather than be written as given" >&2
+        exit 1
+    fi
+done
+
 for heading in '## 6.0.2 – 2026-09-20' '## 6.0.2 - 20.09.2026' '## 6.0.2 - September 20, 2026' \
     '## 6.0.2 (20th Sept 2026)' '## 6.0.2 - 20th of September, 2026' '## 6.0.2 - Monday, September 20, 2026' \
     '## 6.0.2 - 20-Sep-2026' '## 6.0.2 - Sep-20-2026' '## 6.0.2 - 2026-Sep-20' \

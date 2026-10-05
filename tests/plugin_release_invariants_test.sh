@@ -25,17 +25,32 @@ with workflow_path.open() as handle:
 triggers = document.get("on", document.get(True)) or {}
 jobs = document.get("jobs") or {}
 release = jobs.get("release") or {}
+check_date = jobs.get("check-date") or {}
+date_pr = jobs.get("date-pr") or {}
 steps = release.get("steps") or []
-run_steps = [step for step in steps if isinstance(step, dict) and "run" in step]
-checkout_steps = [
-    step for step in steps
-    if isinstance(step, dict) and step.get("uses", "").startswith("actions/checkout@")
+all_steps = [
+    step for job in jobs.values() for step in (job.get("steps") or []) if isinstance(step, dict)
 ]
+run_steps = [step for step in all_steps if "run" in step]
 steps_by_name = {step.get("name"): step for step in steps if isinstance(step, dict) and step.get("name")}
 
 
-def step_run(name):
-    return str(steps_by_name.get(name, {}).get("run", ""))
+def step_run(name, job_steps=steps):
+    for step in job_steps:
+        if isinstance(step, dict) and step.get("name") == name:
+            return str(step.get("run", ""))
+    return ""
+
+
+def checkouts(job):
+    return [
+        step for step in job.get("steps") or []
+        if isinstance(step, dict) and step.get("uses", "").startswith("actions/checkout@")
+    ]
+
+
+def script(path):
+    return (workflow_root / path).read_text()
 
 tests = 0
 failures = []
@@ -52,8 +67,32 @@ def check(description, condition):
 
 
 check("the release workflow is reusable", "workflow_call" in triggers)
-check("it declares a release job", "release" in jobs)
-check("the release job has a timeout", isinstance(release.get("timeout-minutes"), int))
+check(
+    "it declares the check-date, date-pr and release jobs",
+    {"check-date", "date-pr", "release"} <= set(jobs),
+)
+check("the check job keeps the name callers require", check_date.get("name") == "Changelog date")
+check(
+    "every job has a timeout",
+    all(isinstance(job.get("timeout-minutes"), int) for job in jobs.values()),
+)
+check("the workflow grants nothing by default", document.get("permissions") == {})
+check("the check job only reads", check_date.get("permissions") == {"contents": "read"})
+check(
+    "each event runs its own job",
+    "pull_request" in check_date.get("if", "")
+    and "pull_request" in date_pr.get("if", "")
+    and "head.repo.full_name == github.repository" in date_pr.get("if", "")
+    and "!startsWith(github.event.pull_request.head.ref, 'automated/release-date-')" in date_pr.get("if", "")
+    and "'push'" in release.get("if", "")
+    and "pull_request" not in release.get("if", ""),
+)
+check(
+    "workflow_dispatch picks a job with the task input",
+    "inputs.task == 'changelog-check'" in check_date.get("if", "")
+    and "inputs.task == 'changelog-date'" in date_pr.get("if", "")
+    and "inputs.task == 'release'" in release.get("if", ""),
+)
 check(
     "the release concurrency group queues rather than cancels",
     (document.get("concurrency") or {}).get("cancel-in-progress") is False,
@@ -68,9 +107,23 @@ check(
     all(step.get("shell") == "bash" for step in run_steps),
 )
 check(
-    "both checkouts disable persisted credentials",
-    len(checkout_steps) == 2
-    and all(step.get("with", {}).get("persist-credentials") is False for step in checkout_steps),
+    "every checkout disables persisted credentials",
+    all(len(checkouts(job)) == 2 for job in (check_date, date_pr, release))
+    and all(
+        step.get("with", {}).get("persist-credentials") is False
+        for job in jobs.values() for step in checkouts(job)
+    ),
+)
+check(
+    "the check job runs the shared check script",
+    "check_plugin_changelog_date.sh"
+    in step_run("Check the changelog date", check_date.get("steps") or []),
+)
+check(
+    "the date-pr job dates the pull request's head branch",
+    "open_plugin_changelog_date_pr.sh"
+    in step_run("Open the release date pull request", date_pr.get("steps") or [])
+    and "github.event.pull_request.head.ref" in (date_pr.get("env") or {}).get("TARGET_BRANCH", ""),
 )
 check(
     "the production branch is fetched before release preparation",
@@ -83,15 +136,24 @@ check(
     and "scripts/bash/prepare_plugin_release.sh" in step_run("Prepare release"),
 )
 check(
-    "the changelog step runs only when a release is needed",
-    steps_by_name.get("Add release date to changelog", {}).get("if")
-    == "steps.prepare.outputs.release_needed == 'true'",
+    "release scripts are staged before conditional release steps",
+    not steps_by_name.get("Stage release scripts", {}).get("if")
+    and all(
+        name in step_run("Stage release scripts")
+        for name in (
+            "update_changelog_date.py",
+            "create_plugin_release_tag.sh",
+            "publish_plugin_release.sh",
+            "open_plugin_changelog_date_pr.sh",
+        )
+    ),
 )
 check(
-    "the changelog step recognises entries labelled with the plugin name",
-    '--plugin-name "$PLUGIN_NAME"' in step_run("Add release date to changelog")
-    and steps_by_name.get("Add release date to changelog", {}).get("env", {}).get("PLUGIN_NAME")
-    == "${{ steps.prepare.outputs.plugin_name }}",
+    "a stale changelog date opens the date pull requests and fails the release",
+    steps_by_name.get("Open release date pull requests", {}).get("if")
+    == "steps.prepare.outputs.date_pr_needed == 'true'"
+    and "open_plugin_changelog_date_pr.sh" in step_run("Open release date pull requests")
+    and "exit 1" in step_run("Open release date pull requests"),
 )
 check(
     "the tag step runs only when a release is needed",
@@ -99,45 +161,29 @@ check(
     == "steps.prepare.outputs.release_needed == 'true'",
 )
 check(
-    "release scripts are staged before conditional release steps",
-    not steps_by_name.get("Stage release scripts", {}).get("if")
-    and all(
-        script in step_run("Stage release scripts")
-        for script in (
-            "update_changelog_date.py",
-            "create_plugin_release_tag.sh",
-            "publish_plugin_release.sh",
-            "backmerge_plugin_release.sh",
-        )
-    ),
-)
-check(
-    "the GitHub release step runs when publication is needed",
-    steps_by_name.get("Create GitHub release", {}).get("if")
-    == "steps.prepare.outputs.publish_release == 'true'",
-)
-check(
     "tagging rechecks the production branch tip",
-    "create_plugin_release_tag.sh" in step_run("Stage release scripts")
-    and "create_plugin_release_tag.sh" in step_run("Create release tag"),
+    "create_plugin_release_tag.sh" in step_run("Create release tag"),
+)
+check(
+    "the GitHub release step runs last, when publication is needed",
+    steps[-1].get("name") == "Create GitHub release"
+    and steps[-1].get("if") == "steps.prepare.outputs.publish_release == 'true'",
 )
 check(
     "the release publisher is shared and verifies the tag",
-    "publish_plugin_release.sh" in step_run("Stage release scripts")
-    and "$PUBLISH_SCRIPT" in step_run("Create GitHub release")
+    "$PUBLISH_SCRIPT" in step_run("Create GitHub release")
     and steps_by_name.get("Create GitHub release", {}).get("env", {}).get("PUBLISH_SCRIPT")
-    == "${{ runner.temp }}/publish_plugin_release.sh"
-    and "--verify-tag" in (workflow_root / "scripts/bash/publish_plugin_release.sh").read_text(),
+    == "${{ runner.temp }}/release-scripts/bash/publish_plugin_release.sh"
+    and "--verify-tag" in script("scripts/bash/publish_plugin_release.sh"),
 )
 check(
-    "the back-merge runs last, whenever a release is published or resumed",
-    steps[-1].get("name") == "Merge the release back into the development branch"
-    and steps[-1].get("if") == "steps.prepare.outputs.publish_release == 'true'"
-    and "backmerge_plugin_release.sh" in step_run("Merge the release back into the development branch"),
+    "nothing pushes to a protected branch",
+    not any("git push" in str(step.get("run", "")) for step in all_steps)
+    and 'origin "HEAD:refs/heads/$BRANCH"' in script("scripts/bash/open_plugin_changelog_date_pr.sh"),
 )
 check(
     "the shared release publisher uses a string latest field",
-    "--raw-field make_latest=false" in (workflow_root / "scripts/bash/publish_plugin_release.sh").read_text(),
+    "--raw-field make_latest=false" in script("scripts/bash/publish_plugin_release.sh"),
 )
 
 print()

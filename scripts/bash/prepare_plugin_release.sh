@@ -1,6 +1,8 @@
 #!/bin/bash
 # Validates plugin release metadata and decides whether the current production branch needs a
-# release. The caller must fetch origin/<branch> before invoking this script.
+# release. A version not yet tagged is only released when its changelog entry is dated today in UTC;
+# otherwise date_pr_needed=true asks the caller to open the release date pull requests instead.
+# The caller must fetch origin/<branch> before invoking this script.
 # Usage: prepare_plugin_release.sh <plugin.json> <production-branch>
 
 set -euo pipefail
@@ -110,6 +112,7 @@ resume_tagged_release() {
     emit "tag_exists=true"
     emit "release_needed=false"
     emit "publish_release=true"
+    emit "date_pr_needed=false"
 }
 
 # A tag behind the branch may predate this workflow, so a missing GitHub Release is not recreated:
@@ -120,6 +123,7 @@ skip_released_version() {
     emit "tag_exists=true"
     emit "release_needed=false"
     emit "publish_release=false"
+    emit "date_pr_needed=false"
 }
 
 tag_commit=""
@@ -150,11 +154,26 @@ else
         error "The current commit and production branch tip have diverged. Dispatch the release workflow again from the current branch tip."
     fi
 
-    release_date=$(date -u +%F)
-    echo "Preparing a new release for $VERSION."
+    # Tests pin the day; the workflow always uses the real one.
+    today="${PLUGIN_RELEASE_TODAY:-$(date -u +%F)}"
+    if ! release_date=$(python3 "$SCRIPT_DIR/../python/update_changelog_date.py" \
+        --read-date --plugin-name "$PLUGIN_NAME" CHANGELOG.md "$VERSION" 2>/dev/null); then
+        release_date=""
+    fi
     emit "tag_exists=false"
-    emit "release_needed=true"
-    emit "publish_release=true"
+    if [[ "$release_date" == "$today" ]]; then
+        echo "Preparing a new release for $VERSION."
+        emit "release_needed=true"
+        emit "publish_release=true"
+        emit "date_pr_needed=false"
+    else
+        # Typically the production pull request was merged on a later UTC day than it was dated.
+        echo "The $VERSION entry is dated '${release_date:-nothing}', not $today, so $VERSION is not released yet."
+        release_date=""
+        emit "release_needed=false"
+        emit "publish_release=false"
+        emit "date_pr_needed=true"
+    fi
 fi
 
 emit "version=$VERSION"

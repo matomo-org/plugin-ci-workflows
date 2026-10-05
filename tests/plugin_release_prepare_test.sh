@@ -7,6 +7,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/scripts/bash/prepare_plugin_release.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# The fixtures' changelog date, so a new release is dated today unless a test says otherwise.
+export PLUGIN_RELEASE_TODAY=2026-09-20
 
 assert_output() {
     local expected="$1" output_file="$2"
@@ -44,6 +46,24 @@ assert_output 'release_needed=true' "$WORK/new-output"
 assert_output 'publish_release=true' "$WORK/new-output"
 assert_output 'version=5.0.0' "$WORK/new-output"
 assert_output 'plugin_name=TestPlugin' "$WORK/new-output"
+assert_output 'release_date=2026-09-20' "$WORK/new-output"
+assert_output 'date_pr_needed=false' "$WORK/new-output"
+
+new_repo "$WORK/stale"
+: > "$WORK/stale-output"
+(cd "$WORK/stale" && PLUGIN_RELEASE_TODAY=2026-09-21 GITHUB_OUTPUT="$WORK/stale-output" bash "$SCRIPT" plugin.json 5.x-prod) > /dev/null
+assert_output 'tag_exists=false' "$WORK/stale-output"
+assert_output 'release_needed=false' "$WORK/stale-output"
+assert_output 'publish_release=false' "$WORK/stale-output"
+assert_output 'date_pr_needed=true' "$WORK/stale-output"
+
+new_repo "$WORK/undated"
+printf '## Changelog\n\n* 5.0.0 Text\n' > "$WORK/undated/CHANGELOG.md"
+git -C "$WORK/undated" commit -q -am 'undated entry'
+git -C "$WORK/undated" update-ref refs/remotes/origin/5.x-prod HEAD
+run_prepare "$WORK/undated" "$WORK/undated-output" > /dev/null
+assert_output 'release_needed=false' "$WORK/undated-output"
+assert_output 'date_pr_needed=true' "$WORK/undated-output"
 
 new_repo "$WORK/invalid-version"
 printf '{"name":"TestPlugin","version":"6.0.0"}\n' > "$WORK/invalid-version/plugin.json"

@@ -173,9 +173,12 @@ def main():
         print("a release date is required unless --read-date is used", file=sys.stderr)
         return 1
 
+    # Python 3.11+ also accepts 20261006 and 2026-W41-2, which would be written as given and never read back.
     try:
-        date.fromisoformat(args.release_date)
+        valid_date = date.fromisoformat(args.release_date).isoformat() == args.release_date
     except ValueError:
+        valid_date = False
+    if not valid_date:
         print(f"Invalid release date: {args.release_date}", file=sys.stderr)
         return 1
 
