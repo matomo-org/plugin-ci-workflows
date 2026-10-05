@@ -1,11 +1,13 @@
 #!/bin/bash
 # Fails unless the CHANGELOG.md entry for plugin.json's version is dated today in UTC, so a required
-# check holds a production pull request until the release date pull request is merged.
+# check holds a production pull request until the release date pull request is merged. When the
+# target branch is N.x-prod, the version must also be stable and of major N, as the release requires.
 # Run from a checkout whose origin can list tags.
-# Usage: check_plugin_changelog_date.sh
+# Usage: check_plugin_changelog_date.sh [target-branch]
 
 set -euo pipefail
 
+TARGET_BRANCH="${1:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Tests pin the day; the workflow always uses the real one.
 TODAY="${PLUGIN_RELEASE_TODAY:-$(date -u +%F)}"
@@ -17,6 +19,18 @@ fi
 mapfile -t metadata_lines <<< "$metadata"
 VERSION="${metadata_lines[0]}"
 PLUGIN_NAME="${metadata_lines[1]}"
+
+if [[ "$TARGET_BRANCH" =~ ^([0-9]+)\.x-prod$ ]]; then
+    expected_major="${BASH_REMATCH[1]}"
+    if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "::error file=plugin.json::$VERSION is not a stable release version, so it cannot be released from $TARGET_BRANCH." >&2
+        exit 1
+    fi
+    if [[ "${VERSION%%.*}" != "$expected_major" ]]; then
+        echo "::error file=plugin.json::Version $VERSION does not belong on $TARGET_BRANCH." >&2
+        exit 1
+    fi
+fi
 
 # A pull request that doesn't bump the version releases nothing, so its old date is right.
 tag_status=0

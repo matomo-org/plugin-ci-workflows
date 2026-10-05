@@ -3,13 +3,19 @@
 # opens a pull request into the target branch or leaves the open one refreshed. When the target is
 # N.x-prod and N.x-dev exists, the same branch is also proposed for N.x-dev, because dating the two
 # branches with separate commits makes the next development-to-production merge conflict.
+# Nothing is dated for a version the production branch (the target, or the pull request's base
+# when given) would refuse to release.
 # Run from a checkout of the target branch, with a pushable origin and an authenticated gh.
-# Usage: open_plugin_changelog_date_pr.sh <target-branch> [release-date]
+# Usage: open_plugin_changelog_date_pr.sh <target-branch> [release-date] [production-branch]
 
 set -euo pipefail
 
 TARGET_BRANCH="${1:-}"
 RELEASE_DATE="${2:-}"
+PRODUCTION_BRANCH="${3:-}"
+if [[ -z "$PRODUCTION_BRANCH" && "$TARGET_BRANCH" =~ ^[0-9]+\.x-prod$ ]]; then
+    PRODUCTION_BRANCH="$TARGET_BRANCH"
+fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 
@@ -34,6 +40,14 @@ mapfile -t metadata_lines <<< "$metadata"
 VERSION="${metadata_lines[0]}"
 PLUGIN_NAME="${metadata_lines[1]}"
 BRANCH="automated/release-date-$VERSION"
+
+if [[ "$PRODUCTION_BRANCH" =~ ^([0-9]+)\.x-prod$ ]]; then
+    expected_major="${BASH_REMATCH[1]}"
+    if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || "${VERSION%%.*}" != "$expected_major" ]]; then
+        echo "::notice::$VERSION cannot be released from $PRODUCTION_BRANCH, so its changelog date is left alone."
+        exit 0
+    fi
+fi
 
 # Re-dating a released version would make the changelog disagree with the published release.
 tag_status=0

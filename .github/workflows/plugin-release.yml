@@ -59,6 +59,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+          TARGET_BRANCH: ${{ github.event_name == 'pull_request' && github.base_ref || github.ref_name }}
         shell: bash
         run: |
           set -euo pipefail
@@ -66,7 +67,7 @@ jobs:
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=credential.https://github.com.helper
           export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
-          bash "$SCRIPT_CHECKOUT/scripts/bash/check_plugin_changelog_date.sh"
+          bash "$SCRIPT_CHECKOUT/scripts/bash/check_plugin_changelog_date.sh" "$TARGET_BRANCH"
 
   date-pr:
     name: Release date pull request
@@ -102,6 +103,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_DATE: ${{ inputs.release-date }}
+          PRODUCTION_BRANCH: ${{ github.event_name == 'pull_request' && github.base_ref || '' }}
           SCRIPT_CHECKOUT: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
         shell: bash
         run: |
@@ -111,7 +113,8 @@ jobs:
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=credential.https://github.com.helper
           export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
-          bash "$SCRIPT_CHECKOUT/scripts/bash/open_plugin_changelog_date_pr.sh" "$TARGET_BRANCH" "$RELEASE_DATE"
+          bash "$SCRIPT_CHECKOUT/scripts/bash/open_plugin_changelog_date_pr.sh" \
+            "$TARGET_BRANCH" "$RELEASE_DATE" "$PRODUCTION_BRANCH"
 
   release:
     name: Build release

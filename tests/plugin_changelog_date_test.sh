@@ -60,7 +60,7 @@ new_repo() {
 }
 
 run_check() {
-    (cd "$WORK/$1/clone" && bash "$CHECK") > "$WORK/$1/out" 2>&1
+    (cd "$WORK/$1/clone" && bash "$CHECK" "${2:-6.x-prod}") > "$WORK/$1/out" 2>&1
 }
 
 run_open() {
@@ -87,6 +87,25 @@ grep -Fq 'dated 2026-10-11, not today' "$WORK/stale/out" || fail "a stale entry 
 new_repo released-check '* 6.0.3 - 2026-10-05 - Three'
 git -C "$WORK/released-check/origin.git" tag 6.0.3 6.x-prod
 run_check released-check || fail "a version that is already tagged passes, whatever its date"
+
+new_repo wrong-major '* 6.0.3 - 2026-10-12 - Three'
+if run_check wrong-major 5.x-prod; then fail "a 6.x version into 5.x-prod fails"; fi
+grep -Fq 'does not belong on 5.x-prod' "$WORK/wrong-major/out" || fail "a wrong major names the branch"
+run_check wrong-major 6.x-dev || fail "a branch other than N.x-prod is not checked for its major"
+
+new_repo prerelease '* 6.0.3-rc1 - 2026-10-12 - Three'
+printf '{"name":"TestPlugin","version":"6.0.3-rc1"}\n' > "$WORK/prerelease/clone/plugin.json"
+if run_check prerelease; then fail "a prerelease version into 6.x-prod fails"; fi
+grep -Fq 'not a stable release version' "$WORK/prerelease/out" || fail "a prerelease says why it fails"
+git -C "$WORK/prerelease/origin.git" tag 6.0.3-rc1 6.x-prod
+if run_check prerelease; then fail "a tagged prerelease into 6.x-prod still fails"; fi
+run_open prerelease 6.x-dev "" 6.x-prod || fail "a prerelease into 6.x-prod is skipped, not failed"
+git -C "$WORK/prerelease/origin.git" tag -d 6.0.3-rc1 > /dev/null
+run_open prerelease 6.x-dev "" 6.x-prod || fail "an untagged prerelease into 6.x-prod is skipped, not failed"
+grep -Fq 'cannot be released from 6.x-prod' "$WORK/prerelease/out" || fail "the skipped prerelease says why"
+if git -C "$WORK/prerelease/origin.git" rev-parse --verify -q automated/release-date-6.0.3-rc1 > /dev/null; then
+    fail "a version the production branch would refuse is never dated"
+fi
 
 new_repo to-dev '* 6.0.3 Three'
 run_open to-dev 6.x-dev || { cat "$WORK/to-dev/out" >&2; fail "dating the development branch succeeds"; }
