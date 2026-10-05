@@ -307,7 +307,9 @@ merge the tag into `N.x-dev` by hand. While the tag is still the branch tip, a d
 including any required status checks: the push is made with `GITHUB_TOKEN`, so it starts no workflow runs and the
 pushed commit has no checks. `N.x-dev` must also not require linear history or signed commits: when `N.x-dev` has
 moved on since the last merge into `N.x-prod` the back-merge is a merge commit, and both that commit and the release
-date commit are unsigned, so such a back-merge fails with "the push failed".
+date commit are unsigned, so such a back-merge fails with "the push failed". The back-merge also becomes the head of
+any open `N.x-dev` → `N.x-prod` pull request, and because it starts no workflow runs, that pull request's checks do
+not run again until someone pushes to `N.x-dev` or closes and reopens it.
 
 The caller must not declare workflow-level concurrency or concurrency on the job that calls this
 workflow, because a caller's group replaces the reusable workflow's group. Releases are explicitly
