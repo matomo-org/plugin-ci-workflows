@@ -305,9 +305,9 @@ on `N.x-dev` next to the dated line), or the push is rejected, the step fails af
 merge the tag into `N.x-dev` by hand. While the tag is still the branch tip, a dispatched run repeats the merge, so
 **Run workflow** also retries it. `N.x-dev` must let `github-actions[bot]` push past its protection as well,
 including any required status checks: the push is made with `GITHUB_TOKEN`, so it starts no workflow runs and the
-pushed commit has no checks. When `N.x-dev` has moved on since the last merge into `N.x-prod`, the back-merge is an
-unsigned merge commit, so `N.x-dev` must not require linear history or signed commits; a fast-forward still works,
-but every other back-merge fails with "the push failed".
+pushed commit has no checks. `N.x-dev` must also not require linear history or signed commits: when `N.x-dev` has
+moved on since the last merge into `N.x-prod` the back-merge is a merge commit, and both that commit and the release
+date commit are unsigned, so such a back-merge fails with "the push failed".
 
 The caller must not declare workflow-level concurrency or concurrency on the job that calls this
 workflow, because a caller's group replaces the reusable workflow's group. Releases are explicitly
