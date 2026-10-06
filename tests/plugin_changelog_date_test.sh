@@ -153,6 +153,30 @@ run_open hand-edited 6.x-dev || fail "a branch with a human commit is skipped, n
 [[ "$(git -C "$WORK/hand-edited/origin.git" rev-parse automated/release-date-6.0.3)" == "$HAND_COMMIT" ]] \
     || fail "a human commit on the branch is never overwritten"
 
+new_repo amended '* 6.0.3 Three'
+git -C "$WORK/amended/clone" switch -q -c automated/release-date-6.0.3
+printf 'note\n' >> "$WORK/amended/clone/CHANGELOG.md"
+GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="github-actions[bot]@users.noreply.github.com" \
+    git -C "$WORK/amended/clone" commit -q -am 'an amended date commit'
+git -C "$WORK/amended/clone" push -q origin automated/release-date-6.0.3
+AMENDED_COMMIT=$(git -C "$WORK/amended/clone" rev-parse HEAD)
+git -C "$WORK/amended/clone" switch -q 6.x-dev
+run_open amended 6.x-dev || fail "a branch with an amended commit is skipped, not failed"
+[[ "$(git -C "$WORK/amended/origin.git" rev-parse automated/release-date-6.0.3)" == "$AMENDED_COMMIT" ]] \
+    || fail "a commit someone else committed is never overwritten, whoever authored it"
+grep -Fq 'has commits from someone other than this workflow' "$WORK/amended/out" || fail "an amended commit says why it is skipped"
+
+new_repo own-branch '* 6.0.3 Three'
+git -C "$WORK/own-branch/clone" switch -q -c automated/release-date-6.0.3
+printf 'note\n' >> "$WORK/own-branch/clone/CHANGELOG.md"
+GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="github-actions[bot]@users.noreply.github.com" \
+    GIT_COMMITTER_NAME="github-actions[bot]" GIT_COMMITTER_EMAIL="github-actions[bot]@users.noreply.github.com" \
+    git -C "$WORK/own-branch/clone" commit -q -am 'an earlier date commit'
+git -C "$WORK/own-branch/clone" push -q origin automated/release-date-6.0.3
+git -C "$WORK/own-branch/clone" switch -q 6.x-dev
+run_open own-branch 6.x-dev 2026-10-13 || { cat "$WORK/own-branch/out" >&2; fail "the workflow's own branch is refreshed"; }
+[[ "$(origin_changelog_line own-branch)" == '* 6.0.3 - 2026-10-13 - Three' ]] || fail "the refreshed branch carries the new date"
+
 new_repo other-base '* 6.0.3 Three'
 git -C "$WORK/other-base/clone" push -q origin origin/6.x-prod:refs/heads/automated/release-date-6.0.3
 PROD_TIP=$(git -C "$WORK/other-base/origin.git" rev-parse 6.x-prod)

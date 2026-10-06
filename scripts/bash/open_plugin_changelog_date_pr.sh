@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 
 if [[ -z "$TARGET_BRANCH" ]]; then
-    echo "Usage: $0 <target-branch> [release-date]" >&2
+    echo "Usage: $0 <target-branch> [release-date] [production-branch]" >&2
     exit 1
 fi
 if [[ -z "$RELEASE_DATE" ]]; then
@@ -85,7 +85,10 @@ git ls-remote --exit-code --heads origin "refs/heads/$BRANCH" > /dev/null || bra
 if (( branch_status == 0 )); then
     git fetch --quiet --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
     expected_tip=$(git rev-parse "refs/remotes/origin/$BRANCH")
-    if git log --format=%ae "HEAD..refs/remotes/origin/$BRANCH" | grep -qvxF "$BOT_EMAIL"; then
+    # The committer is checked too, because amending the workflow's commit keeps its author. The log
+    # is captured first: grep -q exiting early would SIGPIPE git log, and pipefail would read that as no match.
+    identities=$(git log --format='%ae%n%ce' "HEAD..refs/remotes/origin/$BRANCH")
+    if [[ -n "$identities" ]] && grep -qvxF "$BOT_EMAIL" <<< "$identities"; then
         echo "::warning::$BRANCH has commits from someone other than this workflow, so it was left alone."
         exit 0
     fi
@@ -102,7 +105,7 @@ elif (( branch_status != 2 )); then
     error "Could not list the branches on origin."
 fi
 
-# The author check above relies on this identity, and GIT_AUTHOR_* would override git config.
+# The identity check above relies on these, and GIT_AUTHOR_* and GIT_COMMITTER_* would override git config.
 GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="$BOT_EMAIL" \
     GIT_COMMITTER_NAME="github-actions[bot]" GIT_COMMITTER_EMAIL="$BOT_EMAIL" \
     git commit --quiet -m "Add release date for $VERSION" -- CHANGELOG.md
