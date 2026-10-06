@@ -84,7 +84,12 @@ branch_status=0
 expected_tip=""
 git ls-remote --exit-code --heads origin "refs/heads/$BRANCH" > /dev/null || branch_status=$?
 if (( branch_status == 0 )); then
-    git fetch --quiet --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+    # In a shallow checkout, the range below would take all the history behind the branch as commits on it.
+    unshallow=()
+    if [[ "$(git rev-parse --is-shallow-repository)" == true ]]; then
+        unshallow=(--unshallow)
+    fi
+    git fetch --quiet --no-tags "${unshallow[@]}" origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
     expected_tip=$(git rev-parse "refs/remotes/origin/$BRANCH")
     # The committer is checked too, because amending the workflow's commit keeps its author. The log
     # is captured first: grep -q exiting early would SIGPIPE git log, and pipefail would read that as no match.

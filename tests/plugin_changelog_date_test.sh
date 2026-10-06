@@ -181,6 +181,23 @@ git -C "$WORK/own-branch/clone" switch -q 6.x-dev
 run_open own-branch 6.x-dev 2026-10-13 || { cat "$WORK/own-branch/out" >&2; fail "the workflow's own branch is refreshed"; }
 [[ "$(origin_changelog_line own-branch)" == '* 6.0.3 - 2026-10-13 - Three' ]] || fail "the refreshed branch carries the new date"
 
+# As in the workflow's depth-1 checkout, after the target moved on past the branch's base.
+new_repo shallow '* 6.0.3 Three'
+git -C "$WORK/shallow/clone" switch -q -c automated/release-date-6.0.3
+printf 'note\n' >> "$WORK/shallow/clone/CHANGELOG.md"
+GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="github-actions[bot]@users.noreply.github.com" \
+    GIT_COMMITTER_NAME="github-actions[bot]" GIT_COMMITTER_EMAIL="github-actions[bot]@users.noreply.github.com" \
+    git -C "$WORK/shallow/clone" commit -q -am 'an earlier date commit'
+git -C "$WORK/shallow/clone" push -q origin automated/release-date-6.0.3
+git -C "$WORK/shallow/clone" switch -q 6.x-dev
+printf '{"name":"TestPlugin","version":"6.0.3","description":"moved on"}\n' > "$WORK/shallow/clone/plugin.json"
+git -C "$WORK/shallow/clone" commit -q -am 'a development commit'
+git -C "$WORK/shallow/clone" push -q origin 6.x-dev
+rm -rf "$WORK/shallow/clone"
+git clone -q --depth 1 --branch 6.x-dev "file://$WORK/shallow/origin.git" "$WORK/shallow/clone"
+run_open shallow 6.x-dev 2026-10-13 || { cat "$WORK/shallow/out" >&2; fail "a shallow checkout refreshes the workflow's own branch"; }
+[[ "$(origin_changelog_line shallow)" == '* 6.0.3 - 2026-10-13 - Three' ]] || fail "a shallow checkout reads only the branch's own commits"
+
 new_repo other-base '* 6.0.3 Three'
 git -C "$WORK/other-base/clone" push -q origin origin/6.x-prod:refs/heads/automated/release-date-6.0.3
 PROD_TIP=$(git -C "$WORK/other-base/origin.git" rev-parse 6.x-prod)
