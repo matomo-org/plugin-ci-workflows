@@ -173,6 +173,7 @@ else
         emit "release_needed=false"
         emit "publish_release=false"
         emit "date_pr_needed=true"
+        emit "today=$today"
     fi
 fi
 

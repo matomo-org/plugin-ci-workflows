@@ -153,7 +153,12 @@ check(
     steps_by_name.get("Open release date pull requests", {}).get("if")
     == "steps.prepare.outputs.date_pr_needed == 'true'"
     and "open_plugin_changelog_date_pr.sh" in step_run("Open release date pull requests")
-    and "exit 1" in step_run("Open release date pull requests"),
+    and "exit 1" in step_run("Open release date pull requests")
+    and 'DATE_PR_RESULT_FILE="$result_file"' in step_run("Open release date pull requests")
+    and '"$GITHUB_REF_NAME" "$TODAY"' in step_run("Open release date pull requests")
+    and '[[ -s "$result_file" ]]' in step_run("Open release date pull requests")
+    and "pull requests opened or refreshed above" in step_run("Open release date pull requests")
+    and "no release date pull request was opened" in step_run("Open release date pull requests"),
 )
 check(
     "the tag step runs only when a release is needed",

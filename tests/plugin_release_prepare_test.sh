@@ -56,6 +56,7 @@ assert_output 'tag_exists=false' "$WORK/stale-output"
 assert_output 'release_needed=false' "$WORK/stale-output"
 assert_output 'publish_release=false' "$WORK/stale-output"
 assert_output 'date_pr_needed=true' "$WORK/stale-output"
+assert_output 'today=2026-09-21' "$WORK/stale-output"
 
 new_repo "$WORK/undated"
 printf '## Changelog\n\n* 5.0.0 Text\n' > "$WORK/undated/CHANGELOG.md"

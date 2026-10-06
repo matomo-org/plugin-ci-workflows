@@ -36,6 +36,22 @@ printf '## Changelog\n\n## 6.0.2 (not yet released)\n' > "$WORK/not-yet-released
 python3 "$SCRIPT" "$WORK/not-yet-released.md" 6.0.2 2026-09-21
 assert_contains '## 6.0.2 - 2026-09-21' "$WORK/not-yet-released.md"
 
+printf '## Changelog\n\n* 6.0.2 Unreleased - Fixes\n' > "$WORK/unreleased-separator.md"
+python3 "$SCRIPT" "$WORK/unreleased-separator.md" 6.0.2 2026-09-21
+assert_contains '* 6.0.2 - 2026-09-21 - Fixes' "$WORK/unreleased-separator.md"
+
+printf '## Changelog\n\n* 6.0.2 Unreleased: Fixes\n' > "$WORK/unreleased-colon.md"
+python3 "$SCRIPT" "$WORK/unreleased-colon.md" 6.0.2 2026-09-21
+assert_contains '* 6.0.2 - 2026-09-21: Fixes' "$WORK/unreleased-colon.md"
+
+printf '## Changelog\n\n* 6.0.2 (Unreleased) features\n' > "$WORK/unreleased-parenthesized-text.md"
+python3 "$SCRIPT" "$WORK/unreleased-parenthesized-text.md" 6.0.2 2026-09-21
+assert_contains '* 6.0.2 - 2026-09-21 features' "$WORK/unreleased-parenthesized-text.md"
+
+printf '## Changelog\n\n* 6.0.2 Unreleased features for the new menu\n' > "$WORK/unreleased-text.md"
+python3 "$SCRIPT" "$WORK/unreleased-text.md" 6.0.2 2026-09-21
+assert_contains '* 6.0.2 - 2026-09-21 - Unreleased features for the new menu' "$WORK/unreleased-text.md"
+
 printf '## Changelog\n\n## 6.0.2 (2026-09-20)\n' > "$WORK/parenthesized-date.md"
 python3 "$SCRIPT" "$WORK/parenthesized-date.md" 6.0.2 2026-09-21
 python3 "$SCRIPT" --check "$WORK/parenthesized-date.md" 6.0.2 2026-09-21

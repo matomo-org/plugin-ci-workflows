@@ -28,7 +28,11 @@ UNSUPPORTED_DATE_PATTERN = re.compile(
 DATE_LEAD = " -([*_"
 UNSUPPORTED_DATE_LEAD = " -–—([*_"
 UNRELEASED_PATTERN = re.compile(
-    r"^(?P<prefix>\s*(?:-\s*)?)(?:\(?unreleased\)?|\(?not\s+yet\s+released\)?)(?P<suffix>.*)$",
+    # The lookahead keeps free text such as "Unreleased features" from being read as the marker. It
+    # applies only to the bare words: on a parenthesized marker, backtracking would leave the ")" behind.
+    r"^(?P<prefix>\s*(?:-\s*)?)"
+    r"(?:\(unreleased\)|\(not\s+yet\s+released\)|(?:unreleased|not\s+yet\s+released)(?=\s*(?:$|[^\w\s])))"
+    r"(?P<suffix>.*)$",
     re.IGNORECASE,
 )
 

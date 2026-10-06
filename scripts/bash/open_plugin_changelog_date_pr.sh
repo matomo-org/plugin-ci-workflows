@@ -5,7 +5,8 @@
 # branches with separate commits makes the next development-to-production merge conflict.
 # Nothing is dated for a version the production branch (the target, or the pull request's base
 # when given) would refuse to release.
-# Run from a checkout of the target branch, with a pushable origin and an authenticated gh.
+# Run from a checkout of the target branch, with a pushable origin and an authenticated gh. When
+# DATE_PR_RESULT_FILE is set, "opened" is written to it once a pull request carries the date.
 # Usage: open_plugin_changelog_date_pr.sh <target-branch> [release-date] [production-branch]
 
 set -euo pipefail
@@ -124,3 +125,7 @@ for target in "${targets[@]}"; do
     fi
     gh pr create --base "$target" --head "$BRANCH" --title "Add release date for $VERSION" --body "$body"
 done
+
+if [[ -n "${DATE_PR_RESULT_FILE:-}" ]]; then
+    echo opened > "$DATE_PR_RESULT_FILE"
+fi

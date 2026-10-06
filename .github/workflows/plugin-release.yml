@@ -198,14 +198,22 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.prepare.outputs.version }}
+          TODAY: ${{ steps.prepare.outputs.today }}
         shell: bash
         run: |
           set -euo pipefail
           export GIT_CONFIG_COUNT=1
           export GIT_CONFIG_KEY_0=credential.https://github.com.helper
           export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
-          bash "$RUNNER_TEMP/release-scripts/bash/open_plugin_changelog_date_pr.sh" "$GITHUB_REF_NAME"
-          echo "::error file=CHANGELOG.md::$VERSION was not released because its changelog entry is not dated today. Merge the release date pull requests opened above, and the merge into $GITHUB_REF_NAME releases it."
+          result_file="$RUNNER_TEMP/release-date-pr-result"
+          # The day prepare compared against, so a run crossing midnight UTC dates and reports consistently.
+          DATE_PR_RESULT_FILE="$result_file" \
+            bash "$RUNNER_TEMP/release-scripts/bash/open_plugin_changelog_date_pr.sh" "$GITHUB_REF_NAME" "$TODAY"
+          if [[ -s "$result_file" ]]; then
+            echo "::error file=CHANGELOG.md::$VERSION was not released because its changelog entry is not dated today. Merge the release date pull requests opened or refreshed above, and the merge into $GITHUB_REF_NAME releases it."
+          else
+            echo "::error file=CHANGELOG.md::$VERSION was not released because its changelog entry is not dated today, and no release date pull request was opened, for the reason given above. Resolve that first; merging a pull request into $GITHUB_REF_NAME that dates the entry releases it."
+          fi
           exit 1
 
       - name: Create release tag

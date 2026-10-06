@@ -116,13 +116,16 @@ grep -Fq 'pr create --base 6.x-dev --head automated/release-date-6.0.3' "$FAKE_G
 [[ "$(grep -c 'pr create' "$FAKE_GH_LOG")" == 1 ]] || fail "only the development branch gets a pull request"
 
 new_repo to-prod '* 6.0.3 - 2026-10-11 - Three' 6.x-prod
-run_open to-prod 6.x-prod || { cat "$WORK/to-prod/out" >&2; fail "dating the production branch succeeds"; }
+DATE_PR_RESULT_FILE="$WORK/to-prod/result" run_open to-prod 6.x-prod \
+    || { cat "$WORK/to-prod/out" >&2; fail "dating the production branch succeeds"; }
+[[ "$(cat "$WORK/to-prod/result")" == opened ]] || fail "opening the pull requests is reported"
 grep -Fq 'pr create --base 6.x-prod --head automated/release-date-6.0.3' "$FAKE_GH_LOG" || fail "a pull request into 6.x-prod is opened"
 grep -Fq 'pr create --base 6.x-dev --head automated/release-date-6.0.3' "$FAKE_GH_LOG" || fail "the same branch is proposed for 6.x-dev"
 
 new_repo refresh '* 6.0.3 Three'
 export FAKE_GH_OPEN_BASES=6.x-dev
-run_open refresh 6.x-dev 2026-10-13 || fail "refreshing an open pull request succeeds"
+DATE_PR_RESULT_FILE="$WORK/refresh/result" run_open refresh 6.x-dev 2026-10-13 || fail "refreshing an open pull request succeeds"
+[[ "$(cat "$WORK/refresh/result")" == opened ]] || fail "a refreshed pull request is reported"
 unset FAKE_GH_OPEN_BASES
 [[ "$(origin_changelog_line refresh)" == '* 6.0.3 - 2026-10-13 - Three' ]] || fail "an explicit date is written"
 if grep -Fq 'pr create' "$FAKE_GH_LOG"; then fail "an open pull request is not duplicated"; fi
@@ -149,7 +152,8 @@ git -C "$WORK/hand-edited/clone" commit -q -am 'a human edit'
 git -C "$WORK/hand-edited/clone" push -q origin automated/release-date-6.0.3
 HAND_COMMIT=$(git -C "$WORK/hand-edited/clone" rev-parse HEAD)
 git -C "$WORK/hand-edited/clone" switch -q 6.x-dev
-run_open hand-edited 6.x-dev || fail "a branch with a human commit is skipped, not failed"
+DATE_PR_RESULT_FILE="$WORK/hand-edited/result" run_open hand-edited 6.x-dev || fail "a branch with a human commit is skipped, not failed"
+[[ ! -s "$WORK/hand-edited/result" ]] || fail "a skipped branch is not reported as opened"
 [[ "$(git -C "$WORK/hand-edited/origin.git" rev-parse automated/release-date-6.0.3)" == "$HAND_COMMIT" ]] \
     || fail "a human commit on the branch is never overwritten"
 
@@ -181,7 +185,8 @@ new_repo other-base '* 6.0.3 Three'
 git -C "$WORK/other-base/clone" push -q origin origin/6.x-prod:refs/heads/automated/release-date-6.0.3
 PROD_TIP=$(git -C "$WORK/other-base/origin.git" rev-parse 6.x-prod)
 export FAKE_GH_HEAD_BASES=6.x-prod
-run_open other-base 6.x-dev || fail "a branch proposed for another base is skipped, not failed"
+DATE_PR_RESULT_FILE="$WORK/other-base/result" run_open other-base 6.x-dev || fail "a branch proposed for another base is skipped, not failed"
+[[ ! -s "$WORK/other-base/result" ]] || fail "a branch proposed for another base is not reported as opened"
 unset FAKE_GH_HEAD_BASES
 [[ "$(git -C "$WORK/other-base/origin.git" rev-parse automated/release-date-6.0.3)" == "$PROD_TIP" ]] \
     || fail "a branch proposed for production is never rebuilt on development"

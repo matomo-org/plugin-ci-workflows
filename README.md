@@ -228,7 +228,7 @@ The changelog entry must start at the beginning of a line with the bare version,
 by a Markdown heading or list marker, `Version ` or the plugin name from `plugin.json`, or `_`/`**`
 emphasis. A trailing ` - YYYY-MM-DD`, ` - DD/MM/YYYY`, ` - MM/DD/YYYY`, any of them in `_`/`**`
 emphasis, or `(unreleased)`/`(not yet released)`/a parenthesized date is supported. Text straight
-after a dateless version that starts with a letter or digit, optionally in `_`/`**` emphasis, other than an unreleased marker, as in
+after a dateless version that starts with a letter or digit, optionally in `_`/`**` emphasis, other than an unreleased marker (a bare `Unreleased` or `not yet released` followed by a word, as in `Unreleased features`, is free text), as in
 `6.0.0 Compatibility with Matomo 6`, is kept after the new date and a ` - ` separator. Keep-a-Changelog bracketed versions such as `[6.0.2]` are not recognised.
 Ambiguous slash dates are interpreted day-first. An entry that can only be `MM/DD/YYYY`, because its
 day is above 12, is rewritten as `YYYY-MM-DD` when the new day is 12 or less. Any other numeric date
