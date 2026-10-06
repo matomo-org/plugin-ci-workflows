@@ -204,9 +204,26 @@ expect_annotations() {
 expect_annotations "a path with a colon is annotated once, for its bare string" "$dir" 1
 dir=$(make_plugin many-strings)
 rescoped_with "$(for i in $(seq 1 52); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
-expect_annotations "at most 9 strings are annotated, so the count is the tenth" "$dir" 9
-expect "the strings past 9 are counted in one warning" 0 "$dir" '::warning::vendor/prefixed gained 43 more strings' 'Composer\Autoload'
-expect "the strings past 9 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
+expect_annotations "8 of more than 9 strings are annotated, so the count is one of the step's 10" "$dir" 8
+tests=$((tests + 1))
+first=$(bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1 | grep -m1 '^::warning')
+if [[ "$first" == '::warning::vendor/prefixed gained 52 strings'* ]]; then
+  echo "ok - the count of the strings comes before their annotations, so the step limit cannot drop it"
+else
+  echo "FAIL - the count of the strings comes before their annotations, so the step limit cannot drop it: $first"
+  failures+=("the count of the strings is the first warning")
+fi
+expect "the strings past 8 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
+dir=$(make_plugin nine-strings)
+rescoped_with "$(for i in $(seq 1 9); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
+expect_annotations "9 strings are all annotated" "$dir" 9
+tests=$((tests + 1))
+if bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1 | grep -q '^::warning::vendor/prefixed gained'; then
+  echo "FAIL - 9 strings get no count"
+  failures+=("9 strings get no count")
+else
+  echo "ok - 9 strings get no count"
+fi
 
 dir=$(make_plugin first-scope)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
