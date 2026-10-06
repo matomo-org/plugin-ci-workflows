@@ -161,6 +161,10 @@ rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm known -- vendor/prefixed
 printf '%s\n' "// rescoped again" >> "$dir/vendor/prefixed/foo/src/Bar.php"
 expect_no_string_warning "a bare string the tree already had is not reported again" "$dir"
+rescoped_with "\$a = \"Bar\\\\Baz\";
+\$b = '\\\\Bar\\\\Baz';
+\$c = 'Bar\\Baz';" "$dir"
+expect_no_string_warning "a known string written with other quotes or escaping is not reported again" "$dir"
 
 dir=$(make_plugin prefixed-string)
 rescoped_with "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Bar\\\\Baz';" "$dir"
@@ -210,15 +214,30 @@ dir=$(make_plugin untracked-string)
 printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/New.php"
 expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=vendor/prefixed/foo/src/New.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
 
-# A git whose grep fails, since git grep --untracked still searches a tree whose index is corrupt.
+# A git whose FAIL_GREP_AT-th grep fails, since git grep --untracked still searches a tree whose index
+# is corrupt. The script greps for the namespaces, then the earlier tree, then the rebuilt one.
 mkdir -p "$WORK/failing-git"
-# shellcheck disable=SC2016 # $a and $@ are the stand-in's, not this script's.
-printf '#!/bin/bash\nfor a; do [ "$a" != grep ] || { echo "fatal: cannot search" >&2; exit 128; }; done\nexec %q "$@"\n' \
-  "$(command -v git)" > "$WORK/failing-git/git"
+cat > "$WORK/failing-git/git" <<SH
+#!/bin/bash
+for a; do
+  [ "\$a" = grep ] || continue
+  n=\$((\$(cat "$WORK/grep-calls" 2>/dev/null || echo 0) + 1))
+  echo "\$n" > "$WORK/grep-calls"
+  [ "\$n" != "\$FAIL_GREP_AT" ] || { echo "fatal: cannot search" >&2; exit 128; }
+  break
+done
+exec $(printf %q "$(command -v git)") "\$@"
+SH
 chmod +x "$WORK/failing-git/git"
-dir=$(make_plugin failed-search)
-rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-PATH="$WORK/failing-git:$PATH" expect "a tree git cannot search is a warning that it was not checked, not a pass" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+at=0
+for search in namespaces 'earlier tree' 'rebuilt tree'; do
+  at=$((at + 1))
+  dir=$(make_plugin "failed-search-$at")
+  rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+  rm -f "$WORK/grep-calls"
+  FAIL_GREP_AT=$at PATH="$WORK/failing-git:$PATH" \
+    expect "a failed search of the $search is a warning that the tree was not checked, not a pass" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+done
 
 # What git grep prints does not depend on the user's git config.
 export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=grep.lineNumber GIT_CONFIG_VALUE_0=true GIT_CONFIG_KEY_1=grep.column \

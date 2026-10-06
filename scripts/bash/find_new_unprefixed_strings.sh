@@ -10,7 +10,9 @@
 #
 # Every scoped tree already holds strings like these that are harmless, in error messages, comments
 # and dead branches, so only strings the earlier tree held nowhere are listed. By string rather than
-# by file, so a release that moves a file does not list everything in it again.
+# by file, so a release that moves a file does not list everything in it again, and ignoring the
+# quotes, escaping and a leading separator, so one that only rewrites a string in another form does not
+# list it either.
 #
 # Usage: find_new_unprefixed_strings.sh <plugin-dir> <plugin-name> [base-rev]
 # base-rev holds the tree before the rebuild, HEAD by default, so a rebuild that is already committed
@@ -31,6 +33,12 @@ prefix="Matomo\\Dependencies\\$plugin_name\\"
 
 if ! git -C "$plugin_dir" rev-parse --quiet --verify "$base^{commit}" > /dev/null; then
   echo "Cannot read $base in $plugin_dir, so there is no earlier tree to compare vendor/prefixed with." >&2
+  exit 1
+fi
+
+# A first rebuild has nothing to compare with, and would otherwise list every string in the tree.
+if [ -z "$(git -C "$plugin_dir" ls-tree -d --name-only "$base" -- vendor/prefixed)" ]; then
+  echo "$base has no vendor/prefixed in $plugin_dir, so there is no earlier tree to compare with." >&2
   exit 1
 fi
 
@@ -66,12 +74,6 @@ pattern="['\"]"'\\{0,2}('"$roots"')\\{1,2}([A-Za-z_][A-Za-z0-9_\\]{0,200})?'
 # A scoped root can itself be Matomo, and then the pattern matches the prefixed form as well.
 prefixed="^[^:]*:['\"]"'\\{0,2}Matomo\\{1,2}Dependencies\\{1,2}'"$plugin_name"'\\{1,2}'
 
-# A first rebuild has nothing to compare with, and would otherwise list every string in the tree.
-if [ -z "$(git -C "$plugin_dir" ls-tree -d --name-only "$base" -- vendor/prefixed)" ]; then
-  echo "$base has no vendor/prefixed in $plugin_dir, so there is no earlier tree to compare with." >&2
-  exit 1
-fi
-
 export LC_ALL=C
 known=$(mktemp)
 git -C "$plugin_dir" "${search[@]}" -hoE "$pattern" "$base" -- 'vendor/prefixed/*.php' > "$known"
@@ -93,10 +95,23 @@ fi
   | sort -u \
   | awk '
       # Not NR == FNR, which an empty first file makes true of every line.
-      FILENAME == ARGV[1] { known[$0] = 1; next }
+      # Either quote, any leading separator dropped, and each separator single or doubled: all name
+      # the same class.
+      function normalise(s,  out, i, c) {
+        s = substr(s, 2)
+        while (substr(s, 1, 1) == "\\") s = substr(s, 2)
+        out = ""
+        for (i = 1; i <= length(s); i++) {
+          c = substr(s, i, 1)
+          out = out c
+          if (c == "\\" && substr(s, i + 1, 1) == "\\") i++
+        }
+        return out
+      }
+      FILENAME == ARGV[1] { known[normalise($0)] = 1; next }
       {
         path = substr($0, 1, index($0, ":") - 1)
         string = substr($0, length(path) + 2)
-        if (!(string in known)) print path ": " string
+        if (!(normalise(string) in known)) print path ": " string
       }' "$known" -
 rm -f "$known" "$found"
