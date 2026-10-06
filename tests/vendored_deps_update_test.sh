@@ -142,7 +142,7 @@ expect_no_string_warning() {
   local output status
   output=$(bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1)
   status=$?
-  if [ "$status" -ne 0 ] || printf '%s' "$output" | grep -q 'gained the string'; then
+  if [ "$status" -ne 0 ] || printf '%s' "$output" | grep -qE 'gained the string|was not checked for strings'; then
     echo "FAIL - $description (exited $status): $output"
     failures+=("$description")
   else
@@ -152,7 +152,7 @@ expect_no_string_warning() {
 
 dir=$(make_plugin bare-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
+expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string Bar" 'Composer\Autoload'
 
 GITHUB_WORKSPACE="$WORK" expect "an annotation names its file from the workspace root" 0 "$dir" \
   "file=bare-string/vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
@@ -161,7 +161,7 @@ GITHUB_WORKSPACE="$dir" expect "an annotation for a plugin at the workspace root
 
 dir=$(make_plugin bare-string-double-quoted)
 rescoped_with "\$class = \"\\\\Bar\\\\Baz\";" "$dir"
-expect "a double-quoted bare string with a leading separator is reported too" 0 "$dir" 'gained the string "\\\\Bar' 'Composer\Autoload'
+expect "a double-quoted bare string with a leading separator is reported too" 0 "$dir" 'gained the string \\\\Bar' 'Composer\Autoload'
 
 dir=$(make_plugin known-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
@@ -183,13 +183,13 @@ expect_no_string_warning "a string whose namespace merely starts with a scoped r
 
 dir=$(make_plugin root-only-string)
 rescoped_with "\$class = 'Bar\\\\' . \$name;" "$dir"
-expect "a string that is only a scoped root and a separator is reported" 0 "$dir" "gained the string 'Bar" 'Composer\Autoload'
+expect "a string that is only a scoped root and a separator is reported" 0 "$dir" "gained the string Bar" 'Composer\Autoload'
 
 dir=$(make_plugin first-scope)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 git -C "$dir" rm -rq --cached vendor/prefixed
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
-expect "a first rebuild, with no earlier tree, is a warning, not a list of every string" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+expect_no_string_warning "a first rebuild, with no earlier tree, warns of nothing rather than listing every string" "$dir"
 
 dir=$(make_plugin moved-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
@@ -204,7 +204,7 @@ printf '<?php\nnamespace Matomo\\Dependencies\\Foo\\Matomo\\Network;\n%s\n' \
   "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Matomo\\\\Network\\\\IP';" > "$dir/vendor/prefixed/foo/src/IP.php"
 expect_no_string_warning "a prefixed string is not reported when a scoped root is Matomo" "$dir"
 printf '%s\n' "\$bare = 'Matomo\\\\Network\\\\IP';" >> "$dir/vendor/prefixed/foo/src/IP.php"
-expect "a bare string is still reported when a scoped root is Matomo" 0 "$dir" "gained the string 'Matomo" 'Composer\Autoload'
+expect "a bare string is still reported when a scoped root is Matomo" 0 "$dir" "gained the string Matomo" 'Composer\Autoload'
 
 dir=$(make_plugin no-history)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
@@ -219,7 +219,7 @@ echo 'vendor/prefixed/foo/src/Ignored.php' > "$dir/.gitignore"
 expect_no_string_warning "a bare string in a file .gitignore keeps out of the pull request is not reported" "$dir"
 dir=$(make_plugin untracked-string)
 printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/New.php"
-expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=vendor/prefixed/foo/src/New.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
+expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=vendor/prefixed/foo/src/New.php::vendor/prefixed gained the string Bar" 'Composer\Autoload'
 
 dir=$(make_plugin non-ascii-path)
 printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/Bär.php"
@@ -264,7 +264,7 @@ rescoped_with "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Bar\\\\Baz';" "$dir"
 expect_no_string_warning "a prefixed string is not reported, whatever the git config" "$dir"
 dir=$(make_plugin config-bare-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-expect "a bare string is reported as written, whatever the git config" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string 'Bar\\\\\\\\Baz without" 'Composer\Autoload'
+expect "a bare string is reported as written, whatever the git config" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string Bar\\\\\\\\Baz without" 'Composer\Autoload'
 unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2
 
 # Uses of PHP the floor lacks, found by a stand-in PHPStan that reports each "// FINDING <identifier>
@@ -1120,7 +1120,7 @@ expect_body() {
 }
 dir=$(make_plugin body-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-expect_body "the pull request lists a bare string the rebuild added" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`'Bar\\\\Baz\`" yes
+expect_body "the pull request lists a bare string the rebuild added" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`Bar\\\\Baz\`" yes
 dir=$(make_plugin body-clean)
 expect_body "the pull request says nothing about strings when the rebuild added none" "$dir" 'without the prefix' no
 dir=$(make_plugin body-many)

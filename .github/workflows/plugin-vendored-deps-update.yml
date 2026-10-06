@@ -90,7 +90,8 @@ jobs:
   update:
     name: Update scoped dependencies
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 30 for the update itself, and 15 for find_new_floor_php_gaps.sh, whose two PHPStan runs may take 5 each.
+    timeout-minutes: 45
     permissions:
       contents: read
       pull-requests: read # the human-commit check lists open pull requests

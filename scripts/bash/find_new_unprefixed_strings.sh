@@ -16,9 +16,9 @@
 #
 # Usage: find_new_unprefixed_strings.sh <plugin-dir> <plugin-name> [base-rev]
 # base-rev holds the tree before the rebuild, HEAD by default, so a rebuild that is already committed
-# lists nothing. Prints one "<path>: <string>" line per new string in each file, and exits 0 whether
-# or not it found any, 1 when it cannot search either tree or base-rev has no vendor/prefixed, or 2 on
-# a usage error.
+# lists nothing. Prints one "<path>: <string>" line per new string in each file, the string as written
+# from just after its opening quote. Exits 0 whether or not it found any, 1 when it cannot search either
+# tree, 2 on a usage error, or 3 when base-rev has no vendor/prefixed.
 
 set -u
 
@@ -40,7 +40,7 @@ fi
 # A first rebuild has nothing to compare with, and would otherwise list every string in the tree.
 if [ -z "$(git -C "$plugin_dir" ls-tree -d --name-only "$base" -- vendor/prefixed)" ]; then
   echo "$base has no vendor/prefixed in $plugin_dir, so there is no earlier tree to compare with." >&2
-  exit 1
+  exit 3
 fi
 
 # Otherwise a grep.lineNumber, grep.column or color.grep in the user's git config changes what each line is,
@@ -114,6 +114,7 @@ fi
       {
         path = substr($0, 1, index($0, ":") - 1)
         string = substr($0, length(path) + 2)
-        if (!(normalise(string) in known)) print path ": " string
+        # Not the closing quote, which the match stops short of, since a package may append the rest of the name.
+        if (!(normalise(string) in known)) print path ": " substr(string, 2)
       }' "$known" -
 rm -f "$known" "$found"

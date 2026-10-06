@@ -73,12 +73,15 @@ rm -f "$listing"
 
 # A warning, not a failure: a new string is as often an error message as a class name a patcher
 # missed, and only reading the code around it tells the two apart.
-if strings=$(bash "$(dirname "${BASH_SOURCE[0]}")/find_new_unprefixed_strings.sh" "$plugin_dir" "$plugin_name"); then
+strings=$(bash "$(dirname "${BASH_SOURCE[0]}")/find_new_unprefixed_strings.sh" "$plugin_dir" "$plugin_name")
+strings_status=$?
+if [ "$strings_status" -eq 0 ]; then
   while IFS= read -r found; do
     [ -n "$found" ] || continue
     echo "::warning file=$annotation_dir${found%%: *}::vendor/prefixed gained the string ${found#*: } without $prefix. If it builds a class name, a scoper.inc.php patcher has to prefix it, or the class is not found at runtime."
   done <<< "$strings"
-else
+# 3 is a first scoping, with no earlier tree to compare with, so nothing is left unchecked.
+elif [ "$strings_status" -ne 3 ]; then
   echo "::warning::vendor/prefixed was not checked for strings that name a scoped namespace without $prefix."
 fi
 

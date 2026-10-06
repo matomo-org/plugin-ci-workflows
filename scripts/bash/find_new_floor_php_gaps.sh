@@ -129,8 +129,8 @@ analyse() {
   printf 'parameters:\n  level: 2\n  phpVersion: %s\n  paths: [%s]\n  tmpDir: %s\n' \
     "$php_version" "$(jq -n --arg p "$root/vendor/prefixed" '$p')" "$(jq -n --arg p "$work/tmp-$name" '$p')" > "$work/$name.neon"
   # 1 only means PHPStan found something, so the JSON is what says whether it ran. A run killed by
-  # the timeout leaves none. The limit keeps both runs well inside the job's own, since the job
-  # timing out would lose the pull request over a check that only warns.
+  # the timeout leaves none. The job's timeout-minutes leaves room for both runs at this limit, since
+  # the job timing out would lose the pull request over a check that only warns.
   timeout "${PHPSTAN_TIMEOUT:-300}" "$phpstan" analyse -c "$work/$name.neon" --memory-limit=2G --no-progress --error-format=json \
     > "$work/$name.json" 2> "$work/$name.err"
   local status=$?
