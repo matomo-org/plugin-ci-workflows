@@ -15,7 +15,7 @@
 # Usage: find_new_unprefixed_strings.sh <plugin-dir> <plugin-name> [base-rev]
 # base-rev holds the tree before the rebuild, HEAD by default, so a rebuild that is already committed
 # lists nothing. Prints one "<path>: <string>" line per new string in each file, and exits 0 whether
-# or not it found any, or 1 when it cannot read the tree at base-rev.
+# or not it found any, or 1 when it cannot search either tree or base-rev has no vendor/prefixed.
 
 set -u
 
@@ -34,18 +34,29 @@ if ! git -C "$plugin_dir" rev-parse --quiet --verify "$base^{commit}" > /dev/nul
   exit 1
 fi
 
+# Otherwise a grep.lineNumber, grep.column or color.grep in the user's git config changes what each line is.
+search=(grep --text --no-line-number --no-column --no-color)
+
 # The first segment under the prefix of every namespace the tree declares, such as phpseclib3 or
 # GuzzleHttp: the names php-scoper prefixed, and so the ones a string must not use bare.
 # The rebuilt tree is searched with --untracked, which leaves out what .gitignore excludes, as the pull
 # request does. A plain grep would list strings in those files on every run, since the base never has them.
-roots=$(git -C "$plugin_dir" grep --untracked --text -hoE '^[[:space:]]*(<\?php[[:space:]]+)?namespace[[:space:]]+[A-Za-z0-9_\\]+' \
-  -- 'vendor/prefixed/*.php' 2>/dev/null \
-  | sed -E 's/.*namespace[[:space:]]+//' \
+namespaces=$(mktemp) || exit 1
+git -C "$plugin_dir" "${search[@]}" --untracked -hoE '^[[:space:]]*(<\?php[[:space:]]+)?namespace[[:space:]]+[A-Za-z0-9_\\]+' \
+  -- 'vendor/prefixed/*.php' > "$namespaces"
+# 1 only means nothing matched.
+if [ "$?" -gt 1 ]; then
+  echo "Cannot search vendor/prefixed in $plugin_dir." >&2
+  rm -f "$namespaces"
+  exit 1
+fi
+roots=$(sed -E 's/.*namespace[[:space:]]+//' "$namespaces" \
   | grep -F "$prefix" \
   | cut -c$((${#prefix} + 1))- \
   | cut -d"\\" -f1 \
   | sort -u \
   | paste -sd'|')
+rm -f "$namespaces"
 [ -n "$roots" ] || exit 0
 
 # A quote, an optional leading backslash, then a scoped root followed by a namespace separator and
@@ -63,8 +74,7 @@ fi
 
 export LC_ALL=C
 known=$(mktemp)
-git -C "$plugin_dir" grep --text -hoE "$pattern" "$base" -- 'vendor/prefixed/*.php' > "$known"
-# 1 only means nothing matched.
+git -C "$plugin_dir" "${search[@]}" -hoE "$pattern" "$base" -- 'vendor/prefixed/*.php' > "$known"
 if [ "$?" -gt 1 ]; then
   echo "Cannot search vendor/prefixed at $base in $plugin_dir." >&2
   rm -f "$known"
@@ -72,7 +82,7 @@ if [ "$?" -gt 1 ]; then
 fi
 
 found=$(mktemp)
-git -C "$plugin_dir" grep --untracked --text -oE "$pattern" -- 'vendor/prefixed/*.php' > "$found"
+git -C "$plugin_dir" "${search[@]}" --untracked -oE "$pattern" -- 'vendor/prefixed/*.php' > "$found"
 if [ "$?" -gt 1 ]; then
   echo "Cannot search vendor/prefixed in $plugin_dir." >&2
   rm -f "$known" "$found"

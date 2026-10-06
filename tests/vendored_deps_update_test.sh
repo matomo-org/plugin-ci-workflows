@@ -210,6 +210,33 @@ dir=$(make_plugin untracked-string)
 printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/New.php"
 expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=vendor/prefixed/foo/src/New.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
 
+# A git whose grep fails, since git grep --untracked still searches a tree whose index is corrupt.
+mkdir -p "$WORK/failing-git"
+# shellcheck disable=SC2016 # $a and $@ are the stand-in's, not this script's.
+printf '#!/bin/bash\nfor a; do [ "$a" != grep ] || { echo "fatal: cannot search" >&2; exit 128; }; done\nexec %q "$@"\n' \
+  "$(command -v git)" > "$WORK/failing-git/git"
+chmod +x "$WORK/failing-git/git"
+dir=$(make_plugin failed-search)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+PATH="$WORK/failing-git:$PATH" expect "a tree git cannot search is a warning that it was not checked, not a pass" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+
+# What git grep prints does not depend on the user's git config.
+export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=grep.lineNumber GIT_CONFIG_VALUE_0=true GIT_CONFIG_KEY_1=grep.column \
+  GIT_CONFIG_VALUE_1=true GIT_CONFIG_KEY_2=color.grep GIT_CONFIG_VALUE_2=always
+dir=$(make_plugin config-known-string)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm known -- vendor/prefixed
+rescoped_with "// rescoped again
+\$class = 'Bar\\\\Baz';" "$dir"
+expect_no_string_warning "a known string on another line is not reported, whatever the git config" "$dir"
+dir=$(make_plugin config-prefixed-string)
+rescoped_with "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Bar\\\\Baz';" "$dir"
+expect_no_string_warning "a prefixed string is not reported, whatever the git config" "$dir"
+dir=$(make_plugin config-bare-string)
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+expect "a bare string is reported as written, whatever the git config" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string 'Bar\\\\\\\\Baz without" 'Composer\Autoload'
+unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2
+
 # Uses of PHP the floor lacks, found by a stand-in PHPStan that reports each "// FINDING <identifier>
 # <message>" comment in the tree it analyses, in PHPStan's JSON, and records the phpVersion it got.
 mkdir -p "$WORK/phpstan"
