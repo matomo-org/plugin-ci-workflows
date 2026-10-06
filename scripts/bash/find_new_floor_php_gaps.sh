@@ -20,8 +20,9 @@
 # Usage: find_new_floor_php_gaps.sh <plugin-dir> <floor> <phpstan> [base-rev]
 # floor is the PHP version as major.minor, such as 8.1. phpstan is the PHPStan executable. base-rev
 # holds the tree before the rebuild, HEAD by default. Prints one "<path>: <message>" line per new
-# message in each file, and exits 0 whether or not it found any, or 1 when jq or timeout is missing,
-# it cannot read the tree at base-rev or PHPStan does not run, or 2 on a usage error. PHPStan gets
+# message in each file, and exits 0 whether or not it found any, 1 when jq or timeout is missing, it
+# cannot read the tree at base-rev or PHPStan does not run, 2 on a usage error, or 3 when base-rev has
+# no vendor/prefixed. PHPStan gets
 # PHPSTAN_TIMEOUT seconds for each tree, 300 by default.
 
 set -u
@@ -56,7 +57,7 @@ fi
 # A first rebuild has nothing to compare with, and would otherwise list every guarded use in the tree.
 if [ -z "$(git -C "$plugin_dir" ls-tree -d --name-only "$base" -- vendor/prefixed)" ]; then
   echo "$base has no vendor/prefixed in $plugin_dir, so there is no earlier tree to compare with." >&2
-  exit 1
+  exit 3
 fi
 
 # Not $(cd "$(mktemp -d)" && pwd -P) in one go: a failed mktemp leaves cd "", which succeeds, and the

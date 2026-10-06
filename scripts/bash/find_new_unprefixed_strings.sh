@@ -17,7 +17,8 @@
 # Usage: find_new_unprefixed_strings.sh <plugin-dir> <plugin-name> [base-rev]
 # base-rev holds the tree before the rebuild, HEAD by default, so a rebuild that is already committed
 # lists nothing. Prints one "<path>: <string>" line per new string in each file, the string as written
-# from just after its opening quote. Exits 0 whether or not it found any, 1 when it cannot search either
+# from just after its opening quote. The string never holds a colon or a space, so the last ": " ends the
+# path, which can. Exits 0 whether or not it found any, 1 when it cannot search either
 # tree, 2 on a usage error, or 3 when base-rev has no vendor/prefixed.
 
 set -u
@@ -73,8 +74,9 @@ rm -f "$namespaces"
 # optionally more of the name, since a package may append the rest itself. Either separator may be
 # doubled, as it is inside a PHP string literal.
 pattern="['\"]"'\\{0,2}('"$roots"')\\{1,2}([A-Za-z_][A-Za-z0-9_\\]{0,200})?'
-# A scoped root can itself be Matomo, and then the pattern matches the prefixed form as well.
-prefixed="^[^:]*:['\"]"'\\{0,2}Matomo\\{1,2}Dependencies\\{1,2}'"$plugin_name"'\\{1,2}'
+# A scoped root can itself be Matomo, and then the pattern matches the prefixed form as well. Anchored
+# at the end, since the match has no colon and the path before it can.
+prefixed=":['\"]"'\\{0,2}Matomo\\{1,2}Dependencies\\{1,2}'"$plugin_name"'\\{1,2}[^:]*$'
 
 export LC_ALL=C
 known=$(mktemp) || exit 1
@@ -112,8 +114,9 @@ fi
       }
       FILENAME == ARGV[1] { known[normalise($0)] = 1; next }
       {
-        path = substr($0, 1, index($0, ":") - 1)
-        string = substr($0, length(path) + 2)
+        match($0, /:[^:]*$/)
+        path = substr($0, 1, RSTART - 1)
+        string = substr($0, RSTART + 1)
         # Not the closing quote, which the match stops short of, since a package may append the rest of the name.
         if (!(normalise(string) in known)) print path ": " substr(string, 2)
       }' "$known" -

@@ -185,6 +185,29 @@ dir=$(make_plugin root-only-string)
 rescoped_with "\$class = 'Bar\\\\' . \$name;" "$dir"
 expect "a string that is only a scoped root and a separator is reported" 0 "$dir" "gained the string Bar" 'Composer\Autoload'
 
+dir=$(make_plugin colon-path)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/a:'Bar,b.php"
+expect "a path with a colon, a quote and a comma is split at the string and escaped in the annotation" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/a%3A'Bar%2Cb.php::vendor/prefixed gained the string Bar\\\\\\\\Baz without" 'Composer\Autoload'
+expect_annotations() {
+  local description="$1" dir="$2" want="$3"
+  tests=$((tests + 1))
+  local count
+  count=$(bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1 | grep -c '^::warning file=')
+  if [ "$count" -ne "$want" ]; then
+    echo "FAIL - $description ($count annotations, wanted $want)"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+expect_annotations "a path with a colon is annotated once, for its bare string" "$dir" 1
+dir=$(make_plugin many-strings)
+rescoped_with "$(for i in $(seq 1 52); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
+expect_annotations "at most 50 strings are annotated" "$dir" 50
+expect "the strings past 50 are counted in one warning" 0 "$dir" '::warning::vendor/prefixed gained 2 more strings' 'Composer\Autoload'
+expect "the strings past 50 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
+
 dir=$(make_plugin first-scope)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 git -C "$dir" rm -rq --cached vendor/prefixed
@@ -203,6 +226,8 @@ dir=$(make_plugin matomo-root)
 printf '<?php\nnamespace Matomo\\Dependencies\\Foo\\Matomo\\Network;\n%s\n' \
   "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Matomo\\\\Network\\\\IP';" > "$dir/vendor/prefixed/foo/src/IP.php"
 expect_no_string_warning "a prefixed string is not reported when a scoped root is Matomo" "$dir"
+printf '<?php\n%s\n' "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Matomo\\\\Network\\\\IP';" > "$dir/vendor/prefixed/foo/src/a:b.php"
+expect_no_string_warning "a prefixed string in a path with a colon is not reported when a scoped root is Matomo" "$dir"
 printf '%s\n' "\$bare = 'Matomo\\\\Network\\\\IP';" >> "$dir/vendor/prefixed/foo/src/IP.php"
 expect "a bare string is still reported when a scoped root is Matomo" 0 "$dir" "gained the string Matomo" 'Composer\Autoload'
 
@@ -384,7 +409,7 @@ expect_gaps "a floor that is not major.minor is a usage error" 2 '' "$dir" 8
 dir=$(floor_plugin floor-first-scope '' "$FN")
 git -C "$dir" rm -rq --cached vendor/prefixed
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
-expect_gaps "a first rebuild, with no earlier tree, fails rather than listing every use" 1 '' "$dir"
+expect_gaps "a first rebuild, with no earlier tree, exits 3 rather than listing every use" 3 '' "$dir"
 
 dir=$(floor_plugin floor-crash '' "$FN")
 tests=$((tests + 1))
@@ -1132,6 +1157,15 @@ expect_body "the pull request leaves out the strings past 50" "$dir" 'Baz8`' no
 dir=$(make_plugin body-overflow)
 rescoped_with "$(for i in $(seq 1 3000); do printf '%s\n' "\$c$i = 'Bar\\\\Baz\\\\SomeLongClassNameThatFillsThePipe$i';"; done)" "$dir"
 expect_body "a list longer than a pipe holds is still capped, not a failed step" "$dir" "- and 2950 more" yes
+dir=$(make_plugin body-colon-path)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/a: b.php"
+expect_body "the pull request splits a string from a path with a colon in it" "$dir" "- \`vendor/prefixed/foo/src/a: b.php\`: \`Bar\\\\Baz\`" yes
+dir=$(floor_plugin body-first-scope '' "$FN")
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+git -C "$dir" rm -rq --cached vendor/prefixed
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
+expect_body "the pull request says nothing went unchecked on a first rebuild" "$dir" 'could not be checked' no
+BODY_DOWNGRADE=7.3 expect_body "the pull request says nothing of PHP 7.4 when the floor check had nothing to compare" "$dir" 'ran on PHP 7.4' no
 dir=$(make_plugin body-unreadable)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 expect_body "the pull request says when the strings could not be checked" "$dir" 'could not be checked for strings' yes 0000000000000000000000000000000000000000
