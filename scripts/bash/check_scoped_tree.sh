@@ -39,8 +39,9 @@ annotation_file() {
 
 # GitHub reads an annotation's file from the workspace root, and the plugin can be checked out below it.
 annotation_dir=''
-if [ -n "${GITHUB_WORKSPACE:-}" ]; then
-  annotation_dir="$(realpath --relative-to="$GITHUB_WORKSPACE" "$plugin_dir")/"
+# BSD realpath has no --relative-to, and then the plugin is taken to be the workspace root.
+if [ -n "${GITHUB_WORKSPACE:-}" ] && relative=$(realpath --relative-to="$GITHUB_WORKSPACE" "$plugin_dir" 2>/dev/null); then
+  annotation_dir="$relative/"
   [ "$annotation_dir" != ./ ] || annotation_dir=''
 fi
 
@@ -89,7 +90,8 @@ if [ "$strings_status" -eq 0 ] && [ -n "$strings" ]; then
   # GitHub annotates only the first 10 warnings of a step, and the scoping before this can warn twice, so
   # the count comes first.
   annotate=8
-  count=$(wc -l <<< "$strings")
+  # Not wc -l, which BSD pads with spaces.
+  count=$(grep -c '' <<< "$strings")
   if [ "$count" -gt 8 ]; then
     annotate=7
     echo "::warning::vendor/prefixed gained $count strings without $prefix: the first 7 are annotated, and the rest listed below."

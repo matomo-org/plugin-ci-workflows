@@ -44,9 +44,9 @@ if [ -z "$(git -C "$plugin_dir" ls-tree -d --name-only "$base" -- vendor/prefixe
   exit 3
 fi
 
-# Otherwise a grep.lineNumber, grep.column or color.grep in the user's git config changes what each line is,
-# and core.quotePath, on by default, quotes and escapes a path with a non-ASCII name.
-search=(-c core.quotePath=false grep --text --no-line-number --no-column --no-color)
+# Otherwise a grep.lineNumber, grep.column, grep.fullName or color.grep in the user's git config changes what
+# each line is, and core.quotePath, on by default, quotes and escapes a path with a non-ASCII name.
+search=(-c core.quotePath=false -c grep.fullName=false grep --text --no-line-number --no-column --no-color)
 
 # The first segment under the prefix of every namespace the tree declares, such as phpseclib3 or
 # GuzzleHttp: the names php-scoper prefixed, and so the ones a string must not use bare.

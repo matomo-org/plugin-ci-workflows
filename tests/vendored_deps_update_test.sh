@@ -150,6 +150,16 @@ expect_no_string_warning() {
   fi
 }
 
+# BSD tools, as on macOS: no realpath --relative-to or cp --parents, and a wc -l padded with spaces.
+BSD_TOOLS="$WORK/bsd-tools"
+mkdir -p "$BSD_TOOLS"
+printf '#!/bin/bash\nfor a; do case "$a" in --relative-to=*) echo "realpath: illegal option" >&2; exit 1 ;; esac; done\nexec %q "$@"\n' \
+  "$(command -v realpath)" > "$BSD_TOOLS/realpath"
+printf '#!/bin/bash\nfor a; do [ "$a" = --parents ] && { echo "cp: illegal option" >&2; exit 1; }; done\nexec %q "$@"\n' \
+  "$(command -v cp)" > "$BSD_TOOLS/cp"
+printf '#!/bin/bash\nprintf "%%8s\\n" "$(%q "$@")"\n' "$(command -v wc)" > "$BSD_TOOLS/wc"
+chmod +x "$BSD_TOOLS/realpath" "$BSD_TOOLS/cp" "$BSD_TOOLS/wc"
+
 dir=$(make_plugin bare-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string Bar" 'Composer\Autoload'
@@ -157,6 +167,24 @@ expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "fi
 GITHUB_WORKSPACE="$WORK" expect "an annotation names its file from the workspace root" 0 "$dir" \
   "file=bare-string/vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
 GITHUB_WORKSPACE="$dir" expect "an annotation for a plugin at the workspace root names its file from the plugin" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
+GITHUB_WORKSPACE="$WORK" PATH="$BSD_TOOLS:$PATH" expect "without realpath --relative-to, an annotation names its file from the plugin" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
+
+# A plugin below the top of its repository, which a grep.fullName in the git config would name paths from.
+src=$(make_plugin full-name-src)
+outer="$WORK/full-name"
+rm -rf "$outer"
+mkdir -p "$outer/plugin"
+git -C "$src" archive HEAD | tar -xf - -C "$outer/plugin"
+git -C "$outer" init -q
+git -C "$outer" add plugin
+git -C "$outer" -c user.email=t@t -c user.name=t commit -qm base
+cp "$src/composer.lock" "$outer/plugin/"
+cp -r "$src/vendor/." "$outer/plugin/vendor/"
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" >> "$outer/plugin/vendor/prefixed/foo/src/Bar.php"
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=grep.fullName GIT_CONFIG_VALUE_0=true \
+  expect "a grep.fullName in the git config does not move a path to the top of the repository" 0 "$outer/plugin" \
   "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
 
 dir=$(make_plugin bare-string-double-quoted)
@@ -214,6 +242,8 @@ else
   failures+=("the count of the strings is the first warning")
 fi
 expect "the strings past 7 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
+PATH="$BSD_TOOLS:$PATH" expect "the count of the strings has no padding from wc" 0 "$dir" \
+  '::warning::vendor/prefixed gained 52 strings' 'Composer\Autoload'
 dir=$(make_plugin eight-strings)
 rescoped_with "$(for i in $(seq 1 8); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
 expect_annotations "8 strings are all annotated" "$dir" 8
@@ -462,6 +492,10 @@ dir=$(floor_plugin floor-tab-path '' '')
 printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/src/a${TAB}b.php"
 expect_gaps "a tab in a path becomes a space, so it cannot split the path from the message" 0 \
   "vendor/prefixed/foo/src/a b.php${TAB}Function array_find not found." "$dir"
+
+dir=$(floor_plugin floor-bsd '' "$FN")
+PATH="$BSD_TOOLS:$PATH" expect_gaps "the rebuilt tree is copied without cp --parents" 0 \
+  "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 
 dir=$(floor_plugin floor-crash '' "$FN")
 tests=$((tests + 1))

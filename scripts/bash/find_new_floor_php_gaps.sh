@@ -154,14 +154,14 @@ analyse() {
 }
 
 # Only the files the pull request commits, so not what .gitignore excludes: the base never has those, so
-# every use in them would read as new on every run.
+# every use in them would read as new on every run. tar, not cp --parents, which BSD cp lacks.
 mkdir "$work/rebuilt"
 if ! (cd "$plugin_dir" && git ls-files -z --cached --others --exclude-standard -- vendor/prefixed > "$work/rebuilt-files") \
-  || ! (cd "$plugin_dir" \
+  || ! (cd "$plugin_dir" && set -o pipefail \
     && while IFS= read -r -d '' file; do
       # --cached still lists a tracked file the rebuild deleted.
       if [ -f "$file" ]; then printf '%s\0' "$file"; fi
-    done < "$work/rebuilt-files" | xargs -0 -r cp --parents -t "$work/rebuilt") \
+    done < "$work/rebuilt-files" | tar --null -T - -cf - | tar -xf - -C "$work/rebuilt") \
   || ! [ -d "$work/rebuilt/vendor/prefixed" ]; then
   echo "Cannot copy vendor/prefixed in $plugin_dir." >&2
   exit 1
