@@ -111,7 +111,7 @@ filter='
   # so a release that adds such a class would repeat every use in the trait. A finding is kept once
   # for all the contexts it appears in, so one that only some of them have is still kept.
   | map(.key |= sub(" \\(in context of [^)]*\\)$"; "")) | group_by(.key)[]
-  | (.[0].key | ltrimstr($root)) as $path
+  | (.[0].key | ltrimstr($root) | gsub("[\t\n]"; " ")) as $path
   | if length == 1 then .[0].value.messages[]
     else map(.value.messages[]) | unique_by([.line, .identifier, .message])[] end
   | (.identifier // "" | symbol_pattern) as $pattern
@@ -182,3 +182,7 @@ awk -F '\t' '
       }
     }' "$work/known" "$work/found" \
   | sort -u
+if [ "${PIPESTATUS[*]}" != "0 0" ]; then
+  echo "Cannot compare the PHPStan messages for $plugin_dir." >&2
+  exit 1
+fi

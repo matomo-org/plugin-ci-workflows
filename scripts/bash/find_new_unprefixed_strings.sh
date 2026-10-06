@@ -120,4 +120,9 @@ fi
         # Not the closing quote, which the match stops short of, since a package may append the rest of the name.
         if (!(normalise(string) in known)) print path ": " substr(string, 2)
       }' "$known" -
+compared="${PIPESTATUS[*]}"
 rm -f "$known" "$found"
+if [ "$compared" != "0 0 0" ]; then
+  echo "Cannot compare the strings in vendor/prefixed in $plugin_dir." >&2
+  exit 1
+fi

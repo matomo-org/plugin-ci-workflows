@@ -86,13 +86,13 @@ rm -f "$listing"
 strings=$(bash "$(dirname "${BASH_SOURCE[0]}")/find_new_unprefixed_strings.sh" "$plugin_dir" "$plugin_name")
 strings_status=$?
 if [ "$strings_status" -eq 0 ] && [ -n "$strings" ]; then
-  # GitHub annotates only the first 10 warnings of a step, and the scoping before this can warn too, so
+  # GitHub annotates only the first 10 warnings of a step, and the scoping before this can warn twice, so
   # the count comes first.
-  annotate=9
+  annotate=8
   count=$(wc -l <<< "$strings")
-  if [ "$count" -gt 9 ]; then
-    annotate=8
-    echo "::warning::vendor/prefixed gained $count strings without $prefix: the first 8 are annotated, and the rest listed below."
+  if [ "$count" -gt 8 ]; then
+    annotate=7
+    echo "::warning::vendor/prefixed gained $count strings without $prefix: the first 7 are annotated, and the rest listed below."
   fi
   annotated=0
   while IFS= read -r found; do

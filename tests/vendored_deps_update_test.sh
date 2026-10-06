@@ -204,7 +204,7 @@ expect_annotations() {
 expect_annotations "a path with a colon is annotated once, for its bare string" "$dir" 1
 dir=$(make_plugin many-strings)
 rescoped_with "$(for i in $(seq 1 52); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
-expect_annotations "8 of more than 9 strings are annotated, so the count is one of the step's 10" "$dir" 8
+expect_annotations "7 of more than 8 strings are annotated, so the count is one of the step's 10" "$dir" 7
 tests=$((tests + 1))
 first=$(bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1 | grep -m1 '^::warning')
 if [[ "$first" == '::warning::vendor/prefixed gained 52 strings'* ]]; then
@@ -213,17 +213,20 @@ else
   echo "FAIL - the count of the strings comes before their annotations, so the step limit cannot drop it: $first"
   failures+=("the count of the strings is the first warning")
 fi
-expect "the strings past 8 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
-dir=$(make_plugin nine-strings)
-rescoped_with "$(for i in $(seq 1 9); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
-expect_annotations "9 strings are all annotated" "$dir" 9
+expect "the strings past 7 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
+dir=$(make_plugin eight-strings)
+rescoped_with "$(for i in $(seq 1 8); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
+expect_annotations "8 strings are all annotated" "$dir" 8
 tests=$((tests + 1))
 if bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1 | grep -q '^::warning::vendor/prefixed gained'; then
-  echo "FAIL - 9 strings get no count"
-  failures+=("9 strings get no count")
+  echo "FAIL - 8 strings get no count"
+  failures+=("8 strings get no count")
 else
-  echo "ok - 9 strings get no count"
+  echo "ok - 8 strings get no count"
 fi
+dir=$(make_plugin nine-strings)
+rescoped_with "$(for i in $(seq 1 9); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
+expect_annotations "9 strings get the count and 7 annotations" "$dir" 7
 
 dir=$(make_plugin first-scope)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
@@ -266,6 +269,13 @@ expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=ven
 dir=$(make_plugin non-ascii-path)
 printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/Bär.php"
 expect "a bare string in a file with a non-ASCII name is reported at its path as written" 0 "$dir" "file=vendor/prefixed/foo/src/Bär.php::" 'Composer\Autoload'
+# An awk that fails, as one would on a full disk, part way through the comparison.
+FAILING_AWK="$WORK/failing-awk"
+mkdir -p "$FAILING_AWK"
+printf '#!/bin/sh\nexit 2\n' > "$FAILING_AWK/awk"
+chmod +x "$FAILING_AWK/awk"
+PATH="$FAILING_AWK:$PATH" expect "a comparison that fails warns that the strings went unchecked" 0 "$dir" \
+  '::warning::vendor/prefixed was not checked for strings' 'Composer\Autoload'
 
 # A git whose FAIL_GREP_AT-th grep fails, since git grep --untracked still searches a tree whose index
 # is corrupt. The script greps for the namespaces, then the earlier tree, then the rebuilt one.
@@ -428,6 +438,14 @@ dir=$(floor_plugin floor-first-scope '' "$FN")
 git -C "$dir" rm -rq --cached vendor/prefixed
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
 expect_gaps "a first rebuild, with no earlier tree, exits 3 rather than listing every use" 3 '' "$dir"
+
+dir=$(floor_plugin floor-failing-awk '' "$FN")
+PATH="$FAILING_AWK:$PATH" expect_gaps "a comparison that fails exits 1 rather than reporting nothing new" 1 '' "$dir"
+
+dir=$(floor_plugin floor-tab-path '' '')
+printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/src/a${TAB}b.php"
+expect_gaps "a tab in a path becomes a space, so it cannot split the path from the message" 0 \
+  "vendor/prefixed/foo/src/a b.php${TAB}Function array_find not found." "$dir"
 
 dir=$(floor_plugin floor-crash '' "$FN")
 tests=$((tests + 1))
