@@ -45,6 +45,8 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`actions/scope-dependencies`](#scope-dependencies) | Composite action | Scopes a plugin's dependencies with matomo-scoper, downgrades them with Rector, and checks the result |
 | [`scripts/bash/scope_plugin_dependencies.sh`](#scope-dependencies) | Standalone script | What the action runs, and how a developer rebuilds `vendor/prefixed` locally |
 | [`scripts/bash/check_scoped_tree.sh`](#scope-dependencies) | Standalone script | Checks a rebuilt `vendor/prefixed` tree is really scoped and really new |
+| [`scripts/bash/find_new_unprefixed_strings.sh`](#scope-dependencies) | Standalone script | Lists strings a rebuild added that name a scoped namespace without the prefix |
+| [`scripts/bash/find_new_floor_php_gaps.sh`](#vendored-dependencies-update) | Standalone script | Lists uses of PHP a rebuild added that the plugin's floor does not have |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
 ### Plugins CI
@@ -553,7 +555,7 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests", off by default, and the plugin's CI does not start until someone pushes to the pull request or closes and reopens it |
+| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests", off by default, and the plugin's CI does not start by itself. After each refresh, close and reopen the pull request to run Plugins CI, and run `matomo-tests.yml` on the update branch from the Actions tab, since the `matomo-tests.yml` that `generate:test-action` writes does not subscribe to `reopened`. Pushing to the branch starts both, but stops the scheduled update refreshing it |
 
 ```yaml
 name: Vendored dependencies update
@@ -591,6 +593,8 @@ Without that pin the lock records no platform, so working on the tree locally ne
 
 Before the update, the run compares the platform it resolves against with the plugin's minimum, read from `plugin.json` alone with the resolver the [minimum PHP lint](#minimum-php-lint) uses. A platform on a later PHP minor than the minimum gets a warning, on the run and in the pull request body, because the update can then lock packages that fail for users on the minimum. Only major and minor are compared, because the resolver and the alias table report the minimum only to that precision. It never fails the run: closing the gap means changing the plugin, by raising `require.php` or resolving against the minimum, and failing would hold back every update until someone did. A platform below the minimum only resolves more conservatively, so it passes without a warning. When the comparison cannot run, for example because the alias table does not know the plugin's Matomo major, the run and the pull request body say so in a note instead.
 
+Rector transpiles the rebuilt tree's syntax down to the plugin's floor, but not what newer PHP added to the standard library, so a release that starts calling `array_find()` or `json_validate()` still transpiles, and fails at runtime on the floor. The pull request lists each such use the rebuild added, found by `scripts/bash/find_new_floor_php_gaps.sh`: PHPStan, run on the floor PHP with the floor as `phpVersion`, over the tree before and after the rebuild. Only PHP's own functions, classes and members are kept, since a scoped tree refers to many packages it does not install, and only uses the rebuilt tree makes more often than the earlier tree did, listed for each file that makes them more often, since every tree already makes some guarded uses. It warns rather than fails, because a use behind a `function_exists()` or version check is fine. PHPStan gets five minutes for each tree, and past that the pull request says the check could not run. A global function or class is taken as PHP's own, so one from a package the plugin does not install is listed too. A method the floor lacks is missed when it is called through a scoped subclass, since PHPStan names the subclass rather than PHP's class. It cannot see members of extension classes whose stubs are incomplete, such as `ZipArchive`, and a 7.3 floor is checked on PHP 7.4, the oldest PHPStan runs on, so what 7.4 added is not reported. With `downgrade-php: none` nothing is checked.
+
 The rebuild can run code the dependencies it installs ship, such as a Composer plugin, so it runs in a job with read-only permissions and hands the rebuilt `composer.lock` and `vendor/` to a second job as an artifact. Only that second job holds the write token, and it runs nothing from the dependencies. The caller still grants `contents: write` and `pull-requests: write`, as in the example, for the second job to use.
 
 ### Scope dependencies
@@ -603,6 +607,8 @@ The rebuild can run code the dependencies it installs ship, such as a Composer p
    - `vendor/autoload.php` is no longer the scoper's proxy.
    - A namespace under `vendor/prefixed` is outside `Matomo\Dependencies\<plugin>` and not on the allowed list.
    - `composer.lock` resolved different packages from `HEAD`, but the tree did not change.
+
+   It also warns, without failing, about each string literal the rebuild added that names a scoped namespace without the prefix, such as `'phpseclib3\\Math\\BigInteger'`. php-scoper does not rewrite class names built in strings, so a plugin's `scoper.inc.php` patchers do, and a patcher matching literal text silently stops working when a release builds the name another way. Every scoped tree already holds harmless strings like these, in error messages and comments, so only strings the tree at `HEAD` held nowhere are reported, which also keeps a file a release moved from being reported again. The [vendored dependencies update](#vendored-dependencies-update) also lists the first 50 in its pull request, for whoever merges it to check.
 
 It needs `php` 8.1 or later, `composer`, `jq`, `git` and `curl` on `PATH`, and sets up no PHP of its own, so the PHP of the steps after it is unchanged. Matomo core and DevPluginCommands aren't needed, and neither is any secret.
 
