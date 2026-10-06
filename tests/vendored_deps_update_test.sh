@@ -153,10 +153,13 @@ expect_no_string_warning() {
 # BSD tools, as on macOS: no realpath --relative-to or cp --parents, and a wc -l padded with spaces.
 BSD_TOOLS="$WORK/bsd-tools"
 mkdir -p "$BSD_TOOLS"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
 printf '#!/bin/bash\nfor a; do case "$a" in --relative-to=*) echo "realpath: illegal option" >&2; exit 1 ;; esac; done\nexec %q "$@"\n' \
   "$(command -v realpath)" > "$BSD_TOOLS/realpath"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
 printf '#!/bin/bash\nfor a; do [ "$a" = --parents ] && { echo "cp: illegal option" >&2; exit 1; }; done\nexec %q "$@"\n' \
   "$(command -v cp)" > "$BSD_TOOLS/cp"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
 printf '#!/bin/bash\nprintf "%%8s\\n" "$(%q "$@")"\n' "$(command -v wc)" > "$BSD_TOOLS/wc"
 chmod +x "$BSD_TOOLS/realpath" "$BSD_TOOLS/cp" "$BSD_TOOLS/wc"
 
@@ -309,6 +312,7 @@ PATH="$FAILING_AWK:$PATH" expect "a comparison that fails warns that the strings
 # A grep -v that fails after printing what it read, as one would on a read error part way through.
 FAILING_GREP="$WORK/failing-grep"
 mkdir -p "$FAILING_GREP"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
 printf '#!/bin/bash\nif [ "$1" = -vE ]; then %q "$@"; exit 2; fi\nexec %q "$@"\n' "$(command -v grep)" "$(command -v grep)" \
   > "$FAILING_GREP/grep"
 chmod +x "$FAILING_GREP/grep"
@@ -317,6 +321,7 @@ PATH="$FAILING_GREP:$PATH" expect "a grep that fails warns that the strings went
 # BSD paste, as on macOS, reads stdin only when given - for it.
 BSD_PASTE="$WORK/bsd-paste"
 mkdir -p "$BSD_PASTE"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
 printf '#!/bin/bash\nfor a; do [ "$a" = - ] && exec %q "$@"; done\necho "usage: paste [-s] [-d delimiters] file ..." >&2\nexit 1\n' \
   "$(command -v paste)" > "$BSD_PASTE/paste"
 chmod +x "$BSD_PASTE/paste"
