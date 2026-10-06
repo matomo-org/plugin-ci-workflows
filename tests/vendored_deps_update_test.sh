@@ -204,9 +204,9 @@ expect_annotations() {
 expect_annotations "a path with a colon is annotated once, for its bare string" "$dir" 1
 dir=$(make_plugin many-strings)
 rescoped_with "$(for i in $(seq 1 52); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
-expect_annotations "at most 50 strings are annotated" "$dir" 50
-expect "the strings past 50 are counted in one warning" 0 "$dir" '::warning::vendor/prefixed gained 2 more strings' 'Composer\Autoload'
-expect "the strings past 50 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
+expect_annotations "at most 9 strings are annotated, so the count is the tenth" "$dir" 9
+expect "the strings past 9 are counted in one warning" 0 "$dir" '::warning::vendor/prefixed gained 43 more strings' 'Composer\Autoload'
+expect "the strings past 9 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
 
 dir=$(make_plugin first-scope)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
@@ -309,7 +309,7 @@ case "$paths" in
   *) contexts="${PHPSTAN_BASE_CONTEXTS:-}" ;;
 esac
 { grep -r --include='*.php' -Hn '// FINDING' "$paths" || true; } | jq -Rn --arg contexts "$contexts" '
-  [inputs | capture("^(?<file>[^:]+):(?<line>[0-9]+):.*// FINDING(?:\\[(?<only>[A-Za-z0-9_]+)\\])? (?<identifier>[^ ]+) (?<message>.*)$")]
+  [inputs | capture("^(?<file>.*?\\.php):(?<line>[0-9]+):.*// FINDING(?:\\[(?<only>[A-Za-z0-9_]+)\\])? (?<identifier>[^ ]+) (?<message>.*)$")]
   | {totals: {errors: 0, file_errors: length},
      files: (group_by(.file)
        | map(. as $m | ($contexts | split(" ") | if . == [] then [null] else . end)[] as $c
@@ -330,6 +330,7 @@ floor_plugin() {
   printf '<?php\n%s\n' "$3" > "$dir/vendor/prefixed/foo/src/Bar.php"
   echo "$dir"
 }
+TAB=$'\t'
 expect_gaps() {
   local description="$1" want_status="$2" want="$3" dir="$4" floor="${5:-8.1}" phpstan="${6:-$WORK/phpstan/phpstan}"
   tests=$((tests + 1))
@@ -346,7 +347,7 @@ expect_gaps() {
 FN='// FINDING function.notFound Function array_find not found.'
 
 dir=$(floor_plugin floor-new '' "$FN")
-expect_gaps "a PHP function the rebuild starts calling is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+expect_gaps "a PHP function the rebuild starts calling is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 tests=$((tests + 1))
 if [ "$(cat "$WORK/phpstan-version")" = 80100 ]; then
   echo "ok - PHPStan analyses for the floor"
@@ -366,20 +367,20 @@ expect_gaps "a known use in a moved file is not listed again" 0 '' "$dir"
 dir=$(floor_plugin floor-elsewhere "$FN" "$FN")
 mkdir -p "$dir/vendor/prefixed/foo/lib"
 printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/lib/New.php"
-expect_gaps "a known use the rebuild adds in another file is listed there" 0 "vendor/prefixed/foo/lib/New.php: Function array_find not found." "$dir"
+expect_gaps "a known use the rebuild adds in another file is listed there" 0 "vendor/prefixed/foo/lib/New.php${TAB}Function array_find not found." "$dir"
 dir=$(floor_plugin floor-trait "$FN" "$FN")
 PHPSTAN_BASE_CONTEXTS=A PHPSTAN_REBUILT_CONTEXTS='A B' \
   expect_gaps "a known use in a trait the rebuild uses in another class is not listed again" 0 '' "$dir"
 dir=$(floor_plugin floor-trait-new '' "$FN")
 PHPSTAN_REBUILT_CONTEXTS='A B' \
-  expect_gaps "a new use in a trait is listed once, under the trait's own file" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+  expect_gaps "a new use in a trait is listed once, under the trait's own file" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 dir=$(floor_plugin floor-trait-one-context '' '// FINDING[B] method.notFound Call to an undefined method DateTime::getMicrosecond().')
 PHPSTAN_REBUILT_CONTEXTS='A B' \
-  expect_gaps "a use in a trait that only one of its classes lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime::getMicrosecond()." "$dir"
+  expect_gaps "a use in a trait that only one of its classes lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime::getMicrosecond()." "$dir"
 dir=$(floor_plugin floor-twice "$FN" "$FN"$'\n'"$FN")
-expect_gaps "a known use the rebuild makes again in the same file is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+expect_gaps "a known use the rebuild makes again in the same file is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 dir=$(floor_plugin floor-new-ns '' $'// FINDING class.notFound Class Dba\\Connection not found.\n// FINDING class.notFound Instantiated class Pcntl\\QosClass not found.')
-expect_gaps "a class in a namespace PHP added lately is listed" 0 $'vendor/prefixed/foo/src/Bar.php: Class Dba\\Connection not found.\nvendor/prefixed/foo/src/Bar.php: Instantiated class Pcntl\\QosClass not found.' "$dir"
+expect_gaps "a class in a namespace PHP added lately is listed" 0 $'vendor/prefixed/foo/src/Bar.php\tClass Dba\\Connection not found.\nvendor/prefixed/foo/src/Bar.php\tInstantiated class Pcntl\\QosClass not found.' "$dir"
 
 dir=$(floor_plugin floor-package '' '// FINDING class.notFound Instantiated class Matomo\Dependencies\Foo\Optional not found.')
 expect_gaps "a class from a package the tree does not install is not listed" 0 '' "$dir"
@@ -388,13 +389,13 @@ dir=$(floor_plugin floor-constant '' '// FINDING constant.notFound Constant FOO_
 expect_gaps "a constant is not listed, since packages define their own" 0 '' "$dir"
 
 dir=$(floor_plugin floor-php-namespace '' '// FINDING class.notFound Instantiated class Random\Randomizer not found.')
-expect_gaps "a class in a namespace PHP ships is listed" 0 "vendor/prefixed/foo/src/Bar.php: Instantiated class Random\\Randomizer not found." "$dir"
+expect_gaps "a class in a namespace PHP ships is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Instantiated class Random\\Randomizer not found." "$dir"
 
 dir=$(floor_plugin floor-method '' '// FINDING method.notFound Call to an undefined method DateTime::modifyOrFail().')
-expect_gaps "a method the floor's own class lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime::modifyOrFail()." "$dir"
+expect_gaps "a method the floor's own class lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime::modifyOrFail()." "$dir"
 
 dir=$(floor_plugin floor-73 '' "$FN")
-expect_gaps "a 7.3 floor is passed on as 70300" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir" 7.3
+expect_gaps "a 7.3 floor is passed on as 70300" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir" 7.3
 tests=$((tests + 1))
 if [ "$(cat "$WORK/phpstan-version")" = 70300 ]; then
   echo "ok - a 7.3 floor is analysed as 70300"
@@ -428,11 +429,11 @@ else
 fi
 
 dir=$(floor_plugin floor-interface '' '// FINDING interface.notFound Class Matomo\Dependencies\Foo\Engine implements unknown interface Random\Engine.')
-expect_gaps "an unknown PHP interface is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class Matomo\\Dependencies\\Foo\\Engine implements unknown interface Random\\Engine." "$dir"
+expect_gaps "an unknown PHP interface is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Class Matomo\\Dependencies\\Foo\\Engine implements unknown interface Random\\Engine." "$dir"
 dir=$(floor_plugin floor-arguments '' '// FINDING arguments.count Function str_contains invoked with 1 parameter, 2 required.')
-expect_gaps "a PHP function called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function str_contains invoked with 1 parameter, 2 required." "$dir"
+expect_gaps "a PHP function called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function str_contains invoked with 1 parameter, 2 required." "$dir"
 dir=$(floor_plugin floor-method-arguments '' '// FINDING arguments.count Method DateTime::format() invoked with 0 parameters, 1 required.')
-expect_gaps "a PHP method called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php: Method DateTime::format() invoked with 0 parameters, 1 required." "$dir"
+expect_gaps "a PHP method called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Method DateTime::format() invoked with 0 parameters, 1 required." "$dir"
 dir=$(floor_plugin floor-phpdoc '' '// FINDING class.notFound PHPDoc tag @return contains unknown class Random\Randomizer.')
 expect_gaps "a class named only in a docblock is not listed" 0 '' "$dir"
 
@@ -449,13 +450,13 @@ git -C "$dir" -c user.email=t@t -c user.name=t commit -qm attributes
 expect_gaps "a file the plugin marks export-ignore is still compared with its earlier version" 0 '' "$dir"
 
 dir=$(floor_plugin floor-ftp '' '// FINDING class.notFound Class FTP\Connection not found.')
-expect_gaps "a class in PHP's FTP namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class FTP\\Connection not found." "$dir"
+expect_gaps "a class in PHP's FTP namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Class FTP\\Connection not found." "$dir"
 dir=$(floor_plugin floor-lowercase '' '// FINDING class.notFound Instantiated class random\Randomizer not found.')
-expect_gaps "a PHP namespace written in lower case is listed" 0 "vendor/prefixed/foo/src/Bar.php: Instantiated class random\\Randomizer not found." "$dir"
+expect_gaps "a PHP namespace written in lower case is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Instantiated class random\\Randomizer not found." "$dir"
 dir=$(floor_plugin floor-soap '' '// FINDING class.notFound Class Soap\Url not found.')
-expect_gaps "a class in PHP's Soap namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class Soap\\Url not found." "$dir"
+expect_gaps "a class in PHP's Soap namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Class Soap\\Url not found." "$dir"
 dir=$(floor_plugin floor-union '' '// FINDING method.notFound Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail().')
-expect_gaps "a method the floor lacks on a union of PHP classes is listed" 0 "vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail()." "$dir"
+expect_gaps "a method the floor lacks on a union of PHP classes is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail()." "$dir"
 
 dir=$(floor_plugin floor-slow '' "$FN")
 tests=$((tests + 1))
@@ -491,7 +492,7 @@ printf '<?php\n' > "$dir/vendor/prefixed/foo/src/Gone.php"
 git -C "$dir" add vendor/prefixed/foo/src/Gone.php
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm gone
 rm "$dir/vendor/prefixed/foo/src/Gone.php"
-expect_gaps "a file the rebuild deletes does not stop the comparison" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+expect_gaps "a file the rebuild deletes does not stop the comparison" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 
 # The stand-in prints what each test gives it, so only the real PHPStan shows the patterns match its
 # wording. Everything the fixture uses is PHP 8.4's, so a runner on 8.3 or older lacks it too.
@@ -517,11 +518,11 @@ class K {
     }
     private function g() {}
 }')
-  want='vendor/prefixed/foo/src/Bar.php: Access to constant HalfAwayFromZero on an unknown class RoundingMode.
-vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime::getMicrosecond().
-vendor/prefixed/foo/src/Bar.php: Call to an undefined static method DateTime::createFromTimestamp().
-vendor/prefixed/foo/src/Bar.php: Function array_find not found.
-vendor/prefixed/foo/src/Bar.php: Instantiated class Dom\HTMLDocument not found.'
+  want="vendor/prefixed/foo/src/Bar.php${TAB}Access to constant HalfAwayFromZero on an unknown class RoundingMode.
+vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime::getMicrosecond().
+vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined static method DateTime::createFromTimestamp().
+vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found.
+vendor/prefixed/foo/src/Bar.php${TAB}Instantiated class Dom\HTMLDocument not found."
   expect_gaps "PHPStan's own messages are listed, and those for a type alias or a caught class are not" 0 "$want" "$dir" 8.1 "$real_phpstan"
 
   tests=$((tests + 1))
@@ -1160,6 +1161,17 @@ expect_body "a list longer than a pipe holds is still capped, not a failed step"
 dir=$(make_plugin body-colon-path)
 printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/a: b.php"
 expect_body "the pull request splits a string from a path with a colon in it" "$dir" "- \`vendor/prefixed/foo/src/a: b.php\`: \`Bar\\\\Baz\`" yes
+dir=$(make_plugin body-backtick-path)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/a\`b.php"
+expect_body "the pull request leaves a backtick out of a path, since it would end the code span" "$dir" "- \`vendor/prefixed/foo/src/ab.php\`: \`Bar\\\\Baz\`" yes
+dir=$(make_plugin body-long-path)
+long="vendor/prefixed/foo/src/$(printf 'd%.0s' $(seq 1 100))/$(printf 'e%.0s' $(seq 1 100))/$(printf 'f%.0s' $(seq 1 100))"
+mkdir -p "$dir/$long"
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/$long/Bar.php"
+expect_body "the pull request shortens a long path, not the string after it" "$dir" "- \`${long:0:200}\`: \`Bar\\\\Baz\`" yes
+dir=$(floor_plugin body-gap-colon-path '' '')
+printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/src/a: b.php"
+expect_body "the pull request splits a floor gap from a path with a colon in it" "$dir" "- \`vendor/prefixed/foo/src/a: b.php\`: \`Function array_find not found.\`" yes
 dir=$(floor_plugin body-first-scope '' "$FN")
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 git -C "$dir" rm -rq --cached vendor/prefixed

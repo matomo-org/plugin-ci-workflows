@@ -19,11 +19,11 @@
 #
 # Usage: find_new_floor_php_gaps.sh <plugin-dir> <floor> <phpstan> [base-rev]
 # floor is the PHP version as major.minor, such as 8.1. phpstan is the PHPStan executable. base-rev
-# holds the tree before the rebuild, HEAD by default. Prints one "<path>: <message>" line per new
-# message in each file, and exits 0 whether or not it found any, 1 when jq or timeout is missing, it
-# cannot read the tree at base-rev or PHPStan does not run, 2 on a usage error, or 3 when base-rev has
-# no vendor/prefixed. PHPStan gets
-# PHPSTAN_TIMEOUT seconds for each tree, 300 by default.
+# holds the tree before the rebuild, HEAD by default. Prints one line per new message in each file, the
+# path and the message separated by a tab, since a message can hold ": ". Exits 0 whether or not it
+# found any, 1 when jq or timeout is missing, it cannot read the tree at base-rev or PHPStan does not
+# run, 2 on a usage error, or 3 when base-rev has no vendor/prefixed. PHPStan gets PHPSTAN_TIMEOUT
+# seconds for each tree, 300 by default.
 
 set -u
 
@@ -175,7 +175,7 @@ analyse "$work/rebuilt" rebuilt > "$work/found" || exit 1
 awk -F '\t' '
     # Not NR == FNR, which an empty first file makes true of every line.
     FILENAME == ARGV[1] { known[$1 FS $2]++; known_in[$1 FS $2 FS $3]++; next }
-    { found[$1 FS $2]++; found_in[$1 FS $2 FS $3]++; message[$1 FS $2 FS $3] = $3 ": " $2; use[$1 FS $2 FS $3] = $1 FS $2 }
+    { found[$1 FS $2]++; found_in[$1 FS $2 FS $3]++; message[$1 FS $2 FS $3] = $3 FS $2; use[$1 FS $2 FS $3] = $1 FS $2 }
     END {
       for (k in found_in) {
         if (found[use[k]] > known[use[k]] && found_in[k] > known_in[k]) print message[k]

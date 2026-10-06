@@ -86,18 +86,18 @@ rm -f "$listing"
 strings=$(bash "$(dirname "${BASH_SOURCE[0]}")/find_new_unprefixed_strings.sh" "$plugin_dir" "$plugin_name")
 strings_status=$?
 if [ "$strings_status" -eq 0 ] && [ -n "$strings" ]; then
-  # GitHub shows only the first few annotations of a step, and a release can add thousands of strings.
+  # GitHub annotates only the first 10 warnings of a step, so the count is the tenth.
   annotated=0
   count=$(wc -l <<< "$strings")
   while IFS= read -r found; do
     # The string never holds ": ", and the path can.
     path=${found%: *}
     string=${found##*: }
-    if [ "$annotated" -lt 50 ]; then
+    if [ "$annotated" -lt 9 ]; then
       echo "::warning file=$(annotation_file "$path")::vendor/prefixed gained the string $string without $prefix. If it builds a class name, a scoper.inc.php patcher has to prefix it, or the class is not found at runtime."
       annotated=$((annotated + 1))
-      [ "$annotated" -lt 50 ] || [ "$count" -le 50 ] \
-        || echo "::warning::vendor/prefixed gained $((count - 50)) more strings without $prefix, listed below."
+      [ "$annotated" -lt 9 ] || [ "$count" -le 9 ] \
+        || echo "::warning::vendor/prefixed gained $((count - 9)) more strings without $prefix, listed below."
     else
       echo "$path: $string"
     fi
