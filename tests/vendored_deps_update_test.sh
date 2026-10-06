@@ -1085,7 +1085,7 @@ rescoped_with "$(for i in $(seq 1 3000); do printf '%s\n' "\$c$i = 'Bar\\\\Baz\\
 expect_body "a list longer than a pipe holds is still capped, not a failed step" "$dir" "- and 2950 more" yes
 dir=$(make_plugin body-unreadable)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-expect_body "the pull request says when the strings could not be checked" "$dir" 'could not be checked' yes 0000000000000000000000000000000000000000
+expect_body "the pull request says when the strings could not be checked" "$dir" 'could not be checked for strings' yes 0000000000000000000000000000000000000000
 dir=$(floor_plugin body-gap '' "$FN")
 expect_body "the pull request lists a PHP function the floor lacks" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`Function array_find not found.\`" yes
 expect_body "the pull request names instanceof and ::class as written" "$dir" "A class named only in \`instanceof\` or \`::class\` cannot." yes
