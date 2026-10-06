@@ -1214,7 +1214,7 @@ expect_body() {
   echo '- Upgrading foo/bar (1.0.0 => 1.1.0)' > "$WORK/body-runner/package-changes.md"
   local body="$WORK/body-runner/pull-request-body.md"
   rm -f "$body"
-  if ! (cd "$WORK/workspace" && RUNNER_TEMP="$WORK/body-runner" PLUGIN_DIR="$dir" PLUGIN_NAME=Foo BASE_SHA="$base" DOWNGRADE="${BODY_DOWNGRADE-8.1}" \
+  if ! (cd "$WORK/workspace" && RUNNER_TEMP="$WORK/body-runner" PLUGIN_DIR="$dir" PLUGIN_NAME=Foo BASE_SHA="$base" DOWNGRADE="${BODY_DOWNGRADE-8.1}" FLOOR_PHP_VERSION="${BODY_FLOOR_PHP_VERSION-${BODY_DOWNGRADE-8.1}}" \
     PHPSTAN="$WORK/phpstan/phpstan" PHPSTAN_VERSION="$WORK/phpstan-version" FLOOR_PHP="$floor_php" \
     GITHUB_RUN_ID=1 GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r bash -eo pipefail "$WORK/body-step.sh") > /dev/null 2>&1; then
     echo "FAIL - $description (the step failed)"
@@ -1262,7 +1262,7 @@ rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 git -C "$dir" rm -rq --cached vendor/prefixed
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
 expect_body "the pull request says nothing went unchecked on a first rebuild" "$dir" 'could not be checked' no
-BODY_DOWNGRADE=7.3 expect_body "the pull request says nothing of PHP 7.4 when the floor check had nothing to compare" "$dir" 'ran on PHP 7.4' no
+BODY_DOWNGRADE=7.3 BODY_FLOOR_PHP_VERSION=7.4 expect_body "the pull request says nothing of PHP 7.4 when the floor check had nothing to compare" "$dir" 'ran on PHP 7.4' no
 dir=$(make_plugin body-unreadable)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 expect_body "the pull request says when the strings could not be checked" "$dir" 'could not be checked for strings' yes 0000000000000000000000000000000000000000
@@ -1292,7 +1292,7 @@ else
   echo "ok - PHPStan does not run when the floor PHP could not be set up"
 fi
 dir=$(floor_plugin body-73 "$FN" "$FN")
-BODY_DOWNGRADE=7.3 expect_body "the pull request says a 7.3 floor was checked on 7.4" "$dir" 'does not report what PHP 7.4 added' yes
+BODY_DOWNGRADE=7.3 BODY_FLOOR_PHP_VERSION=7.4 expect_body "the pull request says a 7.3 floor was checked on 7.4" "$dir" 'does not report what PHP 7.4 added' yes
 dir=$(floor_plugin body-81 "$FN" "$FN")
 expect_body "the pull request says nothing about a later PHP when the floor itself ran" "$dir" 'does not report what' no
 dir=$(floor_plugin body-no-downgrade '' "$FN")
@@ -1387,9 +1387,20 @@ check("a floor PHP that cannot be set up skips the check, not the pull request",
       and names.index('Setup the floor PHP') + 1 == names.index('Write the pull request body'))
 check("the floor PHP is set up only when there is a floor, with no coverage driver",
       "steps.scope.outputs.downgrade-php-version != ''" in floor['if'] and floor['with'].get('coverage') == 'none')
-check("the body names the PHP a 7.3 floor was set up on",
-      "downgrade-php-version == '7.3' && '7.4'" in floor['with']['php-version']
-      and '[ "$DOWNGRADE" != 7.3 ] || checked_on=7.4' in body['run'])
+version = step('Choose the floor PHP')
+def chosen(downgrade):
+    import os, subprocess, tempfile
+    with tempfile.NamedTemporaryFile('r') as out:
+        subprocess.run(['bash', '-eo', 'pipefail', '-c', version['run']], check=True,
+                       env={**os.environ, 'DOWNGRADE': downgrade, 'GITHUB_OUTPUT': out.name})
+        return out.read()
+check("a 7.3 floor is set up on 7.4, and any other on itself",
+      chosen('7.3') == 'php=7.4\n' and chosen('8.1') == 'php=8.1\n' and version['if'] == floor['if'])
+check("the setup and the body read the floor PHP from the one step",
+      version.get('id') == 'floor-version'
+      and floor['with']['php-version'] == '${{ steps.floor-version.outputs.php }}'
+      and body['env'].get('FLOOR_PHP_VERSION') == '${{ steps.floor-version.outputs.php }}'
+      and 'checked_on="$FLOOR_PHP_VERSION"' in body['run'])
 
 scope = step('Scope, downgrade and check')
 this_repo = step('Check out plugin-ci-workflows repository')

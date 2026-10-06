@@ -12,6 +12,9 @@
 # Usage: check_scoped_tree.sh <plugin-dir> <plugin-name> [allowed-namespace ...]
 #
 # The plugin directory must be a git checkout, because "did the tree change" is asked of git.
+#
+# It also warns of strings the rebuild adds that name a scoped namespace without the prefix, using
+# find_new_unprefixed_strings.sh, which has to sit next to it.
 
 set -u
 

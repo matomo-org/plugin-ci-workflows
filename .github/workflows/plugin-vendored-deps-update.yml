@@ -348,16 +348,28 @@ jobs:
           scoper-ref: ${{ inputs.scoper-ref }}
 
       # For find_new_floor_php_gaps.sh, which has to run on the floor: PHPStan counts whatever the
-      # running PHP has as present. PHPStan needs 7.4, so a 7.3 floor runs on that. Nothing after the
-      # check in this job runs PHP. The check only warns, so a failed setup skips it rather than the pull
-      # request; running it on the runner's PHP instead would report nothing, falsely.
+      # running PHP has as present. Nothing after the check in this job runs PHP. The check only warns, so
+      # a failed setup skips it rather than the pull request; running it on the runner's PHP instead would
+      # report nothing, falsely.
+      - name: Choose the floor PHP
+        id: floor-version
+        if: ${{ steps.update.outputs.changed == 'true' && steps.scope.outputs.downgrade-php-version != '' }}
+        shell: bash
+        env:
+          DOWNGRADE: ${{ steps.scope.outputs.downgrade-php-version }}
+        run: |
+          # PHPStan needs 7.4, so a 7.3 floor runs on that.
+          php="$DOWNGRADE"
+          [ "$DOWNGRADE" != 7.3 ] || php=7.4
+          echo "php=$php" >> "$GITHUB_OUTPUT"
+
       - name: Setup the floor PHP
         id: floor-php
         if: ${{ steps.update.outputs.changed == 'true' && steps.scope.outputs.downgrade-php-version != '' }}
         continue-on-error: true
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
-          php-version: ${{ steps.scope.outputs.downgrade-php-version == '7.3' && '7.4' || steps.scope.outputs.downgrade-php-version }}
+          php-version: ${{ steps.floor-version.outputs.php }}
           coverage: none
           tools: none
 
@@ -371,6 +383,7 @@ jobs:
           # Installed by the scope-dependencies action along with Rector, which depends on it.
           PHPSTAN: ${{ runner.temp }}/scope-dependencies/rector/vendor/bin/phpstan
           FLOOR_PHP: ${{ steps.floor-php.outcome }}
+          FLOOR_PHP_VERSION: ${{ steps.floor-version.outputs.php }}
         run: |
           body="$RUNNER_TEMP/pull-request-body.md"
           if [ -n "$DOWNGRADE" ]; then
@@ -402,8 +415,7 @@ jobs:
           # Without a downgrade there is no floor the tree was built for, so nothing to check against.
           gaps=''
           gaps_checked=true
-          checked_on="$DOWNGRADE"
-          [ "$DOWNGRADE" != 7.3 ] || checked_on=7.4
+          checked_on="$FLOOR_PHP_VERSION"
           if [ -n "$DOWNGRADE" ] && [ "$FLOOR_PHP" != success ]; then
             echo "PHP $checked_on could not be set up, so the floor check did not run."
             gaps_checked=false
