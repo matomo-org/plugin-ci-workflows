@@ -397,7 +397,7 @@ jobs:
           strings_status=0
           strings=$(bash .plugin-ci-workflows/scripts/bash/find_new_unprefixed_strings.sh "$PLUGIN_DIR" "$PLUGIN_NAME" "$BASE_SHA") \
             || strings_status=$?
-          case "$strings_status" in 0) ;; 3) strings_checked=none ;; *) strings_checked=false ;; esac
+          case "$strings_status" in 0) ;; 3) strings_checked=none ;; *) strings_checked=false; strings="" ;; esac
           [ -z "$strings" ] || printf '%s\n' "$strings"
           # Without a downgrade there is no floor the tree was built for, so nothing to check against.
           gaps=''
@@ -411,7 +411,7 @@ jobs:
             gaps_status=0
             gaps=$(bash .plugin-ci-workflows/scripts/bash/find_new_floor_php_gaps.sh "$PLUGIN_DIR" "$DOWNGRADE" "$PHPSTAN" "$BASE_SHA") \
               || gaps_status=$?
-            case "$gaps_status" in 0) ;; 3) gaps_checked=none ;; *) gaps_checked=false ;; esac
+            case "$gaps_status" in 0) ;; 3) gaps_checked=none ;; *) gaps_checked=false; gaps="" ;; esac
             [ -z "$gaps" ] || printf '%s\n' "$gaps"
           fi
           {

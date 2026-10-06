@@ -66,7 +66,7 @@ roots=$(sed -E 's/.*namespace[[:space:]]+//' "$namespaces" \
   | cut -c$((${#prefix} + 1))- \
   | cut -d"\\" -f1 \
   | sort -u \
-  | paste -sd'|')
+  | paste -sd'|' -)
 rm -f "$namespaces"
 [ -n "$roots" ] || exit 0
 
@@ -95,7 +95,7 @@ if [ "$?" -gt 1 ]; then
   exit 1
 fi
 
-{ grep -vE "$prefixed" "$found" || true; } \
+{ grep -vE "$prefixed" "$found"; [ "$?" -le 1 ]; } \
   | sort -u \
   | awk '
       # Not NR == FNR, which an empty first file makes true of every line.

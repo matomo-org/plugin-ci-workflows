@@ -276,6 +276,22 @@ printf '#!/bin/sh\nexit 2\n' > "$FAILING_AWK/awk"
 chmod +x "$FAILING_AWK/awk"
 PATH="$FAILING_AWK:$PATH" expect "a comparison that fails warns that the strings went unchecked" 0 "$dir" \
   '::warning::vendor/prefixed was not checked for strings' 'Composer\Autoload'
+# A grep -v that fails after printing what it read, as one would on a read error part way through.
+FAILING_GREP="$WORK/failing-grep"
+mkdir -p "$FAILING_GREP"
+printf '#!/bin/bash\nif [ "$1" = -vE ]; then %q "$@"; exit 2; fi\nexec %q "$@"\n' "$(command -v grep)" "$(command -v grep)" \
+  > "$FAILING_GREP/grep"
+chmod +x "$FAILING_GREP/grep"
+PATH="$FAILING_GREP:$PATH" expect "a grep that fails warns that the strings went unchecked" 0 "$dir" \
+  '::warning::vendor/prefixed was not checked for strings' 'Composer\Autoload'
+# BSD paste, as on macOS, reads stdin only when given - for it.
+BSD_PASTE="$WORK/bsd-paste"
+mkdir -p "$BSD_PASTE"
+printf '#!/bin/bash\nfor a; do [ "$a" = - ] && exec %q "$@"; done\necho "usage: paste [-s] [-d delimiters] file ..." >&2\nexit 1\n' \
+  "$(command -v paste)" > "$BSD_PASTE/paste"
+chmod +x "$BSD_PASTE/paste"
+PATH="$BSD_PASTE:$PATH" expect "the strings are found with BSD paste" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/Bär.php::" 'Composer\Autoload'
 
 # A git whose FAIL_GREP_AT-th grep fails, since git grep --untracked still searches a tree whose index
 # is corrupt. The script greps for the namespaces, then the earlier tree, then the rebuilt one.
@@ -1216,6 +1232,10 @@ BODY_DOWNGRADE=7.3 expect_body "the pull request says nothing of PHP 7.4 when th
 dir=$(make_plugin body-unreadable)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 expect_body "the pull request says when the strings could not be checked" "$dir" 'could not be checked for strings' yes 0000000000000000000000000000000000000000
+PATH="$FAILING_GREP:$PATH" expect_body "the pull request lists no strings from a check that failed part way" "$dir" \
+  "- \`vendor/prefixed/foo/src/Bar.php\`" no
+PATH="$FAILING_GREP:$PATH" expect_body "the pull request says when the strings check failed part way" "$dir" \
+  'could not be checked for strings' yes
 dir=$(floor_plugin body-gap '' "$FN")
 expect_body "the pull request lists a PHP function the floor lacks" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`Function array_find not found.\`" yes
 expect_body "the pull request names instanceof and ::class as written" "$dir" "A class named only in \`instanceof\` or \`::class\` cannot." yes
