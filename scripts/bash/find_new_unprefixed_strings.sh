@@ -75,7 +75,7 @@ pattern="['\"]"'\\{0,2}('"$roots"')\\{1,2}([A-Za-z_][A-Za-z0-9_\\]{0,200})?'
 prefixed="^[^:]*:['\"]"'\\{0,2}Matomo\\{1,2}Dependencies\\{1,2}'"$plugin_name"'\\{1,2}'
 
 export LC_ALL=C
-known=$(mktemp)
+known=$(mktemp) || exit 1
 git -C "$plugin_dir" "${search[@]}" -hoE "$pattern" "$base" -- 'vendor/prefixed/*.php' > "$known"
 if [ "$?" -gt 1 ]; then
   echo "Cannot search vendor/prefixed at $base in $plugin_dir." >&2
@@ -83,7 +83,7 @@ if [ "$?" -gt 1 ]; then
   exit 1
 fi
 
-found=$(mktemp)
+found=$(mktemp) || { rm -f "$known"; exit 1; }
 git -C "$plugin_dir" "${search[@]}" --untracked -oE "$pattern" -- 'vendor/prefixed/*.php' > "$found"
 if [ "$?" -gt 1 ]; then
   echo "Cannot search vendor/prefixed in $plugin_dir." >&2

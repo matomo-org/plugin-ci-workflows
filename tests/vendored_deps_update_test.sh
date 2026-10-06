@@ -14,6 +14,8 @@ WORKFLOW="$ROOT/.github/workflows/plugin-vendored-deps-update.yml"
 ACTION="$ROOT/actions/scope-dependencies/action.yml"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# Set when these tests run in Actions, where it would move every annotation path the tests expect.
+unset GITHUB_WORKSPACE
 
 tests=0
 failures=()
@@ -152,6 +154,11 @@ dir=$(make_plugin bare-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
 
+GITHUB_WORKSPACE="$WORK" expect "an annotation names its file from the workspace root" 0 "$dir" \
+  "file=bare-string/vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
+GITHUB_WORKSPACE="$dir" expect "an annotation for a plugin at the workspace root names its file from the plugin" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
+
 dir=$(make_plugin bare-string-double-quoted)
 rescoped_with "\$class = \"\\\\Bar\\\\Baz\";" "$dir"
 expect "a double-quoted bare string with a leading separator is reported too" 0 "$dir" 'gained the string "\\\\Bar' 'Composer\Autoload'
@@ -266,10 +273,19 @@ cat > "$WORK/phpstan/phpstan" <<'SH'
 config="$3"
 sed -n 's/^  phpVersion: //p' "$config" > "$PHPSTAN_VERSION"
 paths=$(sed -n 's/^  paths: \[\(.*\)\]$/\1/p' "$config" | jq -r .)
-{ grep -r --include='*.php' -H '// FINDING ' "$paths" || true; } | jq -Rn '
+# PHPSTAN_BASE_CONTEXTS and PHPSTAN_REBUILT_CONTEXTS name the classes that use each file as a trait in
+# that tree, which PHPStan reports a file's findings once for.
+case "$paths" in
+  */rebuilt/*) contexts="${PHPSTAN_REBUILT_CONTEXTS:-}" ;;
+  *) contexts="${PHPSTAN_BASE_CONTEXTS:-}" ;;
+esac
+{ grep -r --include='*.php' -H '// FINDING ' "$paths" || true; } | jq -Rn --arg contexts "$contexts" '
   [inputs | capture("^(?<file>[^:]+):.*// FINDING (?<identifier>[^ ]+) (?<message>.*)$")]
   | {totals: {errors: 0, file_errors: length},
-     files: (group_by(.file) | map({key: .[0].file, value: {messages: map({message, identifier})}}) | from_entries),
+     files: (group_by(.file)
+       | map(. as $m | ($contexts | split(" ") | if . == [] then [""] else map(" (in context of class \(.))") end)[]
+         | {key: ($m[0].file + .), value: {messages: $m | map({message, identifier})}})
+       | from_entries),
      errors: (if env.PHPSTAN_ERRORS then ["Child process error"] else [] end)}'
 SH
 chmod +x "$WORK/phpstan/phpstan"
@@ -321,6 +337,12 @@ dir=$(floor_plugin floor-elsewhere "$FN" "$FN")
 mkdir -p "$dir/vendor/prefixed/foo/lib"
 printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/lib/New.php"
 expect_gaps "a known use the rebuild adds in another file is listed there" 0 "vendor/prefixed/foo/lib/New.php: Function array_find not found." "$dir"
+dir=$(floor_plugin floor-trait "$FN" "$FN")
+PHPSTAN_BASE_CONTEXTS=A PHPSTAN_REBUILT_CONTEXTS='A B' \
+  expect_gaps "a known use in a trait the rebuild uses in another class is not listed again" 0 '' "$dir"
+dir=$(floor_plugin floor-trait-new '' "$FN")
+PHPSTAN_REBUILT_CONTEXTS='A B' \
+  expect_gaps "a new use in a trait is listed once, under the trait's own file" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
 dir=$(floor_plugin floor-twice "$FN" "$FN"$'\n'"$FN")
 expect_gaps "a known use the rebuild makes again in the same file is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
 dir=$(floor_plugin floor-new-ns '' $'// FINDING class.notFound Class Dba\\Connection not found.\n// FINDING class.notFound Instantiated class Pcntl\\QosClass not found.')

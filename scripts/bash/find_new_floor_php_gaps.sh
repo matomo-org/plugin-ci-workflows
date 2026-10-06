@@ -105,7 +105,10 @@ filter='
       or any(("bcmath\\", "dba\\", "dom\\", "ffi\\", "filter\\", "ftp\\", "imap\\", "io\\", "ldap\\", "odbc\\", "openssl\\", "pcntl\\", "pdo\\", "pgsql\\", "pspell\\", "random\\", "snmp\\", "soap\\", "time\\", "uri\\");
         . as $ns | $s | startswith($ns));
   .files
-  | if type == "object" then to_entries[] else empty end
+  | if type == "object" then to_entries else [] end
+  # PHPStan reports a trait once for each class that uses it, keyed "<file> (in context of class X)",
+  # so a release that adds such a class would repeat every use in the trait. One context stands for all.
+  | map(.key |= sub(" \\(in context of [^)]*\\)$"; "")) | group_by(.key) | map(first)[]
   | (.key | ltrimstr($root)) as $path
   | .value.messages[]
   | (.identifier // "" | symbol_pattern) as $pattern
