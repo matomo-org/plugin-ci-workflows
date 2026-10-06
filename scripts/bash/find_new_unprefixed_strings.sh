@@ -17,7 +17,8 @@
 # Usage: find_new_unprefixed_strings.sh <plugin-dir> <plugin-name> [base-rev]
 # base-rev holds the tree before the rebuild, HEAD by default, so a rebuild that is already committed
 # lists nothing. Prints one "<path>: <string>" line per new string in each file, and exits 0 whether
-# or not it found any, or 1 when it cannot search either tree or base-rev has no vendor/prefixed.
+# or not it found any, 1 when it cannot search either tree or base-rev has no vendor/prefixed, or 2 on
+# a usage error.
 
 set -u
 
@@ -42,8 +43,9 @@ if [ -z "$(git -C "$plugin_dir" ls-tree -d --name-only "$base" -- vendor/prefixe
   exit 1
 fi
 
-# Otherwise a grep.lineNumber, grep.column or color.grep in the user's git config changes what each line is.
-search=(grep --text --no-line-number --no-column --no-color)
+# Otherwise a grep.lineNumber, grep.column or color.grep in the user's git config changes what each line is,
+# and core.quotePath, on by default, quotes and escapes a path with a non-ASCII name.
+search=(-c core.quotePath=false grep --text --no-line-number --no-column --no-color)
 
 # The first segment under the prefix of every namespace the tree declares, such as phpseclib3 or
 # GuzzleHttp: the names php-scoper prefixed, and so the ones a string must not use bare.

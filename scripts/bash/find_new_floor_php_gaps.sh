@@ -107,10 +107,12 @@ filter='
   .files
   | if type == "object" then to_entries else [] end
   # PHPStan reports a trait once for each class that uses it, keyed "<file> (in context of class X)",
-  # so a release that adds such a class would repeat every use in the trait. One context stands for all.
-  | map(.key |= sub(" \\(in context of [^)]*\\)$"; "")) | group_by(.key) | map(first)[]
-  | (.key | ltrimstr($root)) as $path
-  | .value.messages[]
+  # so a release that adds such a class would repeat every use in the trait. A finding is kept once
+  # for all the contexts it appears in, so one that only some of them have is still kept.
+  | map(.key |= sub(" \\(in context of [^)]*\\)$"; "")) | group_by(.key)[]
+  | (.[0].key | ltrimstr($root)) as $path
+  | if length == 1 then .[0].value.messages[]
+    else map(.value.messages[]) | unique_by([.line, .identifier, .message])[] end
   | (.identifier // "" | symbol_pattern) as $pattern
   | select($pattern != null)
   # A docblock or type alias that names a missing class never runs, and catching one never fails.

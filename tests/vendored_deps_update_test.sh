@@ -221,6 +221,10 @@ dir=$(make_plugin untracked-string)
 printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/New.php"
 expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=vendor/prefixed/foo/src/New.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
 
+dir=$(make_plugin non-ascii-path)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/Bär.php"
+expect "a bare string in a file with a non-ASCII name is reported at its path as written" 0 "$dir" "file=vendor/prefixed/foo/src/Bär.php::" 'Composer\Autoload'
+
 # A git whose FAIL_GREP_AT-th grep fails, since git grep --untracked still searches a tree whose index
 # is corrupt. The script greps for the namespaces, then the earlier tree, then the rebuilt one.
 mkdir -p "$WORK/failing-git"
@@ -274,17 +278,18 @@ config="$3"
 sed -n 's/^  phpVersion: //p' "$config" > "$PHPSTAN_VERSION"
 paths=$(sed -n 's/^  paths: \[\(.*\)\]$/\1/p' "$config" | jq -r .)
 # PHPSTAN_BASE_CONTEXTS and PHPSTAN_REBUILT_CONTEXTS name the classes that use each file as a trait in
-# that tree, which PHPStan reports a file's findings once for.
+# that tree, which PHPStan reports a file's findings once for. "// FINDING[B] ..." is reported only in B.
 case "$paths" in
   */rebuilt/*) contexts="${PHPSTAN_REBUILT_CONTEXTS:-}" ;;
   *) contexts="${PHPSTAN_BASE_CONTEXTS:-}" ;;
 esac
-{ grep -r --include='*.php' -H '// FINDING ' "$paths" || true; } | jq -Rn --arg contexts "$contexts" '
-  [inputs | capture("^(?<file>[^:]+):.*// FINDING (?<identifier>[^ ]+) (?<message>.*)$")]
+{ grep -r --include='*.php' -Hn '// FINDING' "$paths" || true; } | jq -Rn --arg contexts "$contexts" '
+  [inputs | capture("^(?<file>[^:]+):(?<line>[0-9]+):.*// FINDING(?:\\[(?<only>[A-Za-z0-9_]+)\\])? (?<identifier>[^ ]+) (?<message>.*)$")]
   | {totals: {errors: 0, file_errors: length},
      files: (group_by(.file)
-       | map(. as $m | ($contexts | split(" ") | if . == [] then [""] else map(" (in context of class \(.))") end)[]
-         | {key: ($m[0].file + .), value: {messages: $m | map({message, identifier})}})
+       | map(. as $m | ($contexts | split(" ") | if . == [] then [null] else . end)[] as $c
+         | {key: ($m[0].file + if $c then " (in context of class \($c))" else "" end),
+            value: {messages: $m | map(select(.only == null or .only == $c) | {message, identifier, line: (.line | tonumber)})}})
        | from_entries),
      errors: (if env.PHPSTAN_ERRORS then ["Child process error"] else [] end)}'
 SH
@@ -343,6 +348,9 @@ PHPSTAN_BASE_CONTEXTS=A PHPSTAN_REBUILT_CONTEXTS='A B' \
 dir=$(floor_plugin floor-trait-new '' "$FN")
 PHPSTAN_REBUILT_CONTEXTS='A B' \
   expect_gaps "a new use in a trait is listed once, under the trait's own file" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+dir=$(floor_plugin floor-trait-one-context '' '// FINDING[B] method.notFound Call to an undefined method DateTime::getMicrosecond().')
+PHPSTAN_REBUILT_CONTEXTS='A B' \
+  expect_gaps "a use in a trait that only one of its classes lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime::getMicrosecond()." "$dir"
 dir=$(floor_plugin floor-twice "$FN" "$FN"$'\n'"$FN")
 expect_gaps "a known use the rebuild makes again in the same file is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
 dir=$(floor_plugin floor-new-ns '' $'// FINDING class.notFound Class Dba\\Connection not found.\n// FINDING class.notFound Instantiated class Pcntl\\QosClass not found.')
