@@ -523,13 +523,13 @@ expect_platform() {
     failures+=("$description")
   fi
 }
-expect_platform "a pin in composer.json is used as it is" '{"config":{"platform":{"php":"8.1.0"}}}' '' 0 ''
-expect_platform "a pin in composer.json written as a number is used as it is" '{"config":{"platform":{"php":8.1}}}' '' 0 ''
-expect_platform "a pin in composer.json takes precedence over platform-php" '{"config":{"platform":{"php":"8.1.0"}}}' 8.2.0 0 ''
-expect_platform "platform-php is set for the update when composer.json has no pin" '{}' 8.1.0 0 'temporary=8.1.0'
+expect_platform "a pin in composer.json is used as it is" '{"config":{"platform":{"php":"8.1.0"}}}' '' 0 'platform=8.1.0'
+expect_platform "a pin in composer.json written as a number is used as it is" '{"config":{"platform":{"php":8.1}}}' '' 0 'platform=8.1'
+expect_platform "a pin in composer.json takes precedence over platform-php" '{"config":{"platform":{"php":"8.1.0"}}}' 8.2.0 0 'platform=8.1.0'
+expect_platform "platform-php is set for the update when composer.json has no pin" '{}' 8.1.0 0 $'temporary=8.1.0\nplatform=8.1.0'
 expect_platform "neither a pin nor platform-php fails the run" '{}' '' 1 ''
 expect_platform "a platform-php that is not a version fails the run" '{}' $'8.1.0\nfoo=bar' 1 ''
-expect_platform "a platform-php a pin overrides is not checked" '{"config":{"platform":{"php":"8.1.0"}}}' 'eight' 0 ''
+expect_platform "a platform-php a pin overrides is not checked" '{"config":{"platform":{"php":"8.1.0"}}}' 'eight' 0 'platform=8.1.0'
 expect_no_command() {
   local description="$1" composer_json="$2" input="$3"
   tests=$((tests + 1))
@@ -564,6 +564,165 @@ expect_platform_warning() {
 }
 expect_platform_warning "a platform-php that differs from the composer.json pin is warned about" 8.1.0 8.2.0 1
 expect_platform_warning "8.1 and a pin of 8.1.0 are the same platform" 8.1.0 8.1 0
+
+# The comparison with the plugin's minimum, laid out the way the workflow checks things out: the
+# real floor resolver, and a stand-in for github-action-tests' alias table, which CI here lacks.
+python3 - "$WORKFLOW" > "$WORK/floor-step.sh" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']
+print(next(s for s in steps if s.get('name') == "Compare the platform PHP with the plugin's minimum")['run'])
+PY
+expect_floor() {
+  # setup: real, platform-input, no-resolver, failed-checkout, no-alias-table, failing-alias-table
+  # or no-plugin-json.
+  local description="$1" plugin_json="$2" composer_json="$3" platform="$4" want="$5" setup="${6:-real}"
+  tests=$((tests + 1))
+  local dir="$WORK/floor-$tests" output status
+  mkdir -p "$dir/plugin" "$dir/runner" "$dir/.plugin-ci-workflows/scripts/bash" "$dir/.github-action-tests/scripts/bash"
+  [ "$setup" = no-plugin-json ] || printf '%s\n' "$plugin_json" > "$dir/plugin/plugin.json"
+  printf '%s\n' "$composer_json" > "$dir/plugin/composer.json"
+  [ "$setup" = no-resolver ] || cp "$ROOT/scripts/bash/resolve_plugin_min_php.sh" "$dir/.plugin-ci-workflows/scripts/bash/"
+  if [ "$setup" = no-alias-table ]; then
+    :
+  elif [ "$setup" = failing-alias-table ]; then
+    printf '#!/bin/bash\nexit 1\n' > "$dir/.github-action-tests/scripts/bash/resolve_php_version.sh"
+  else
+    # shellcheck disable=SC2016 # the $1 belongs to the stub alias table being written.
+    printf '#!/bin/bash\ncase "$1" in matomo5_min_php) printf 7.2 ;; matomo6_min_php) printf 8.1 ;; *) printf %%s "$1" ;; esac\n' \
+      > "$dir/.github-action-tests/scripts/bash/resolve_php_version.sh"
+  fi
+  local checkout=success
+  [ "$setup" = failed-checkout ] && checkout=failure
+  local temporary=''
+  [ "$setup" = platform-input ] && temporary="$platform"
+  output=$(cd "$dir" && RUNNER_TEMP="$dir/runner" PLUGIN_DIR=plugin PLATFORM="$platform" WORKFLOWS_REF=main SCRIPTS_REF=main SCRIPTS_CHECKOUT="$checkout" TEMPORARY_PLATFORM="$temporary" \
+    RESOLVER=.plugin-ci-workflows/scripts/bash/resolve_plugin_min_php.sh \
+    ALIAS_RESOLVER=.github-action-tests/scripts/bash/resolve_php_version.sh \
+    bash --noprofile --norc -eo pipefail "$WORK/floor-step.sh" 2>&1)
+  status=$?
+  # The pull request body gets what the run's annotation said: a warning for a gap, a note for a skip.
+  local kind='' check="$dir/runner/platform-check.md"
+  if printf '%s\n' "$output" | grep -q '^::warning file=plugin.json::'; then
+    kind=WARNING
+  elif printf '%s\n' "$output" | grep -q '^::warning::'; then
+    kind=NOTE
+  fi
+  if [ "$status" -ne 0 ]; then
+    echo "FAIL - $description (exited $status; the comparison must never fail the run): $output"
+    failures+=("$description")
+  elif printf '%s\n' "$output" | grep -qE $'(^|\r)::stop-commands|%0[AD]'; then
+    echo "FAIL - $description (started a workflow command of its own): $output"
+    failures+=("$description")
+  elif [ "$want" = none ] && printf '%s\n' "$output" | grep -q '^::'; then
+    echo "FAIL - $description (wanted no workflow command): $output"
+    failures+=("$description")
+  elif [ "$want" != none ] && ! printf '%s\n' "$output" | grep -qF -- "$want"; then
+    echo "FAIL - $description (output did not contain '$want'): $output"
+    failures+=("$description")
+  elif [ -n "$kind" ] && { [ "$(wc -l < "$check" 2>/dev/null)" != 2 ] || [ "$(head -n 1 "$check")" != "> [!$kind]" ] \
+      || ! printf '%s\n' "$output" | grep -qF -- "$(sed -n '2s/^> //p' "$check" | sed 's/%/%25/g')"; }; then
+    echo "FAIL - $description (the pull request body did not get the $kind as one quoted line): $(cat "$check" 2>&1)"
+    failures+=("$description")
+  elif [ -z "$kind" ] && [ -e "$check" ]; then
+    echo "FAIL - $description (left the pull request body a result the run did not report): $(cat "$check")"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+expect_floor "a platform above plugin.json require.php is warned about" \
+  '{"require":{"php":">=8.1.0"}}' '{}' 8.2.0 \
+  '::warning file=plugin.json::Dependencies resolve against PHP 8.2.0, but plugin.json require.php lets the plugin run on PHP 8.1'
+expect_floor "a platform at plugin.json require.php is not warned about" '{"require":{"php":">=8.1.0"}}' '{}' 8.1.0 none
+expect_floor "a platform without a patch level matches the same minor" '{"require":{"php":">=8.1.0"}}' '{}' 8.1 none
+expect_floor "a platform below the minimum is not warned about" '{"require":{"php":">=8.2"}}' '{}' 8.1.0 none
+expect_floor "with no require.php, a platform above the Matomo floor is warned about" \
+  '{"require":{"matomo":">=6.0.0-b1,<7.0.0-b1"}}' '{}' 8.2.0 \
+  "but plugin.json's Matomo requirement lets the plugin run on PHP 8.1"
+expect_floor "a composer.json pin above plugin.json is warned about" \
+  '{"require":{"php":">=8.1.0","matomo":">=6.0.0-b1,<7.0.0-b1"}}' '{"config":{"platform":{"php":"8.2.0"}}}' 8.2.0 \
+  'but plugin.json require.php lets the plugin run on PHP 8.1'
+expect_floor "a composer.json pin is compared with require.matomo, not with itself" \
+  '{"require":{"matomo":">=5.0.0,<6.0.0-b1"}}' '{"config":{"platform":{"php":"8.2.0"}}}' 8.2.0 \
+  "but plugin.json's Matomo requirement lets the plugin run on PHP 7.2"
+expect_floor "a workflows-ref without the floor resolver warns and carries on" \
+  '{"require":{"php":">=8.1.0"}}' '{}' 8.2.0 "::warning::Could not compare platform PHP 8.2.0 with the plugin's minimum: workflows-ref 'main'" no-resolver
+expect_floor "a scripts-ref that could not be checked out is named as the cause" \
+  '{"require":{"php":">=8.1.0"}}' '{}' 8.2.0 "scripts-ref 'main' could not be checked out" failed-checkout
+expect_floor "a malformed plugin.json is named by the plugin's path, not the copy's" \
+  '{"require":' '{}' 8.2.0 "Could not read plugin/plugin.json"
+expect_floor "an alias table that fails warns and carries on" \
+  '{"require":{"matomo":">=6.0.0-b1,<7.0.0-b1"}}' '{}' 8.2.0 "could not resolve 'matomo6_min_php'" failing-alias-table
+expect_floor "a plugin without plugin.json warns and carries on" \
+  '' '{}' 8.2.0 "the plugin has no plugin.json" no-plugin-json
+expect_floor "a plugin.json with no minimum warns and carries on" \
+  '{"require":{}}' '{}' 8.2.0 "::warning::Could not compare platform PHP 8.2.0 with the plugin's minimum: Could not determine a minimum PHP version for 'plugin' "
+expect_floor "a plugin.json with no minimum is not blamed on a composer.json the comparison never read" \
+  '{"require":{}}' '{"config":{"platform":{"php":"8.2.0"}}}' 8.2.0 "no usable require.matomo). This comparison reads plugin.json alone."
+expect_floor "a Matomo major the alias table does not know warns and carries on" \
+  '{"require":{"matomo":"^9.0"}}' '{}' 8.2.0 "'matomo9_min_php' is not a PHP version the alias table knows"
+expect_floor "a line break in plugin.json starts no workflow command" \
+  '{"require":{"php":">=8.1.0\n::stop-commands::x"}}' '{}' 8.2.0 '::warning file=plugin.json::Dependencies resolve'
+expect_floor "a line break in a plugin.json the resolver rejects starts no workflow command" \
+  '{"require":{"php":"\n::stop-commands::x"}}' '{}' 8.2.0 "::warning::Could not compare"
+expect_floor "a line break in the platform stays on the warning's line, in the run and the body" \
+  '{"require":{"php":">=8.1.0"}}' '{}' $'8.2.0\n::stop-commands::x' 'against PHP 8.2.0 ::stop-commands::x'
+expect_floor "an escaped line break in the platform stays escaped" \
+  '{"require":{"php":">=8.1.0"}}' '{}' '8.2%0A::stop-commands::x' 'against PHP 8.2%250A::stop-commands::x'
+expect_floor "an escaped line break in a skip reason stays escaped" \
+  '{"require":{"php":">=8.1.0"}}' '{}' '%0A::stop-commands::x' 'Could not compare platform PHP %250A'
+expect_floor "a zero-padded platform is compared in base 10" \
+  '{"require":{"php":">=8.1.0"}}' '{}' 8.08.0 'against PHP 8.08.0, but plugin.json require.php'
+expect_floor "a minimum from the Matomo requirement is fixed by setting a minimum in require.php, not raising it" \
+  '{"require":{"matomo":">=6.0.0-b1,<7.0.0-b1"}}' '{}' 8.2.0 'or set a minimum in plugin.json require.php if the plugin needs PHP 8.2.0'
+expect_floor "a platform from the composer.json pin names the pin as the setting to change" \
+  '{"require":{"php":">=8.1.0"}}' '{"config":{"platform":{"php":"8.2.0"}}}' 8.2.0 'Set config.platform.php in composer.json to the lowest PHP 8.1 release plugin.json require.php allows'
+expect_floor "a platform from platform-php names the input as the setting to change" \
+  '{"require":{"php":">=8.1.0"}}' '{}' 8.2.0 'Set the platform-php input to the lowest PHP 8.1 release plugin.json require.php allows' platform-input
+expect_floor "with no require.php, the advice names the release the Matomo requirement allows" \
+  '{"require":{"matomo":">=5.0.0,<6.0.0-b1"}}' '{"config":{"platform":{"php":"8.2.0"}}}' 8.2.0 \
+  "Set config.platform.php in composer.json to the lowest PHP 7.2 release plugin.json's Matomo requirement allows"
+expect_floor "a scripts-ref without the alias table warns and carries on" \
+  '{"require":{"php":">=8.1.0"}}' '{}' 8.2.0 "scripts-ref 'main' does not carry scripts/bash/resolve_php_version.sh" no-alias-table
+expect_floor "a resolver that crashes is reported by its last line, not the traceback's first" \
+  '{"require":"x"}' '{}' 8.2.0 "AttributeError"
+expect_floor "a line break in a platform at the minimum stays on the result's line" \
+  '{"require":{"php":">=8.1.0"}}' '{}' $'8.1.0\n::stop-commands::x' 'Platform PHP 8.1.0 ::stop-commands::x is not above'
+
+# The pull request body carries the comparison's result, since nobody reads a scheduled run's annotations.
+python3 - "$WORKFLOW" > "$WORK/body-step.sh" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']
+print(next(s for s in steps if s.get('name') == 'Write the pull request body')['run'])
+PY
+expect_body() {
+  local description="$1" check="$2" want="$3"
+  tests=$((tests + 1))
+  local dir="$WORK/body-$tests"
+  mkdir -p "$dir/runner" "$dir/plugin"
+  echo '- Upgrading foo/bar (1.0.0 => 1.1.0)' > "$dir/runner/package-changes.md"
+  [ -z "$check" ] || printf '%s\n' "$check" > "$dir/runner/platform-check.md"
+  if ! RUNNER_TEMP="$dir/runner" PLUGIN_DIR="$dir/plugin" DOWNGRADE='' GITHUB_RUN_ID=1 GITHUB_SERVER_URL=https://github.com \
+    GITHUB_REPOSITORY=matomo-org/plugin-Example bash --noprofile --norc -eo pipefail "$WORK/body-step.sh" > /dev/null 2>&1; then
+    echo "FAIL - $description (the body step failed)"
+    failures+=("$description")
+  elif [ "$want" = none ] && grep -q '^> ' "$dir/runner/pull-request-body.md"; then
+    echo "FAIL - $description (the body carries a quote): $(cat "$dir/runner/pull-request-body.md")"
+    failures+=("$description")
+  elif [ "$want" != none ] && ! grep -A2 -F -- '- Upgrading foo/bar' "$dir/runner/pull-request-body.md" | tr '\n' '|' | grep -qF -- "$want"; then
+    echo "FAIL - $description (the body did not carry '$want'): $(cat "$dir/runner/pull-request-body.md")"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+expect_body "the comparison's result follows the package changes in the pull request body" \
+  $'> [!WARNING]\n> Dependencies resolve against PHP 8.2.0.' '- Upgrading foo/bar (1.0.0 => 1.1.0)||> [!WARNING]|'
+expect_body "without a result the pull request body carries no quote" '' none
 
 # The workflow decides whether to rescope with the same lock comparison the checker fails on, so the
 # two must not drift apart.
@@ -611,7 +770,9 @@ check("the tree is checked before it is packaged for the pull request",
 
 checkouts = [s for s in steps + pr_steps if str(s.get('uses', '')).startswith('actions/checkout@')]
 check("no checkout leaves credentials in a git config the scoped tree is committed next to",
-      len(checkouts) == 3 and all(s.get('with', {}).get('persist-credentials') is False for s in checkouts))
+      len(checkouts) == 4 and all(s.get('with', {}).get('persist-credentials') is False for s in checkouts))
+check("only the checkout the warn-only comparison reads may fail without stopping the run",
+      [s.get('with', {}).get('repository') for s in checkouts if s.get('continue-on-error')] == ['matomo-org/github-action-tests'])
 
 writes = lambda job: [k for k, v in (job.get('permissions') or {}).items() if v == 'write']
 check("the job that runs dependency code holds no write permission", writes(jobs['update']) == [])
@@ -636,6 +797,27 @@ check("the commit the pull-request job checks out is read before composer can mo
 pr = step('Open or update the pull request', pr_steps)['with']
 check("the workflow's commits are authored by the address the human-commit check filters on",
       '${{ env.BOT_EMAIL }}' in pr['author'] and '${{ env.BOT_EMAIL }}' in pr['committer'])
+check("the platform is compared with plugin.json before composer can run the packages' code",
+      order.index('Resolve the platform PHP')
+      < order.index("Compare the platform PHP with the plugin's minimum")
+      < order.index('Update dependencies'))
+compare = step("Compare the platform PHP with the plugin's minimum", steps)
+check("a run that leaves a human's branch alone does not warn about an update it skips",
+      order.index('Check the update branch has no human commits') < order.index(compare['name'])
+      and compare.get('if') == "${{ steps.branch.outputs.skip != 'true' }}")
+check("the comparison reads the outcome of the checkout it may lack",
+      step('Check out github-action-tests repository', steps).get('id') == 'action-tests'
+      and compare['env']['SCRIPTS_CHECKOUT'] == '${{ steps.action-tests.outcome }}')
+checkout_path = lambda repository: next(s['with']['path'] for s in checkouts if s['with'].get('repository') == repository)
+check("the comparison is wired to the platform step and the checkouts it reads, as its test assumes",
+      compare['env']['PLATFORM'] == '${{ steps.platform.outputs.platform }}'
+      and compare['env']['TEMPORARY_PLATFORM'] == '${{ steps.platform.outputs.temporary }}'
+      and compare['env']['RESOLVER'] == checkout_path('matomo-org/plugin-ci-workflows') + '/scripts/bash/resolve_plugin_min_php.sh'
+      and compare['env']['ALIAS_RESOLVER'] == checkout_path('matomo-org/github-action-tests') + '/scripts/bash/resolve_php_version.sh')
+check("the alias table comes from scripts-ref, which names a github-action-tests ref",
+      step('Check out github-action-tests repository', steps)['with']['ref'] == '${{ inputs.scripts-ref }}')
+check("the checkout only the comparison reads is skipped whenever the comparison is",
+      step('Check out github-action-tests repository', steps).get('if') == compare.get('if'))
 check("the human-commit check runs before anything is rebuilt",
       order.index('Check the update branch has no human commits') < order.index('Update dependencies'))
 PY
