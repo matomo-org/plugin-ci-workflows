@@ -923,7 +923,7 @@ dir=$(make_plugin body-clean)
 expect_body "the pull request says nothing about strings when the rebuild added none" "$dir" 'without the prefix' no
 dir=$(make_plugin body-many)
 rescoped_with "$(for i in $(seq 1 52); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
-expect_body "the pull request lists at most 50 strings" "$dir" "- and 2 more, which the log of the scope step lists." yes
+expect_body "the pull request lists at most 50 strings" "$dir" "- and 2 more, which the log of this step lists." yes
 # In sort order Baz7 is the 50th string and Baz8 the 51st.
 expect_body "the pull request lists the 50th string" "$dir" 'Baz7`' yes
 expect_body "the pull request leaves out the strings past 50" "$dir" 'Baz8`' no

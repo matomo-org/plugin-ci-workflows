@@ -299,6 +299,7 @@ jobs:
           strings_checked=true
           strings=$(bash .plugin-ci-workflows/scripts/bash/find_new_unprefixed_strings.sh "$PLUGIN_DIR" "$PLUGIN_NAME" "$BASE_SHA") \
             || strings_checked=false
+          [ -z "$strings" ] || printf '%s\n' "$strings"
           # Without a downgrade there is no floor the tree was built for, so nothing to check against.
           gaps=''
           gaps_checked=true
@@ -327,7 +328,7 @@ jobs:
               head -n 50 <<< "$strings" | cut -c1-300 | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
               count=$(wc -l <<< "$strings")
               if [ "$count" -gt 50 ]; then
-                echo "- and $((count - 50)) more, which the log of the scope step lists."
+                echo "- and $((count - 50)) more, which the log of this step lists."
               fi
               echo
             elif [ "$strings_checked" = false ]; then
