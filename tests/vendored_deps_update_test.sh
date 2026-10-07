@@ -14,6 +14,8 @@ WORKFLOW="$ROOT/.github/workflows/plugin-vendored-deps-update.yml"
 ACTION="$ROOT/actions/scope-dependencies/action.yml"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+# Set when these tests run in Actions, where it would move every annotation path the tests expect.
+unset GITHUB_WORKSPACE
 
 tests=0
 failures=()
@@ -140,7 +142,7 @@ expect_no_string_warning() {
   local output status
   output=$(bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1)
   status=$?
-  if [ "$status" -ne 0 ] || printf '%s' "$output" | grep -q 'gained the string'; then
+  if [ "$status" -ne 0 ] || printf '%s' "$output" | grep -qE 'gained the string|was not checked for strings'; then
     echo "FAIL - $description (exited $status): $output"
     failures+=("$description")
   else
@@ -148,19 +150,59 @@ expect_no_string_warning() {
   fi
 }
 
+# BSD tools, as on macOS: no realpath --relative-to or cp --parents, and a wc -l padded with spaces.
+BSD_TOOLS="$WORK/bsd-tools"
+mkdir -p "$BSD_TOOLS"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
+printf '#!/bin/bash\nfor a; do case "$a" in --relative-to=*) echo "realpath: illegal option" >&2; exit 1 ;; esac; done\nexec %q "$@"\n' \
+  "$(command -v realpath)" > "$BSD_TOOLS/realpath"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
+printf '#!/bin/bash\nfor a; do [ "$a" = --parents ] && { echo "cp: illegal option" >&2; exit 1; }; done\nexec %q "$@"\n' \
+  "$(command -v cp)" > "$BSD_TOOLS/cp"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
+printf '#!/bin/bash\nprintf "%%8s\\n" "$(%q "$@")"\n' "$(command -v wc)" > "$BSD_TOOLS/wc"
+chmod +x "$BSD_TOOLS/realpath" "$BSD_TOOLS/cp" "$BSD_TOOLS/wc"
+
 dir=$(make_plugin bare-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
+expect "a bare string the rebuild adds is a warning, not a failure" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string Bar" 'Composer\Autoload'
+
+GITHUB_WORKSPACE="$WORK" expect "an annotation names its file from the workspace root" 0 "$dir" \
+  "file=bare-string/vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
+GITHUB_WORKSPACE="$dir" expect "an annotation for a plugin at the workspace root names its file from the plugin" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
+GITHUB_WORKSPACE="$WORK" PATH="$BSD_TOOLS:$PATH" expect "without realpath --relative-to, an annotation names its file from the plugin" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
+
+# A plugin below the top of its repository, which a grep.fullName in the git config would name paths from.
+src=$(make_plugin full-name-src)
+outer="$WORK/full-name"
+rm -rf "$outer"
+mkdir -p "$outer/plugin"
+git -C "$src" archive HEAD | tar -xf - -C "$outer/plugin"
+git -C "$outer" init -q
+git -C "$outer" add plugin
+git -C "$outer" -c user.email=t@t -c user.name=t commit -qm base
+cp "$src/composer.lock" "$outer/plugin/"
+cp -r "$src/vendor/." "$outer/plugin/vendor/"
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" >> "$outer/plugin/vendor/prefixed/foo/src/Bar.php"
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=grep.fullName GIT_CONFIG_VALUE_0=true \
+  expect "a grep.fullName in the git config does not move a path to the top of the repository" 0 "$outer/plugin" \
+  "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string" 'Composer\Autoload'
 
 dir=$(make_plugin bare-string-double-quoted)
 rescoped_with "\$class = \"\\\\Bar\\\\Baz\";" "$dir"
-expect "a double-quoted bare string with a leading separator is reported too" 0 "$dir" 'gained the string "\\\\Bar' 'Composer\Autoload'
+expect "a double-quoted bare string with a leading separator is reported too" 0 "$dir" 'gained the string \\\\Bar' 'Composer\Autoload'
 
 dir=$(make_plugin known-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm known -- vendor/prefixed
 printf '%s\n' "// rescoped again" >> "$dir/vendor/prefixed/foo/src/Bar.php"
 expect_no_string_warning "a bare string the tree already had is not reported again" "$dir"
+rescoped_with "\$a = \"Bar\\\\Baz\";
+\$b = '\\\\Bar\\\\Baz';
+\$c = 'Bar\\Baz';" "$dir"
+expect_no_string_warning "a known string written with other quotes or escaping is not reported again" "$dir"
 
 dir=$(make_plugin prefixed-string)
 rescoped_with "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Bar\\\\Baz';" "$dir"
@@ -172,13 +214,58 @@ expect_no_string_warning "a string whose namespace merely starts with a scoped r
 
 dir=$(make_plugin root-only-string)
 rescoped_with "\$class = 'Bar\\\\' . \$name;" "$dir"
-expect "a string that is only a scoped root and a separator is reported" 0 "$dir" "gained the string 'Bar" 'Composer\Autoload'
+expect "a string that is only a scoped root and a separator is reported" 0 "$dir" "gained the string Bar" 'Composer\Autoload'
+
+dir=$(make_plugin colon-path)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/a:'Bar,b.php"
+expect "a path with a colon, a quote and a comma is split at the string and escaped in the annotation" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/a%3A'Bar%2Cb.php::vendor/prefixed gained the string Bar\\\\\\\\Baz without" 'Composer\Autoload'
+expect_annotations() {
+  local description="$1" dir="$2" want="$3"
+  tests=$((tests + 1))
+  local count
+  count=$(bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1 | grep -c '^::warning file=')
+  if [ "$count" -ne "$want" ]; then
+    echo "FAIL - $description ($count annotations, wanted $want)"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+expect_annotations "a path with a colon is annotated once, for its bare string" "$dir" 1
+dir=$(make_plugin many-strings)
+rescoped_with "$(for i in $(seq 1 52); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
+expect_annotations "7 of more than 8 strings are annotated, so the count is one of the step's 10" "$dir" 7
+tests=$((tests + 1))
+first=$(bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1 | grep -m1 '^::warning')
+if [[ "$first" == '::warning::vendor/prefixed gained 52 strings'* ]]; then
+  echo "ok - the count of the strings comes before their annotations, so the step limit cannot drop it"
+else
+  echo "FAIL - the count of the strings comes before their annotations, so the step limit cannot drop it: $first"
+  failures+=("the count of the strings is the first warning")
+fi
+expect "the strings past 7 are listed in the log" 0 "$dir" '^vendor/prefixed/foo/src/Bar.php: Bar' 'Composer\Autoload'
+PATH="$BSD_TOOLS:$PATH" expect "the count of the strings has no padding from wc" 0 "$dir" \
+  '::warning::vendor/prefixed gained 52 strings' 'Composer\Autoload'
+dir=$(make_plugin eight-strings)
+rescoped_with "$(for i in $(seq 1 8); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
+expect_annotations "8 strings are all annotated" "$dir" 8
+tests=$((tests + 1))
+if bash "$CHECK" "$dir" Foo 'Composer\Autoload' 2>&1 | grep -q '^::warning::vendor/prefixed gained'; then
+  echo "FAIL - 8 strings get no count"
+  failures+=("8 strings get no count")
+else
+  echo "ok - 8 strings get no count"
+fi
+dir=$(make_plugin nine-strings)
+rescoped_with "$(for i in $(seq 1 9); do printf '%s\n' "\$c$i = 'Bar\\\\Baz$i';"; done)" "$dir"
+expect_annotations "9 strings get the count and 7 annotations" "$dir" 7
 
 dir=$(make_plugin first-scope)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 git -C "$dir" rm -rq --cached vendor/prefixed
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
-expect "a first rebuild, with no earlier tree, is a warning, not a list of every string" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+expect_no_string_warning "a first rebuild, with no earlier tree, warns of nothing rather than listing every string" "$dir"
 
 dir=$(make_plugin moved-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
@@ -192,8 +279,10 @@ dir=$(make_plugin matomo-root)
 printf '<?php\nnamespace Matomo\\Dependencies\\Foo\\Matomo\\Network;\n%s\n' \
   "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Matomo\\\\Network\\\\IP';" > "$dir/vendor/prefixed/foo/src/IP.php"
 expect_no_string_warning "a prefixed string is not reported when a scoped root is Matomo" "$dir"
+printf '<?php\n%s\n' "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Matomo\\\\Network\\\\IP';" > "$dir/vendor/prefixed/foo/src/a:b.php"
+expect_no_string_warning "a prefixed string in a path with a colon is not reported when a scoped root is Matomo" "$dir"
 printf '%s\n' "\$bare = 'Matomo\\\\Network\\\\IP';" >> "$dir/vendor/prefixed/foo/src/IP.php"
-expect "a bare string is still reported when a scoped root is Matomo" 0 "$dir" "gained the string 'Matomo" 'Composer\Autoload'
+expect "a bare string is still reported when a scoped root is Matomo" 0 "$dir" "gained the string Matomo" 'Composer\Autoload'
 
 dir=$(make_plugin no-history)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
@@ -208,17 +297,61 @@ echo 'vendor/prefixed/foo/src/Ignored.php' > "$dir/.gitignore"
 expect_no_string_warning "a bare string in a file .gitignore keeps out of the pull request is not reported" "$dir"
 dir=$(make_plugin untracked-string)
 printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/New.php"
-expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=vendor/prefixed/foo/src/New.php::vendor/prefixed gained the string 'Bar" 'Composer\Autoload'
+expect "a bare string in a file the rebuild adds is reported" 0 "$dir" "file=vendor/prefixed/foo/src/New.php::vendor/prefixed gained the string Bar" 'Composer\Autoload'
 
-# A git whose grep fails, since git grep --untracked still searches a tree whose index is corrupt.
+dir=$(make_plugin non-ascii-path)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/Bär.php"
+expect "a bare string in a file with a non-ASCII name is reported at its path as written" 0 "$dir" "file=vendor/prefixed/foo/src/Bär.php::" 'Composer\Autoload'
+# An awk that fails, as one would on a full disk, part way through the comparison.
+FAILING_AWK="$WORK/failing-awk"
+mkdir -p "$FAILING_AWK"
+printf '#!/bin/sh\nexit 2\n' > "$FAILING_AWK/awk"
+chmod +x "$FAILING_AWK/awk"
+PATH="$FAILING_AWK:$PATH" expect "a comparison that fails warns that the strings went unchecked" 0 "$dir" \
+  '::warning::vendor/prefixed was not checked for strings' 'Composer\Autoload'
+# A grep -v that fails after printing what it read, as one would on a read error part way through.
+FAILING_GREP="$WORK/failing-grep"
+mkdir -p "$FAILING_GREP"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
+printf '#!/bin/bash\nif [ "$1" = -vE ]; then %q "$@"; exit 2; fi\nexec %q "$@"\n' "$(command -v grep)" "$(command -v grep)" \
+  > "$FAILING_GREP/grep"
+chmod +x "$FAILING_GREP/grep"
+PATH="$FAILING_GREP:$PATH" expect "a grep that fails warns that the strings went unchecked" 0 "$dir" \
+  '::warning::vendor/prefixed was not checked for strings' 'Composer\Autoload'
+# BSD paste, as on macOS, reads stdin only when given - for it.
+BSD_PASTE="$WORK/bsd-paste"
+mkdir -p "$BSD_PASTE"
+# shellcheck disable=SC2016 # the stand-in's own $, not the shell's.
+printf '#!/bin/bash\nfor a; do [ "$a" = - ] && exec %q "$@"; done\necho "usage: paste [-s] [-d delimiters] file ..." >&2\nexit 1\n' \
+  "$(command -v paste)" > "$BSD_PASTE/paste"
+chmod +x "$BSD_PASTE/paste"
+PATH="$BSD_PASTE:$PATH" expect "the strings are found with BSD paste" 0 "$dir" \
+  "file=vendor/prefixed/foo/src/Bär.php::" 'Composer\Autoload'
+
+# A git whose FAIL_GREP_AT-th grep fails, since git grep --untracked still searches a tree whose index
+# is corrupt. The script greps for the namespaces, then the earlier tree, then the rebuilt one.
 mkdir -p "$WORK/failing-git"
-# shellcheck disable=SC2016 # $a and $@ are the stand-in's, not this script's.
-printf '#!/bin/bash\nfor a; do [ "$a" != grep ] || { echo "fatal: cannot search" >&2; exit 128; }; done\nexec %q "$@"\n' \
-  "$(command -v git)" > "$WORK/failing-git/git"
+cat > "$WORK/failing-git/git" <<SH
+#!/bin/bash
+for a; do
+  [ "\$a" = grep ] || continue
+  n=\$((\$(cat "$WORK/grep-calls" 2>/dev/null || echo 0) + 1))
+  echo "\$n" > "$WORK/grep-calls"
+  [ "\$n" != "\$FAIL_GREP_AT" ] || { echo "fatal: cannot search" >&2; exit 128; }
+  break
+done
+exec $(printf %q "$(command -v git)") "\$@"
+SH
 chmod +x "$WORK/failing-git/git"
-dir=$(make_plugin failed-search)
-rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-PATH="$WORK/failing-git:$PATH" expect "a tree git cannot search is a warning that it was not checked, not a pass" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+at=0
+for search in namespaces 'earlier tree' 'rebuilt tree'; do
+  at=$((at + 1))
+  dir=$(make_plugin "failed-search-$at")
+  rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+  rm -f "$WORK/grep-calls"
+  FAIL_GREP_AT=$at PATH="$WORK/failing-git:$PATH" \
+    expect "a failed search of the $search is a warning that the tree was not checked, not a pass" 0 "$dir" 'was not checked for strings' 'Composer\Autoload'
+done
 
 # What git grep prints does not depend on the user's git config.
 export GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=grep.lineNumber GIT_CONFIG_VALUE_0=true GIT_CONFIG_KEY_1=grep.column \
@@ -234,7 +367,7 @@ rescoped_with "\$class = 'Matomo\\\\Dependencies\\\\Foo\\\\Bar\\\\Baz';" "$dir"
 expect_no_string_warning "a prefixed string is not reported, whatever the git config" "$dir"
 dir=$(make_plugin config-bare-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-expect "a bare string is reported as written, whatever the git config" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string 'Bar\\\\\\\\Baz without" 'Composer\Autoload'
+expect "a bare string is reported as written, whatever the git config" 0 "$dir" "file=vendor/prefixed/foo/src/Bar.php::vendor/prefixed gained the string Bar\\\\\\\\Baz without" 'Composer\Autoload'
 unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2
 
 # Uses of PHP the floor lacks, found by a stand-in PHPStan that reports each "// FINDING <identifier>
@@ -247,10 +380,20 @@ cat > "$WORK/phpstan/phpstan" <<'SH'
 config="$3"
 sed -n 's/^  phpVersion: //p' "$config" > "$PHPSTAN_VERSION"
 paths=$(sed -n 's/^  paths: \[\(.*\)\]$/\1/p' "$config" | jq -r .)
-{ grep -r --include='*.php' -H '// FINDING ' "$paths" || true; } | jq -Rn '
-  [inputs | capture("^(?<file>[^:]+):.*// FINDING (?<identifier>[^ ]+) (?<message>.*)$")]
+# PHPSTAN_BASE_CONTEXTS and PHPSTAN_REBUILT_CONTEXTS name the classes that use each file as a trait in
+# that tree, which PHPStan reports a file's findings once for. "// FINDING[B] ..." is reported only in B.
+case "$paths" in
+  */rebuilt/*) contexts="${PHPSTAN_REBUILT_CONTEXTS:-}" ;;
+  *) contexts="${PHPSTAN_BASE_CONTEXTS:-}" ;;
+esac
+{ grep -r --include='*.php' -Hn '// FINDING' "$paths" || true; } | jq -Rn --arg contexts "$contexts" '
+  [inputs | capture("^(?<file>.*?\\.php):(?<line>[0-9]+):.*// FINDING(?:\\[(?<only>[A-Za-z0-9_]+)\\])? (?<identifier>[^ ]+) (?<message>.*)$")]
   | {totals: {errors: 0, file_errors: length},
-     files: (group_by(.file) | map({key: .[0].file, value: {messages: map({message, identifier})}}) | from_entries),
+     files: (group_by(.file)
+       | map(. as $m | ($contexts | split(" ") | if . == [] then [null] else . end)[] as $c
+         | {key: ($m[0].file + if $c then " (in context of class \($c))" else "" end),
+            value: {messages: $m | map(select(.only == null or .only == $c) | {message, identifier, line: (.line | tonumber)})}})
+       | from_entries),
      errors: (if env.PHPSTAN_ERRORS then ["Child process error"] else [] end)}'
 SH
 chmod +x "$WORK/phpstan/phpstan"
@@ -265,6 +408,7 @@ floor_plugin() {
   printf '<?php\n%s\n' "$3" > "$dir/vendor/prefixed/foo/src/Bar.php"
   echo "$dir"
 }
+TAB=$'\t'
 expect_gaps() {
   local description="$1" want_status="$2" want="$3" dir="$4" floor="${5:-8.1}" phpstan="${6:-$WORK/phpstan/phpstan}"
   tests=$((tests + 1))
@@ -281,7 +425,7 @@ expect_gaps() {
 FN='// FINDING function.notFound Function array_find not found.'
 
 dir=$(floor_plugin floor-new '' "$FN")
-expect_gaps "a PHP function the rebuild starts calling is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+expect_gaps "a PHP function the rebuild starts calling is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 tests=$((tests + 1))
 if [ "$(cat "$WORK/phpstan-version")" = 80100 ]; then
   echo "ok - PHPStan analyses for the floor"
@@ -301,11 +445,20 @@ expect_gaps "a known use in a moved file is not listed again" 0 '' "$dir"
 dir=$(floor_plugin floor-elsewhere "$FN" "$FN")
 mkdir -p "$dir/vendor/prefixed/foo/lib"
 printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/lib/New.php"
-expect_gaps "a known use the rebuild adds in another file is listed there" 0 "vendor/prefixed/foo/lib/New.php: Function array_find not found." "$dir"
+expect_gaps "a known use the rebuild adds in another file is listed there" 0 "vendor/prefixed/foo/lib/New.php${TAB}Function array_find not found." "$dir"
+dir=$(floor_plugin floor-trait "$FN" "$FN")
+PHPSTAN_BASE_CONTEXTS=A PHPSTAN_REBUILT_CONTEXTS='A B' \
+  expect_gaps "a known use in a trait the rebuild uses in another class is not listed again" 0 '' "$dir"
+dir=$(floor_plugin floor-trait-new '' "$FN")
+PHPSTAN_REBUILT_CONTEXTS='A B' \
+  expect_gaps "a new use in a trait is listed once, under the trait's own file" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
+dir=$(floor_plugin floor-trait-one-context '' '// FINDING[B] method.notFound Call to an undefined method DateTime::getMicrosecond().')
+PHPSTAN_REBUILT_CONTEXTS='A B' \
+  expect_gaps "a use in a trait that only one of its classes lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime::getMicrosecond()." "$dir"
 dir=$(floor_plugin floor-twice "$FN" "$FN"$'\n'"$FN")
-expect_gaps "a known use the rebuild makes again in the same file is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+expect_gaps "a known use the rebuild makes again in the same file is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 dir=$(floor_plugin floor-new-ns '' $'// FINDING class.notFound Class Dba\\Connection not found.\n// FINDING class.notFound Instantiated class Pcntl\\QosClass not found.')
-expect_gaps "a class in a namespace PHP added lately is listed" 0 $'vendor/prefixed/foo/src/Bar.php: Class Dba\\Connection not found.\nvendor/prefixed/foo/src/Bar.php: Instantiated class Pcntl\\QosClass not found.' "$dir"
+expect_gaps "a class in a namespace PHP added lately is listed" 0 $'vendor/prefixed/foo/src/Bar.php\tClass Dba\\Connection not found.\nvendor/prefixed/foo/src/Bar.php\tInstantiated class Pcntl\\QosClass not found.' "$dir"
 
 dir=$(floor_plugin floor-package '' '// FINDING class.notFound Instantiated class Matomo\Dependencies\Foo\Optional not found.')
 expect_gaps "a class from a package the tree does not install is not listed" 0 '' "$dir"
@@ -314,13 +467,13 @@ dir=$(floor_plugin floor-constant '' '// FINDING constant.notFound Constant FOO_
 expect_gaps "a constant is not listed, since packages define their own" 0 '' "$dir"
 
 dir=$(floor_plugin floor-php-namespace '' '// FINDING class.notFound Instantiated class Random\Randomizer not found.')
-expect_gaps "a class in a namespace PHP ships is listed" 0 "vendor/prefixed/foo/src/Bar.php: Instantiated class Random\\Randomizer not found." "$dir"
+expect_gaps "a class in a namespace PHP ships is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Instantiated class Random\\Randomizer not found." "$dir"
 
 dir=$(floor_plugin floor-method '' '// FINDING method.notFound Call to an undefined method DateTime::modifyOrFail().')
-expect_gaps "a method the floor's own class lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime::modifyOrFail()." "$dir"
+expect_gaps "a method the floor's own class lacks is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime::modifyOrFail()." "$dir"
 
 dir=$(floor_plugin floor-73 '' "$FN")
-expect_gaps "a 7.3 floor is passed on as 70300" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir" 7.3
+expect_gaps "a 7.3 floor is passed on as 70300" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir" 7.3
 tests=$((tests + 1))
 if [ "$(cat "$WORK/phpstan-version")" = 70300 ]; then
   echo "ok - a 7.3 floor is analysed as 70300"
@@ -335,7 +488,19 @@ expect_gaps "a floor that is not major.minor is a usage error" 2 '' "$dir" 8
 dir=$(floor_plugin floor-first-scope '' "$FN")
 git -C "$dir" rm -rq --cached vendor/prefixed
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
-expect_gaps "a first rebuild, with no earlier tree, fails rather than listing every use" 1 '' "$dir"
+expect_gaps "a first rebuild, with no earlier tree, exits 3 rather than listing every use" 3 '' "$dir"
+
+dir=$(floor_plugin floor-failing-awk '' "$FN")
+PATH="$FAILING_AWK:$PATH" expect_gaps "a comparison that fails exits 1 rather than reporting nothing new" 1 '' "$dir"
+
+dir=$(floor_plugin floor-tab-path '' '')
+printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/src/a${TAB}b.php"
+expect_gaps "a tab in a path becomes a space, so it cannot split the path from the message" 0 \
+  "vendor/prefixed/foo/src/a b.php${TAB}Function array_find not found." "$dir"
+
+dir=$(floor_plugin floor-bsd '' "$FN")
+PATH="$BSD_TOOLS:$PATH" expect_gaps "the rebuilt tree is copied without cp --parents" 0 \
+  "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 
 dir=$(floor_plugin floor-crash '' "$FN")
 tests=$((tests + 1))
@@ -354,11 +519,11 @@ else
 fi
 
 dir=$(floor_plugin floor-interface '' '// FINDING interface.notFound Class Matomo\Dependencies\Foo\Engine implements unknown interface Random\Engine.')
-expect_gaps "an unknown PHP interface is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class Matomo\\Dependencies\\Foo\\Engine implements unknown interface Random\\Engine." "$dir"
+expect_gaps "an unknown PHP interface is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Class Matomo\\Dependencies\\Foo\\Engine implements unknown interface Random\\Engine." "$dir"
 dir=$(floor_plugin floor-arguments '' '// FINDING arguments.count Function str_contains invoked with 1 parameter, 2 required.')
-expect_gaps "a PHP function called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php: Function str_contains invoked with 1 parameter, 2 required." "$dir"
+expect_gaps "a PHP function called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function str_contains invoked with 1 parameter, 2 required." "$dir"
 dir=$(floor_plugin floor-method-arguments '' '// FINDING arguments.count Method DateTime::format() invoked with 0 parameters, 1 required.')
-expect_gaps "a PHP method called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php: Method DateTime::format() invoked with 0 parameters, 1 required." "$dir"
+expect_gaps "a PHP method called with too few arguments for the floor is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Method DateTime::format() invoked with 0 parameters, 1 required." "$dir"
 dir=$(floor_plugin floor-phpdoc '' '// FINDING class.notFound PHPDoc tag @return contains unknown class Random\Randomizer.')
 expect_gaps "a class named only in a docblock is not listed" 0 '' "$dir"
 
@@ -375,13 +540,13 @@ git -C "$dir" -c user.email=t@t -c user.name=t commit -qm attributes
 expect_gaps "a file the plugin marks export-ignore is still compared with its earlier version" 0 '' "$dir"
 
 dir=$(floor_plugin floor-ftp '' '// FINDING class.notFound Class FTP\Connection not found.')
-expect_gaps "a class in PHP's FTP namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class FTP\\Connection not found." "$dir"
+expect_gaps "a class in PHP's FTP namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Class FTP\\Connection not found." "$dir"
 dir=$(floor_plugin floor-lowercase '' '// FINDING class.notFound Instantiated class random\Randomizer not found.')
-expect_gaps "a PHP namespace written in lower case is listed" 0 "vendor/prefixed/foo/src/Bar.php: Instantiated class random\\Randomizer not found." "$dir"
+expect_gaps "a PHP namespace written in lower case is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Instantiated class random\\Randomizer not found." "$dir"
 dir=$(floor_plugin floor-soap '' '// FINDING class.notFound Class Soap\Url not found.')
-expect_gaps "a class in PHP's Soap namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php: Class Soap\\Url not found." "$dir"
+expect_gaps "a class in PHP's Soap namespace is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Class Soap\\Url not found." "$dir"
 dir=$(floor_plugin floor-union '' '// FINDING method.notFound Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail().')
-expect_gaps "a method the floor lacks on a union of PHP classes is listed" 0 "vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail()." "$dir"
+expect_gaps "a method the floor lacks on a union of PHP classes is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail()." "$dir"
 
 dir=$(floor_plugin floor-slow '' "$FN")
 tests=$((tests + 1))
@@ -417,7 +582,7 @@ printf '<?php\n' > "$dir/vendor/prefixed/foo/src/Gone.php"
 git -C "$dir" add vendor/prefixed/foo/src/Gone.php
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm gone
 rm "$dir/vendor/prefixed/foo/src/Gone.php"
-expect_gaps "a file the rebuild deletes does not stop the comparison" 0 "vendor/prefixed/foo/src/Bar.php: Function array_find not found." "$dir"
+expect_gaps "a file the rebuild deletes does not stop the comparison" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
 
 # The stand-in prints what each test gives it, so only the real PHPStan shows the patterns match its
 # wording. Everything the fixture uses is PHP 8.4's, so a runner on 8.3 or older lacks it too.
@@ -443,11 +608,11 @@ class K {
     }
     private function g() {}
 }')
-  want='vendor/prefixed/foo/src/Bar.php: Access to constant HalfAwayFromZero on an unknown class RoundingMode.
-vendor/prefixed/foo/src/Bar.php: Call to an undefined method DateTime::getMicrosecond().
-vendor/prefixed/foo/src/Bar.php: Call to an undefined static method DateTime::createFromTimestamp().
-vendor/prefixed/foo/src/Bar.php: Function array_find not found.
-vendor/prefixed/foo/src/Bar.php: Instantiated class Dom\HTMLDocument not found.'
+  want="vendor/prefixed/foo/src/Bar.php${TAB}Access to constant HalfAwayFromZero on an unknown class RoundingMode.
+vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime::getMicrosecond().
+vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined static method DateTime::createFromTimestamp().
+vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found.
+vendor/prefixed/foo/src/Bar.php${TAB}Instantiated class Dom\HTMLDocument not found."
   expect_gaps "PHPStan's own messages are listed, and those for a type alias or a caught class are not" 0 "$want" "$dir" 8.1 "$real_phpstan"
 
   tests=$((tests + 1))
@@ -1054,7 +1219,7 @@ expect_body() {
   echo '- Upgrading foo/bar (1.0.0 => 1.1.0)' > "$WORK/body-runner/package-changes.md"
   local body="$WORK/body-runner/pull-request-body.md"
   rm -f "$body"
-  if ! (cd "$WORK/workspace" && RUNNER_TEMP="$WORK/body-runner" PLUGIN_DIR="$dir" PLUGIN_NAME=Foo BASE_SHA="$base" DOWNGRADE="${BODY_DOWNGRADE-8.1}" \
+  if ! (cd "$WORK/workspace" && RUNNER_TEMP="$WORK/body-runner" PLUGIN_DIR="$dir" PLUGIN_NAME=Foo BASE_SHA="$base" DOWNGRADE="${BODY_DOWNGRADE-8.1}" FLOOR_PHP_VERSION="${BODY_FLOOR_PHP_VERSION-${BODY_DOWNGRADE-8.1}}" \
     PHPSTAN="$WORK/phpstan/phpstan" PHPSTAN_VERSION="$WORK/phpstan-version" FLOOR_PHP="$floor_php" \
     GITHUB_RUN_ID=1 GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r bash -eo pipefail "$WORK/body-step.sh") > /dev/null 2>&1; then
     echo "FAIL - $description (the step failed)"
@@ -1071,7 +1236,7 @@ expect_body() {
 }
 dir=$(make_plugin body-string)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
-expect_body "the pull request lists a bare string the rebuild added" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`'Bar\\\\Baz\`" yes
+expect_body "the pull request lists a bare string the rebuild added" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`Bar\\\\Baz\`" yes
 dir=$(make_plugin body-clean)
 expect_body "the pull request says nothing about strings when the rebuild added none" "$dir" 'without the prefix' no
 dir=$(make_plugin body-many)
@@ -1083,9 +1248,33 @@ expect_body "the pull request leaves out the strings past 50" "$dir" 'Baz8`' no
 dir=$(make_plugin body-overflow)
 rescoped_with "$(for i in $(seq 1 3000); do printf '%s\n' "\$c$i = 'Bar\\\\Baz\\\\SomeLongClassNameThatFillsThePipe$i';"; done)" "$dir"
 expect_body "a list longer than a pipe holds is still capped, not a failed step" "$dir" "- and 2950 more" yes
+dir=$(make_plugin body-colon-path)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/a: b.php"
+expect_body "the pull request splits a string from a path with a colon in it" "$dir" "- \`vendor/prefixed/foo/src/a: b.php\`: \`Bar\\\\Baz\`" yes
+dir=$(make_plugin body-backtick-path)
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/vendor/prefixed/foo/src/a\`b.php"
+expect_body "the pull request leaves a backtick out of a path, since it would end the code span" "$dir" "- \`vendor/prefixed/foo/src/ab.php\`: \`Bar\\\\Baz\`" yes
+dir=$(make_plugin body-long-path)
+long="vendor/prefixed/foo/src/$(printf 'd%.0s' $(seq 1 100))/$(printf 'e%.0s' $(seq 1 100))/$(printf 'f%.0s' $(seq 1 100))"
+mkdir -p "$dir/$long"
+printf '<?php\n%s\n' "\$class = 'Bar\\\\Baz';" > "$dir/$long/Bar.php"
+expect_body "the pull request shortens a long path, not the string after it" "$dir" "- \`${long:0:200}\`: \`Bar\\\\Baz\`" yes
+dir=$(floor_plugin body-gap-colon-path '' '')
+printf '<?php\n%s\n' "$FN" > "$dir/vendor/prefixed/foo/src/a: b.php"
+expect_body "the pull request splits a floor gap from a path with a colon in it" "$dir" "- \`vendor/prefixed/foo/src/a: b.php\`: \`Function array_find not found.\`" yes
+dir=$(floor_plugin body-first-scope '' "$FN")
+rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
+git -C "$dir" rm -rq --cached vendor/prefixed
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm unscoped
+expect_body "the pull request says nothing went unchecked on a first rebuild" "$dir" 'could not be checked' no
+BODY_DOWNGRADE=7.3 BODY_FLOOR_PHP_VERSION=7.4 expect_body "the pull request says nothing of PHP 7.4 when the floor check had nothing to compare" "$dir" 'ran on PHP 7.4' no
 dir=$(make_plugin body-unreadable)
 rescoped_with "\$class = 'Bar\\\\Baz';" "$dir"
 expect_body "the pull request says when the strings could not be checked" "$dir" 'could not be checked for strings' yes 0000000000000000000000000000000000000000
+PATH="$FAILING_GREP:$PATH" expect_body "the pull request lists no strings from a check that failed part way" "$dir" \
+  "- \`vendor/prefixed/foo/src/Bar.php\`" no
+PATH="$FAILING_GREP:$PATH" expect_body "the pull request says when the strings check failed part way" "$dir" \
+  'could not be checked for strings' yes
 dir=$(floor_plugin body-gap '' "$FN")
 expect_body "the pull request lists a PHP function the floor lacks" "$dir" "- \`vendor/prefixed/foo/src/Bar.php\`: \`Function array_find not found.\`" yes
 expect_body "the pull request names instanceof and ::class as written" "$dir" "A class named only in \`instanceof\` or \`::class\` cannot." yes
@@ -1108,7 +1297,7 @@ else
   echo "ok - PHPStan does not run when the floor PHP could not be set up"
 fi
 dir=$(floor_plugin body-73 "$FN" "$FN")
-BODY_DOWNGRADE=7.3 expect_body "the pull request says a 7.3 floor was checked on 7.4" "$dir" 'does not report what PHP 7.4 added' yes
+BODY_DOWNGRADE=7.3 BODY_FLOOR_PHP_VERSION=7.4 expect_body "the pull request says a 7.3 floor was checked on 7.4" "$dir" 'does not report what PHP 7.4 added' yes
 dir=$(floor_plugin body-81 "$FN" "$FN")
 expect_body "the pull request says nothing about a later PHP when the floor itself ran" "$dir" 'does not report what' no
 dir=$(floor_plugin body-no-downgrade '' "$FN")
@@ -1203,9 +1392,20 @@ check("a floor PHP that cannot be set up skips the check, not the pull request",
       and names.index('Setup the floor PHP') + 1 == names.index('Write the pull request body'))
 check("the floor PHP is set up only when there is a floor, with no coverage driver",
       "steps.scope.outputs.downgrade-php-version != ''" in floor['if'] and floor['with'].get('coverage') == 'none')
-check("the body names the PHP a 7.3 floor was set up on",
-      "downgrade-php-version == '7.3' && '7.4'" in floor['with']['php-version']
-      and '[ "$DOWNGRADE" != 7.3 ] || checked_on=7.4' in body['run'])
+version = step('Choose the floor PHP')
+def chosen(downgrade):
+    import os, subprocess, tempfile
+    with tempfile.NamedTemporaryFile('r') as out:
+        subprocess.run(['bash', '-eo', 'pipefail', '-c', version['run']], check=True,
+                       env={**os.environ, 'DOWNGRADE': downgrade, 'GITHUB_OUTPUT': out.name})
+        return out.read()
+check("a 7.3 floor is set up on 7.4, and any other on itself",
+      chosen('7.3') == 'php=7.4\n' and chosen('8.1') == 'php=8.1\n' and version['if'] == floor['if'])
+check("the setup and the body read the floor PHP from the one step",
+      version.get('id') == 'floor-version'
+      and floor['with']['php-version'] == '${{ steps.floor-version.outputs.php }}'
+      and body['env'].get('FLOOR_PHP_VERSION') == '${{ steps.floor-version.outputs.php }}'
+      and 'checked_on="$FLOOR_PHP_VERSION"' in body['run'])
 
 scope = step('Scope, downgrade and check')
 this_repo = step('Check out plugin-ci-workflows repository')

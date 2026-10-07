@@ -90,7 +90,8 @@ jobs:
   update:
     name: Update scoped dependencies
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # 30 for the update itself, and 15 for find_new_floor_php_gaps.sh, whose two PHPStan runs may take 5 each.
+    timeout-minutes: 45
     permissions:
       contents: read
       pull-requests: read # the human-commit check lists open pull requests
@@ -347,16 +348,28 @@ jobs:
           scoper-ref: ${{ inputs.scoper-ref }}
 
       # For find_new_floor_php_gaps.sh, which has to run on the floor: PHPStan counts whatever the
-      # running PHP has as present. PHPStan needs 7.4, so a 7.3 floor runs on that. Nothing after the
-      # check in this job runs PHP. The check only warns, so a failed setup skips it rather than the pull
-      # request; running it on the runner's PHP instead would report nothing, falsely.
+      # running PHP has as present. Nothing after the check in this job runs PHP. The check only warns, so
+      # a failed setup skips it rather than the pull request; running it on the runner's PHP instead would
+      # report nothing, falsely.
+      - name: Choose the floor PHP
+        id: floor-version
+        if: ${{ steps.update.outputs.changed == 'true' && steps.scope.outputs.downgrade-php-version != '' }}
+        shell: bash
+        env:
+          DOWNGRADE: ${{ steps.scope.outputs.downgrade-php-version }}
+        run: |
+          # PHPStan needs 7.4, so a 7.3 floor runs on that.
+          php="$DOWNGRADE"
+          [ "$DOWNGRADE" != 7.3 ] || php=7.4
+          echo "php=$php" >> "$GITHUB_OUTPUT"
+
       - name: Setup the floor PHP
         id: floor-php
         if: ${{ steps.update.outputs.changed == 'true' && steps.scope.outputs.downgrade-php-version != '' }}
         continue-on-error: true
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
-          php-version: ${{ steps.scope.outputs.downgrade-php-version == '7.3' && '7.4' || steps.scope.outputs.downgrade-php-version }}
+          php-version: ${{ steps.floor-version.outputs.php }}
           coverage: none
           tools: none
 
@@ -370,6 +383,7 @@ jobs:
           # Installed by the scope-dependencies action along with Rector, which depends on it.
           PHPSTAN: ${{ runner.temp }}/scope-dependencies/rector/vendor/bin/phpstan
           FLOOR_PHP: ${{ steps.floor-php.outcome }}
+          FLOOR_PHP_VERSION: ${{ steps.floor-version.outputs.php }}
         run: |
           body="$RUNNER_TEMP/pull-request-body.md"
           if [ -n "$DOWNGRADE" ]; then
@@ -377,21 +391,39 @@ jobs:
           else
             tools="matomo-scoper"
           fi
+          # Each check exits 3 on a first rebuild, which has no earlier tree to compare with, so nothing to list.
+          # A list item for each "<path><separator><text>" line on stdin, split at the last separator, which
+          # the text never holds and the path can. Without backticks, which would end the code span, and each
+          # field shortened on its own, so the item keeps its closing backticks.
+          list_items() {
+            local line path text
+            while IFS= read -r line; do
+              path=${line%"$1"*}
+              text=${line##*"$1"}
+              path=${path//\`/}
+              text=${text//\`/}
+              # shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
+              printf -- '- `%s`: `%s`\n' "${path:0:200}" "${text:0:250}"
+            done
+          }
           strings_checked=true
+          strings_status=0
           strings=$(bash .plugin-ci-workflows/scripts/bash/find_new_unprefixed_strings.sh "$PLUGIN_DIR" "$PLUGIN_NAME" "$BASE_SHA") \
-            || strings_checked=false
+            || strings_status=$?
+          case "$strings_status" in 0) ;; 3) strings_checked=none ;; *) strings_checked=false; strings="" ;; esac
           [ -z "$strings" ] || printf '%s\n' "$strings"
           # Without a downgrade there is no floor the tree was built for, so nothing to check against.
           gaps=''
           gaps_checked=true
-          checked_on="$DOWNGRADE"
-          [ "$DOWNGRADE" != 7.3 ] || checked_on=7.4
+          checked_on="$FLOOR_PHP_VERSION"
           if [ -n "$DOWNGRADE" ] && [ "$FLOOR_PHP" != success ]; then
             echo "PHP $checked_on could not be set up, so the floor check did not run."
             gaps_checked=false
           elif [ -n "$DOWNGRADE" ]; then
+            gaps_status=0
             gaps=$(bash .plugin-ci-workflows/scripts/bash/find_new_floor_php_gaps.sh "$PLUGIN_DIR" "$DOWNGRADE" "$PHPSTAN" "$BASE_SHA") \
-              || gaps_checked=false
+              || gaps_status=$?
+            case "$gaps_status" in 0) ;; 3) gaps_checked=none ;; *) gaps_checked=false; gaps="" ;; esac
             [ -z "$gaps" ] || printf '%s\n' "$gaps"
           fi
           {
@@ -406,11 +438,10 @@ jobs:
             if [ -n "$strings" ]; then
               echo "The rebuild added strings that name a scoped namespace without the prefix. Check each one before merging: if it builds a class name, \`scoper.inc.php\` needs a patcher to prefix it, or the class is not found at runtime."
               echo
-              # Capped at 50 entries of 300 characters each, because a pull request body is limited in size
-              # and the template still follows.
+              # Capped at 50 short entries, because a pull request body is limited in size and the template
+              # still follows.
               # A here-string, not printf into head: under pipefail, printf's SIGPIPE fails the step.
-              # shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
-              head -n 50 <<< "$strings" | cut -c1-300 | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
+              head -n 50 <<< "$strings" | list_items ': '
               count=$(wc -l <<< "$strings")
               if [ "$count" -gt 50 ]; then
                 echo "- and $((count - 50)) more, which the log of this step lists."
@@ -423,8 +454,7 @@ jobs:
             if [ -n "$gaps" ]; then
               echo "The rebuild added uses of PHP functions, classes, methods, properties or class constants that PHP $DOWNGRADE does not have, or calls with arguments it does not accept, which Rector does not transpile. Check each one before merging: unless a version check guards it or a polyfill provides it, it can fail at runtime on PHP $DOWNGRADE. A class named only in \`instanceof\` or \`::class\` cannot. The check cannot tell PHP's own global functions and classes from a package's, so a global one from a package the plugin does not install is listed too."
               echo
-              # shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
-              head -n 50 <<< "$gaps" | cut -c1-300 | sed -E 's/^([^:]+): (.*)$/- `\1`: `\2`/'
+              head -n 50 <<< "$gaps" | list_items $'\t'
               count=$(wc -l <<< "$gaps")
               if [ "$count" -gt 50 ]; then
                 echo "- and $((count - 50)) more, which the log of this step lists."

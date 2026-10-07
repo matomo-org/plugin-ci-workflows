@@ -19,10 +19,11 @@
 #
 # Usage: find_new_floor_php_gaps.sh <plugin-dir> <floor> <phpstan> [base-rev]
 # floor is the PHP version as major.minor, such as 8.1. phpstan is the PHPStan executable. base-rev
-# holds the tree before the rebuild, HEAD by default. Prints one "<path>: <message>" line per new
-# message in each file, and exits 0 whether or not it found any, or 1 when jq or timeout is missing,
-# it cannot read the tree at base-rev or PHPStan does not run, or 2 on a usage error. PHPStan gets
-# PHPSTAN_TIMEOUT seconds for each tree, 300 by default.
+# holds the tree before the rebuild, HEAD by default. Prints one line per new message in each file, the
+# path and the message separated by a tab, since a message can hold ": ". Exits 0 whether or not it
+# found any, 1 when jq or timeout is missing, it cannot read the tree at base-rev or PHPStan does not
+# run, 2 on a usage error, or 3 when base-rev has no vendor/prefixed. PHPStan gets PHPSTAN_TIMEOUT
+# seconds for each tree, 300 by default.
 
 set -u
 
@@ -56,7 +57,7 @@ fi
 # A first rebuild has nothing to compare with, and would otherwise list every guarded use in the tree.
 if [ -z "$(git -C "$plugin_dir" ls-tree -d --name-only "$base" -- vendor/prefixed)" ]; then
   echo "$base has no vendor/prefixed in $plugin_dir, so there is no earlier tree to compare with." >&2
-  exit 1
+  exit 3
 fi
 
 # Not $(cd "$(mktemp -d)" && pwd -P) in one go: a failed mktemp leaves cd "", which succeeds, and the
@@ -105,9 +106,14 @@ filter='
       or any(("bcmath\\", "dba\\", "dom\\", "ffi\\", "filter\\", "ftp\\", "imap\\", "io\\", "ldap\\", "odbc\\", "openssl\\", "pcntl\\", "pdo\\", "pgsql\\", "pspell\\", "random\\", "snmp\\", "soap\\", "time\\", "uri\\");
         . as $ns | $s | startswith($ns));
   .files
-  | if type == "object" then to_entries[] else empty end
-  | (.key | ltrimstr($root)) as $path
-  | .value.messages[]
+  | if type == "object" then to_entries else [] end
+  # PHPStan reports a trait once for each class that uses it, keyed "<file> (in context of class X)",
+  # so a release that adds such a class would repeat every use in the trait. A finding is kept once
+  # for all the contexts it appears in, so one that only some of them have is still kept.
+  | map(.key |= sub(" \\(in context of [^)]*\\)$"; "")) | group_by(.key)[]
+  | (.[0].key | ltrimstr($root) | gsub("[\t\n]"; " ")) as $path
+  | if length == 1 then .[0].value.messages[]
+    else map(.value.messages[]) | unique_by([.line, .identifier, .message])[] end
   | (.identifier // "" | symbol_pattern) as $pattern
   | select($pattern != null)
   # A docblock or type alias that names a missing class never runs, and catching one never fails.
@@ -124,8 +130,8 @@ analyse() {
   printf 'parameters:\n  level: 2\n  phpVersion: %s\n  paths: [%s]\n  tmpDir: %s\n' \
     "$php_version" "$(jq -n --arg p "$root/vendor/prefixed" '$p')" "$(jq -n --arg p "$work/tmp-$name" '$p')" > "$work/$name.neon"
   # 1 only means PHPStan found something, so the JSON is what says whether it ran. A run killed by
-  # the timeout leaves none. The limit keeps both runs well inside the job's own, since the job
-  # timing out would lose the pull request over a check that only warns.
+  # the timeout leaves none. The job's timeout-minutes leaves room for both runs at this limit, since
+  # the job timing out would lose the pull request over a check that only warns.
   timeout "${PHPSTAN_TIMEOUT:-300}" "$phpstan" analyse -c "$work/$name.neon" --memory-limit=2G --no-progress --error-format=json \
     > "$work/$name.json" 2> "$work/$name.err"
   local status=$?
@@ -148,14 +154,14 @@ analyse() {
 }
 
 # Only the files the pull request commits, so not what .gitignore excludes: the base never has those, so
-# every use in them would read as new on every run.
+# every use in them would read as new on every run. tar, not cp --parents, which BSD cp lacks.
 mkdir "$work/rebuilt"
 if ! (cd "$plugin_dir" && git ls-files -z --cached --others --exclude-standard -- vendor/prefixed > "$work/rebuilt-files") \
-  || ! (cd "$plugin_dir" \
+  || ! (cd "$plugin_dir" && set -o pipefail \
     && while IFS= read -r -d '' file; do
       # --cached still lists a tracked file the rebuild deleted.
       if [ -f "$file" ]; then printf '%s\0' "$file"; fi
-    done < "$work/rebuilt-files" | xargs -0 -r cp --parents -t "$work/rebuilt") \
+    done < "$work/rebuilt-files" | tar --null -T - -cf - | tar -xf - -C "$work/rebuilt") \
   || ! [ -d "$work/rebuilt/vendor/prefixed" ]; then
   echo "Cannot copy vendor/prefixed in $plugin_dir." >&2
   exit 1
@@ -169,10 +175,14 @@ analyse "$work/rebuilt" rebuilt > "$work/found" || exit 1
 awk -F '\t' '
     # Not NR == FNR, which an empty first file makes true of every line.
     FILENAME == ARGV[1] { known[$1 FS $2]++; known_in[$1 FS $2 FS $3]++; next }
-    { found[$1 FS $2]++; found_in[$1 FS $2 FS $3]++; message[$1 FS $2 FS $3] = $3 ": " $2; use[$1 FS $2 FS $3] = $1 FS $2 }
+    { found[$1 FS $2]++; found_in[$1 FS $2 FS $3]++; message[$1 FS $2 FS $3] = $3 FS $2; use[$1 FS $2 FS $3] = $1 FS $2 }
     END {
       for (k in found_in) {
         if (found[use[k]] > known[use[k]] && found_in[k] > known_in[k]) print message[k]
       }
     }' "$work/known" "$work/found" \
   | sort -u
+if [ "${PIPESTATUS[*]}" != "0 0" ]; then
+  echo "Cannot compare the PHPStan messages for $plugin_dir." >&2
+  exit 1
+fi
