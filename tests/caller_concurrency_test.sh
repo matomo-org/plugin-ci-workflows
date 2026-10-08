@@ -145,6 +145,33 @@ $CALL
     concurrency: ci-lane
 "
 
+# The same guard is reused by plugin-release.yml with its own called-workflow path.
+tests=$((tests + 1))
+RELEASE_ROOT="$WORK/custom-called-workflow"
+mkdir -p "$RELEASE_ROOT/.github/workflows"
+cat > "$RELEASE_ROOT/.github/workflows/release.yml" <<'YAML'
+name: Release
+on: workflow_dispatch
+jobs:
+  release:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-release.yml@main
+    concurrency: release-lane
+YAML
+release_output="$(bash "$GUARD" \
+  'matomo-org/plugin-Foo/.github/workflows/release.yml@refs/heads/6.x-prod' \
+  "$RELEASE_ROOT" \
+  'plugin-ci-workflows/.github/workflows/plugin-release.yml' 2>&1)"
+release_status=$?
+if [ "$release_status" = 1 ] \
+    && [[ "$release_output" == *"::error file=.github/workflows/release.yml::"* ]] \
+    && [[ "$release_output" == *"plugin-release.yml declares"* ]]; then
+  echo "ok - a custom called workflow path is checked"
+else
+  echo "FAIL - a custom called workflow path is checked (exit $release_status)"
+  echo "$release_output"
+  failures+=("a custom called workflow path is checked")
+fi
+
 # A caller that does not parse gets the tidy message, not a PyYAML traceback: the point of failing
 # closed is that whoever reads the log can tell whose file is broken.
 tests=$((tests + 1))

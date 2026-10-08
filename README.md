@@ -38,6 +38,7 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`plugin-ai-checklist.yml`](#ai-checklist) | Reusable workflow | Runs the org checklist gate against the pull request description |
 | [`plugin-hook-check.yml`](#hook-check) | Reusable workflow | Fails when a plugin's vendored pre-push hook has drifted from the copy here |
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
+| [`plugin-release.yml`](#plugin-release) | Reusable workflow | Tags and publishes a plugin version prepared on a production branch |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
@@ -212,6 +213,92 @@ Each test records its outcome in a `compatibility-results/` directory at the Mat
 The generator first fails if any `dependent-plugins` entry was not checked out, as PHPStan does. It then deletes every `plugins/*/.git` directory and composer's global `github-oauth` entry, and fails if either is still there, before PHPUnit starts. The action leaves the checkout token in both, and PHPUnit executes the pull request's code.
 
 In [Plugins CI](#plugins-ci) this runs by default and costs a Matomo install per target on every run, `edited` events included. `skip-compatibility` exists for a plugin mid-migration whose declared range cannot be installed yet, not as a way to save the minutes; fix the range in `plugin.json` instead where that is the real problem.
+
+### Plugin release
+
+Creates a stable plugin release from a protected `N.x-prod` branch, and keeps the changelog date right before it does. The caller owns the triggers and permissions, and the event decides what runs:
+
+- **A pull request into `N.x-prod`** runs the **Changelog date** check, which fails unless the `CHANGELOG.md` entry for the version in `plugin.json` is dated today in UTC, and unless that version is stable and of major `N`, as the release requires. When the date is wrong, the workflow also pushes `automated/release-date-<version>`, dating the entry, and opens a pull request from it into the pull request's head branch (normally `N.x-dev`). Merging that pull request updates the production pull request, and the check passes. A version that is already tagged is not held for its date, so pull requests that don't bump the version are not held.
+- **A push to `N.x-prod`** tags the version in `plugin.json` and publishes its GitHub Release, dated from the changelog entry. If that entry is not dated today, for example because the production pull request was merged on a later day, nothing is released: the run opens release date pull requests into `N.x-prod` and `N.x-dev` from the same branch, then fails. Merge both, and the merge into `N.x-prod` releases the version.
+- **`workflow_dispatch`** runs one part on its own, chosen by the `task` input: `release`, `changelog-check` for the check on the chosen branch, or `changelog-date` for the release date pull request into the chosen branch.
+
+Nothing in the workflow pushes to a protected branch, so neither branch needs a bypass for `github-actions[bot]`. The tag is also the signal consumed by the Matomo Marketplace for distributed plugins.
+
+For InnoCraft premium plugins the tag is the release: the Marketplace queues the tag pushed by this workflow and adds the version from that commit's `plugin.json` without a further review step, so merging a version bump into `N.x-prod` publishes the plugin. The Marketplace only imports tags from a private InnoCraft repository for a plugin it already lists, so the first release of a new premium plugin is still uploaded by hand through the shop; the Marketplace ignores that tag without sending an email, and later tags then import automatically. This workflow refuses to move an existing tag, so when the Marketplace rejects a tag, correct the problem and release a new version.
+
+The changelog entry must start at the beginning of a line with the bare version, optionally prefixed
+by a Markdown heading or list marker, `Version ` or the plugin name from `plugin.json`, or `_`/`**`
+emphasis. A trailing ` - YYYY-MM-DD`, ` - DD/MM/YYYY`, ` - MM/DD/YYYY`, any of them in `_`/`**`
+emphasis, or `(unreleased)`/`(not yet released)`/a parenthesized date is supported. Text straight
+after a dateless version that starts with a letter or digit, optionally in `_`/`**` emphasis, other than an unreleased marker (a bare `Unreleased` or `not yet released` followed by a word, as in `Unreleased features`, is free text), as in
+`6.0.0 Compatibility with Matomo 6`, is kept after the new date and a ` - ` separator. Keep-a-Changelog bracketed versions such as `[6.0.2]` are not recognised.
+Ambiguous slash dates are interpreted day-first. An entry that can only be `MM/DD/YYYY`, because its
+day is above 12, is rewritten as `YYYY-MM-DD` when the new day is 12 or less. Any other numeric date
+with `-`, `/` or `.` between its parts, or an English month-name date with a four-digit year,
+directly after ` - `, `–`, `—`, `(`, `[` or `_`/`**` emphasis fails the release rather than gaining
+a second date. Other date forms are not detected.
+
+Before adding the caller, check that the version in each production branch's `plugin.json` already has a tag named exactly after it, with no `v` prefix. The workflow treats a version without that tag as unreleased, so a version that was uploaded by hand or tagged `v6.0.2` would fail the check on every production pull request, and the first push would open release date pull requests instead of releasing nothing. If the tag is missing, add the caller in the same change as the next version bump.
+
+```yaml
+name: Release plugin
+
+on:
+  pull_request:
+    branches:
+      - 5.x-prod
+      - 6.x-prod
+  push:
+    branches:
+      - 5.x-prod
+      - 6.x-prod
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "release; changelog-check to check the date on the chosen branch; changelog-date to open the release date pull request into it"
+        type: choice
+        options:
+          - release
+          - changelog-check
+          - changelog-date
+        default: release
+      release-date:
+        description: "For changelog-date: the date to write (YYYY-MM-DD), today in UTC when empty"
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-release.yml@main
+    with:
+      task: ${{ inputs.task || 'release' }}
+      release-date: ${{ inputs.release-date }}
+```
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `script-ref` | no | `main` | Ref of this repository to take the release helper from. When pinning the workflow to a SHA, pass the same SHA here. |
+| `task` | no | `release` | For `workflow_dispatch`: `release`, `changelog-check` or `changelog-date`. Other events ignore it. |
+| `release-date` | no | today in UTC | For the `changelog-date` task: the date to write, as `YYYY-MM-DD`. |
+
+To make the date hold the merge, add **release / Changelog date** to the required status checks of `N.x-prod`; the name assumes the caller's job id is `release`, as above. The repository (or its organisation) must allow GitHub Actions to create pull requests, under **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**. Workflow runs on a pull request that `GITHUB_TOKEN` opened or pushed to wait for approval, so open its checks and approve the waiting runs, once per push to it. A release date pull request is only ever pushed by the workflow; if someone adds a commit to `automated/release-date-<version>`, the workflow leaves the branch alone and warns.
+
+That setting also lets any workflow approve pull requests as `github-actions[bot]`, and branch protection counts that approval as a review. Anyone with write access could then approve their own pull request into `N.x-prod` from a workflow on its branch, and for a premium plugin that merge publishes to the Marketplace. Protect `N.x-prod` with **Require review from Code Owners** and a `CODEOWNERS` file that covers every path, since the bot cannot give a code-owner review; the release date pull requests into `N.x-prod` then need a code owner's approval too. Name at least one owner other than whoever opens the `N.x-dev` → `N.x-prod` pull request: when its author is the only code owner, the code-owner rule is already met, and the bot's approval satisfies the rest.
+
+A release date pull request into `N.x-prod` is always proposed for `N.x-dev` from the same branch, and both must be merged. Dating the two branches with separate commits makes the next development-to-production merge conflict on the dated line.
+
+The workflow refuses to move an existing tag to another commit. If the shared workflow is pinned to a commit or tag, pass the same ref as its `script-ref` input so the release script is pinned with it. A run resumes when the existing tag is the current commit, and it also recovers a tag created by an earlier partial run when the tag is the current production branch tip. If the tag is behind the production branch, the workflow does not mutate the branch or tag because the version was already released and `plugin.json` has not been bumped yet. It does not touch the GitHub Release either: the tag may predate the workflow, so creating a missing release there could publish an old version nobody released on GitHub. A run that pushed the tag but failed to publish its release recovers when dispatched from the branch tip with **Run workflow**; if the branch has moved on since, create that release by hand. An existing release is never rewritten: a published one is left as it is, and a draft or prerelease is only marked published, keeping its name and notes.
+
+Do not use GitHub's **Re-run failed jobs** for a release once `N.x-prod` has moved on: GitHub reruns the original commit. Use **Run workflow** to dispatch a fresh run from the current `N.x-prod` branch tip instead. The workflow fails with that instruction if it detects that the branch advanced after the original run. Other tag/branch histories fail closed rather than moving or rebuilding a tag.
+
+The caller must not declare workflow-level concurrency or concurrency on the job that calls this
+workflow, because a caller's group replaces the reusable workflow's group. Releases are explicitly
+not marked as GitHub's repository-wide Latest because 5.x and 6.x production lines are released in
+parallel.
 
 ### License check
 
