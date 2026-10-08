@@ -1,0 +1,54 @@
+name: Release date check
+
+# Fails when the unreleased version's CHANGELOG.md entry carries a date, in a plugin whose weekly
+# release (plugin-dev-release.yml) dates it on the day it releases. Passes for every other plugin,
+# so Plugins CI can run it everywhere and a plugin opts in by adopting the release workflow.
+
+on:
+  workflow_call:
+    inputs:
+      workflows-ref:
+        description: "Ref of this repository for the check script"
+        required: false
+        type: string
+        default: 'main'
+
+permissions:
+  contents: read
+
+jobs:
+  release-date:
+    name: Release date
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read # read the plugin and list its tags
+    env:
+      # Unique so it cannot collide with a directory the caller tracks.
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      - name: Check the changelog date
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.base_ref || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A private plugin's tags can only be listed with the token. git asks the helper, which
+          # reads the runner-masked token itself, so no value derived from it needs masking.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=credential.https://github.com.helper
+          export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
+          bash "$WORKFLOWS_DIR/scripts/bash/check_plugin_release_date.sh" "$BRANCH"
