@@ -101,8 +101,10 @@ fi
 # The workflow reads the outputs from the runner's file, not stdout.
 GITHUB_OUTPUT="$WORK/prepare/gh_output" run prepare prepare_plugin_dev_release.sh 6.x-dev \
     || fail "an unreleased version is prepared on a runner"
-grep -qx 'release_needed=true' "$WORK/prepare/gh_output" && grep -qx 'version=6.0.3' "$WORK/prepare/gh_output" \
-    && ! says prepare 'release_needed=' || fail "on a runner the outputs go to its output file"
+if ! grep -qx 'release_needed=true' "$WORK/prepare/gh_output" || ! grep -qx 'version=6.0.3' "$WORK/prepare/gh_output" \
+    || says prepare 'release_needed='; then
+    fail "on a runner the outputs go to its output file"
+fi
 
 new_repo prepare-tagged '* 6.0.3 - 2026-10-05 - Three'
 git -C "$WORK/prepare-tagged/origin.git" tag 6.0.3 6.x-dev
