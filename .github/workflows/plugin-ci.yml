@@ -51,6 +51,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip-release-date:
+        description: "Do not run the release date check, which only fails a plugin that calls plugin-dev-release.yml"
+        required: false
+        type: boolean
+        default: false
 
       # --- pass-through, named per check because four of them take a php-version ---
       phpcs-php-version:
@@ -111,7 +116,7 @@ on:
         type: string
         default: 'main'
       workflows-ref:
-        description: "Ref of this repository for the timezone checker, pre-push hook, PHPStan bootstrap, caller concurrency guard, plugin floor resolver and compatibility test generator"
+        description: "Ref of this repository for the timezone checker, pre-push hook, PHPStan bootstrap, caller concurrency guard, plugin floor resolver, compatibility test generator and release date check"
         required: false
         type: string
         default: 'main'
@@ -328,6 +333,16 @@ jobs:
       plugin-name: ${{ inputs.plugin-name }}
       workflows-ref: ${{ inputs.workflows-ref }}
       timezone-regression-exempt: ${{ inputs.timezone-regression-exempt }}
+
+  # Passes in a plugin that does not call plugin-dev-release.yml, so a plugin opts in by adopting
+  # the weekly release and the check needs no input of its own.
+  release-date:
+    if: ${{ !inputs.skip-release-date }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-release-date-check.yml@main
+    permissions:
+      contents: read
+    with:
+      workflows-ref: ${{ inputs.workflows-ref }}
 
 # Codex review is not called from here, and should not be. It runs on `pull_request_target` with
 # secrets available, gated on a label; every check above runs on `pull_request`. Putting both in

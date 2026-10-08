@@ -1,0 +1,134 @@
+# Releases plugin.json's version from the N.x-dev branch the caller runs on, when it has no tag yet.
+#
+# Its CHANGELOG.md entry is merged undated or Unreleased (Plugins CI's release date check fails one
+# dated by hand). This dates it on automated/release-date-<version>, tags and publishes that commit,
+# then opens a pull request bringing the date into the branch and merges it once its checks pass,
+# if the branch protection lets this token or the approver token do so. Otherwise the pull request
+# is left open for a person, with a warning; the release never waits on that merge.
+#
+# The caller owns the triggers: a weekly schedule, workflow_dispatch, and plugin-branch-sweep.yml to
+# dispatch it on the other maintained branch, since a schedule only runs on the default branch.
+
+name: Plugin development release
+
+on:
+  workflow_call:
+    inputs:
+      workflows-ref:
+        description: "Ref of this repository for the release scripts. This is this repository, so the workflow SHA is the right value when pinning."
+        required: false
+        type: string
+        default: 'main'
+    secrets:
+      approver-token:
+        description: "Optional token for a user other than github-actions, which approves and merges the release date pull request where the branch protection needs a review or restricts who can push."
+        required: false
+
+permissions: {}
+
+# Queued rather than cancelled, so a dispatch during the scheduled run cannot interrupt a release
+# halfway. Named without ${{ github.workflow }}, which resolves to the caller's workflow name here.
+concurrency:
+  group: plugin-dev-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write # approve the held checks on the release date pull request
+      checks: read # wait for those checks
+      contents: write # push the release date branch and the tag, publish the release
+      pull-requests: write # open and merge the release date pull request
+    timeout-minutes: 20
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
+      # Unique so it cannot collide with a directory the caller tracks.
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      # The guard fails closed without PyYAML; see plugin-ci.yml for why the install is conditional.
+      - name: Install the YAML parser the guard needs
+        shell: bash
+        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+
+      - name: Check caller concurrency
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        shell: bash
+        run: |
+          bash "$WORKFLOWS_DIR/scripts/bash/check_caller_concurrency.sh" "$WORKFLOW_REF" "$GITHUB_WORKSPACE" \
+            "plugin-ci-workflows/.github/workflows/plugin-dev-release.yml"
+
+      - name: Stage release scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release-scripts"
+          cp -r "$WORKFLOWS_DIR/scripts/bash" "$WORKFLOWS_DIR/scripts/python" "$RUNNER_TEMP/release-scripts/"
+          echo "RELEASE_SCRIPTS=$RUNNER_TEMP/release-scripts" >> "$GITHUB_ENV"
+          # Keep the shared checkout out of the plugin repository before git records the release.
+          rm -rf "$WORKFLOWS_DIR"
+
+      - name: Configure git credentials
+        shell: bash
+        run: |
+          # git asks the helper, which reads the runner-masked token itself, so no value derived from
+          # the token reaches the environment and needs masking.
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=credential.https://github.com.helper"
+            echo "GIT_CONFIG_VALUE_0=!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
+          } >> "$GITHUB_ENV"
+
+      - name: Prepare release
+        id: prepare
+        shell: bash
+        run: bash "$RELEASE_SCRIPTS/bash/prepare_plugin_dev_release.sh" "$GITHUB_REF_NAME"
+
+      - name: Date the release
+        if: steps.prepare.outputs.release_needed == 'true'
+        env:
+          TODAY: ${{ steps.prepare.outputs.today }}
+        shell: bash
+        run: bash "$RELEASE_SCRIPTS/bash/push_plugin_release_date.sh" "$GITHUB_REF_NAME" "$TODAY"
+
+      - name: Create release tag
+        if: steps.prepare.outputs.release_needed == 'true'
+        env:
+          TODAY: ${{ steps.prepare.outputs.today }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        shell: bash
+        run: bash "$RELEASE_SCRIPTS/bash/tag_plugin_dev_release.sh" "$VERSION" "$TODAY"
+
+      - name: Create GitHub release
+        if: steps.prepare.outputs.publish_needed == 'true'
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PLUGIN_NAME: ${{ steps.prepare.outputs.plugin_name }}
+          TODAY: ${{ steps.prepare.outputs.today }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        shell: bash
+        run: bash "$RELEASE_SCRIPTS/bash/publish_plugin_release.sh" "$PLUGIN_NAME" "$VERSION" "$TODAY"
+
+      - name: Merge the release date
+        if: steps.prepare.outputs.publish_needed == 'true'
+        env:
+          RELEASE_APPROVER_TOKEN: ${{ secrets.approver-token }}
+          VERSION: ${{ steps.prepare.outputs.version }}
+        shell: bash
+        run: bash "$RELEASE_SCRIPTS/bash/merge_plugin_release_date_pr.sh" "$GITHUB_REF_NAME" "$VERSION"
