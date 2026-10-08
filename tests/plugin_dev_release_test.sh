@@ -11,6 +11,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 export PLUGIN_RELEASE_TODAY=2026-10-12
 export GITHUB_REPOSITORY=matomo-org/plugin-TestPlugin
+# On a runner prepare would write its outputs there, where the assertions below cannot see them.
+unset GITHUB_OUTPUT
 export GIT_AUTHOR_NAME=Test GIT_AUTHOR_EMAIL=test@example.com
 export GIT_COMMITTER_NAME=Test GIT_COMMITTER_EMAIL=test@example.com
 BOT=(GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="github-actions[bot]@users.noreply.github.com"
