@@ -226,6 +226,19 @@ else
   failures+=("a ref containing an @ still resolves the workflow path")
 fi
 
+# The guard runs from the caller's checkout, whose own yaml.py must not stand in for PyYAML.
+tests=$((tests + 1))
+SHADOW_ROOT="$WORK/shadow"
+mkdir -p "$SHADOW_ROOT/.github/workflows"
+printf 'name: CI\non: pull_request\njobs:\n  ci:\n%s\n' "$CALL" > "$SHADOW_ROOT/.github/workflows/ci.yml"
+printf 'raise SystemExit("planted yaml.py was imported")\n' > "$SHADOW_ROOT/yaml.py"
+if (cd "$SHADOW_ROOT" && bash "$GUARD" 'matomo-org/plugin-Foo/.github/workflows/ci.yml@refs/pull/1/merge' "$SHADOW_ROOT") >/dev/null 2>&1; then
+  echo "ok - a yaml.py in the caller's checkout is not imported"
+else
+  echo "FAIL - a yaml.py in the caller's checkout is not imported"
+  failures+=("a yaml.py in the caller's checkout is not imported")
+fi
+
 echo
 echo "$tests tests, ${#failures[@]} failures"
 [ ${#failures[@]} -eq 0 ] || exit 1

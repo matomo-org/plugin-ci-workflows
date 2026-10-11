@@ -27,7 +27,8 @@ error() {
     exit 1
 }
 
-if ! metadata=$(python3 -c 'import json; p = json.load(open("plugin.json", encoding="utf-8")); print(p["version"]); print(p["name"])' 2>&1); then
+# -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
+if ! metadata=$(python3 -P -c 'import json; p = json.load(open("plugin.json", encoding="utf-8")); print(p["version"]); print(p["name"])' 2>&1); then
     error "Could not read the version and name from plugin.json: $metadata"
 fi
 mapfile -t metadata_lines <<< "$metadata"
@@ -78,7 +79,9 @@ if (( branch_status == 0 )); then
         leave_alone "$BRANCH has commits from someone other than this workflow, so it was left alone."
     fi
     # Rebuilding the branch on another base would put that base's history into this pull request.
-    open_bases=$(gh pr list --head "$BRANCH" --state open --json baseRefName --jq '.[].baseRefName')
+    # --head also matches a fork's branch of the same name, which anyone can open a pull request from.
+    open_bases=$(gh pr list --head "$BRANCH" --state open --json baseRefName,isCrossRepository \
+        --jq '.[] | select(.isCrossRepository | not) | .baseRefName')
     while IFS= read -r open_base; do
         if [[ -n "$open_base" && "$open_base" != "$TARGET_BRANCH" ]]; then
             leave_alone "$BRANCH is proposed for $open_base, so it was left alone. Merge or close that pull request first."

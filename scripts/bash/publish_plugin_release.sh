@@ -41,7 +41,8 @@ release_status=$?
 set -e
 
 if [[ "$release_status" == 0 ]]; then
-    release_state=$(python3 - "$release_response" <<'PY'
+    # -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
+    release_state=$(python3 -P - "$release_response" <<'PY'
 import json
 import re
 import sys

@@ -26,7 +26,8 @@ trap 'rm -rf "$head_files"' EXIT
 git show HEAD:plugin.json > "$head_files/plugin.json"
 git show HEAD:CHANGELOG.md > "$head_files/CHANGELOG.md"
 
-metadata=$(python3 -c 'import json, sys; p = json.load(open(sys.argv[1], encoding="utf-8")); print(p["version"]); print(p["name"])' "$head_files/plugin.json")
+# -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
+metadata=$(python3 -P -c 'import json, sys; p = json.load(open(sys.argv[1], encoding="utf-8")); print(p["version"]); print(p["name"])' "$head_files/plugin.json")
 mapfile -t metadata_lines <<< "$metadata"
 if [[ "${metadata_lines[0]}" != "$VERSION" ]]; then
     error "HEAD is at version ${metadata_lines[0]}, not $VERSION."

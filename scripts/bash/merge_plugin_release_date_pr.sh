@@ -26,7 +26,13 @@ leave_open() {
     exit 0
 }
 
-pr=$(gh pr list --head "$BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+# --head also matches a fork's branch of the same name, which anyone can open a pull request from.
+find_pr() {
+    gh pr list --head "$BRANCH" --base "$BASE_BRANCH" --state open --json number,isCrossRepository \
+        --jq '[.[] | select(.isCrossRepository | not)][0].number // empty'
+}
+
+pr=$(find_pr)
 if [[ -z "$pr" ]]; then
     # Nothing to open when the base already had the date, or a person merged it before a resumed run.
     branch_status=0
@@ -45,7 +51,7 @@ if [[ -z "$pr" ]]; then
     fi
     gh pr create --base "$BASE_BRANCH" --head "$BRANCH" --title "Add release date for $VERSION" \
         --body "Dates the $VERSION changelog entry with the day it was released."
-    pr=$(gh pr list --head "$BRANCH" --base "$BASE_BRANCH" --state open --json number --jq '.[0].number // empty')
+    pr=$(find_pr)
     if [[ -z "$pr" ]]; then
         echo "::error::The release date pull request from $BRANCH was not found after opening it." >&2
         exit 1

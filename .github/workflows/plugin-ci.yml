@@ -237,7 +237,7 @@ jobs:
       # only ever report the package already present -- which is exactly what it does today, and
       # it would fail to locate anything on the day the image stops shipping it.
       - name: Install the YAML parser the guard needs
-        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+        run: python3 -P -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
 
       - name: Check the caller declares no concurrency of its own
         run: bash "$WORKFLOWS_DIR/scripts/bash/check_caller_concurrency.sh" "$GITHUB_WORKFLOW_REF" .

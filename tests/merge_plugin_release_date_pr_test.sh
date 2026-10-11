@@ -21,7 +21,15 @@ cat > "$FAKE_BIN/gh" <<'SH'
 set -euo pipefail
 printf '%s %s\n' "$GH_TOKEN" "$*" >> "$FAKE_GH_LOG"
 case "$*" in
-    'pr list '*) if [[ -n "$FAKE_PR" ]]; then echo "$FAKE_PR"; elif [[ -f "$FAKE_GH_LOG.pr" ]]; then cat "$FAKE_GH_LOG.pr"; fi ;;
+    'pr list '*)
+        # The last argument is the --jq filter, run for real over open pull requests from the branch.
+        number="$FAKE_PR"
+        if [[ -z "$number" && -f "$FAKE_GH_LOG.pr" ]]; then number=$(cat "$FAKE_GH_LOG.pr"); fi
+        prs='[]'
+        if [[ -n "${FAKE_FORK_PR:-}" ]]; then prs=$(jq -c --argjson n "$FAKE_FORK_PR" '. + [{number: $n, isCrossRepository: true}]' <<< "$prs"); fi
+        if [[ -n "$number" ]]; then prs=$(jq -c --argjson n "$number" '. + [{number: $n, isCrossRepository: false}]' <<< "$prs"); fi
+        jq -r "${*: -1}" <<< "$prs"
+        ;;
     'pr create '*) echo 35 > "$FAKE_GH_LOG.pr" ;;
     *'--jq .ahead_by') if [[ -z "$FAKE_AHEAD" ]]; then exit 1; fi; echo "$FAKE_AHEAD" ;;
     *'--json headRefOid'*) echo "$FAKE_HEAD" ;;
@@ -61,7 +69,7 @@ reset() {
     export FAKE_GH_LOG="$WORK/$1.log" OUT="$WORK/$1.out"
     : > "$FAKE_GH_LOG"
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_IDENTITIES="$BOT_EMAIL" FAKE_HELD_RUNS='' FAKE_CHECKS='success success' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
-    unset FAKE_REVIEW_STATUS FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN
+    unset FAKE_REVIEW_STATUS FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR
 }
 
 run() {
@@ -99,6 +107,18 @@ export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1
 run || fail "a refused approval leaves the pull request open, not failed"
 says '::warning::Release date pull request #35 was left open' || fail "a refused approval warns"
 if merged; then fail "nothing is merged after a refused approval"; fi
+
+reset fork
+export FAKE_FORK_PR=36
+run || fail "merging beside a fork's pull request succeeds"
+merged || fail "the repository's own pull request is merged, not the fork's"
+if grep -Eq ' pr (merge|review|view) 36' "$FAKE_GH_LOG"; then fail "a fork's pull request from the same branch name is never used"; fi
+
+reset fork-only
+export FAKE_PR='' FAKE_FORK_PR=36
+run || fail "opening beside a fork's pull request succeeds"
+grep -Fq 'pr create --base 6.x-dev' "$FAKE_GH_LOG" || fail "a fork's pull request does not stop the real one being opened"
+merged || fail "the pull request it opened is merged"
 
 reset none
 export FAKE_PR=''

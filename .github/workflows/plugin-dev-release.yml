@@ -64,7 +64,7 @@ jobs:
       # The guard fails closed without PyYAML; see plugin-ci.yml for why the install is conditional.
       - name: Install the YAML parser the guard needs
         shell: bash
-        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+        run: python3 -P -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
 
       - name: Check caller concurrency
         env:

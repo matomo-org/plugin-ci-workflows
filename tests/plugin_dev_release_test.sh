@@ -25,8 +25,15 @@ cat > "$FAKE_BIN/gh" <<'SH'
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 if [[ "$1 $2" == "pr list" && " $* " != *" --base "* ]]; then
-    # Listing a head's open pull requests prints their bases.
-    for base in ${FAKE_GH_HEAD_BASES:-}; do echo "$base"; done
+    # Listing a head's open pull requests runs the real --jq filter, the last argument, over them.
+    prs='[]'
+    for base in ${FAKE_GH_HEAD_BASES:-}; do
+        prs=$(jq -c --arg b "$base" '. + [{baseRefName: $b, isCrossRepository: false}]' <<< "$prs")
+    done
+    for base in ${FAKE_GH_FORK_BASES:-}; do
+        prs=$(jq -c --arg b "$base" '. + [{baseRefName: $b, isCrossRepository: true}]' <<< "$prs")
+    done
+    jq -r "${*: -1}" <<< "$prs"
 elif [[ "$1 $2" == "pr list" && -n "${FAKE_GH_OPEN_PR:-}" ]]; then
     echo "$FAKE_GH_OPEN_PR"
 elif [[ "$*" == *'/releases/tags/'* ]]; then
@@ -203,6 +210,13 @@ run open-other-base push_plugin_release_date.sh 6.x-dev || fail "a branch propos
 unset FAKE_GH_HEAD_BASES
 says open-other-base 'is proposed for 6.x-prod' || fail "the other base is named"
 
+new_repo open-fork '* 6.0.3 Three'
+git -C "$WORK/open-fork/clone" push -q origin 6.x-dev:refs/heads/automated/release-date-6.0.3
+export FAKE_GH_FORK_BASES=6.x-prod
+run open-fork push_plugin_release_date.sh 6.x-dev || { cat "$WORK/open-fork/out" >&2; fail "a fork's pull request does not stop the date being pushed"; }
+unset FAKE_GH_FORK_BASES
+[[ "$(date_branch_line open-fork)" == '* 6.0.3 - 2026-10-12 - Three' ]] || fail "the branch is dated despite a fork's pull request from the same name"
+
 # --- tag_plugin_dev_release.sh ---
 
 new_repo tag '* 6.0.3 Three'
@@ -224,6 +238,14 @@ if origin_has tag-dirty refs/tags/6.0.3; then fail "no tag is pushed for an unda
 
 new_repo tag-version '* 6.0.3 - 2026-10-12 - Three'
 if run tag-version tag_plugin_dev_release.sh 6.0.4 2026-10-12; then fail "a different version is not tagged"; fi
+
+# The scripts run from the plugin checkout, whose own json.py must not stand in for the real module.
+new_repo shadow '* 6.0.3 Three'
+printf 'raise SystemExit("planted json.py was imported")\n' > "$WORK/shadow/clone/json.py"
+run shadow check_plugin_release_date.sh 6.x-dev || { cat "$WORK/shadow/out" >&2; fail "the date check ignores a json.py in the plugin"; }
+run shadow prepare_plugin_dev_release.sh 6.x-dev || { cat "$WORK/shadow/out" >&2; fail "preparing ignores a json.py in the plugin"; }
+run shadow push_plugin_release_date.sh 6.x-dev || { cat "$WORK/shadow/out" >&2; fail "dating ignores a json.py in the plugin"; }
+run shadow tag_plugin_dev_release.sh 6.0.3 2026-10-12 || { cat "$WORK/shadow/out" >&2; fail "tagging ignores a json.py in the plugin"; }
 
 # --- check_plugin_release_date.sh ---
 

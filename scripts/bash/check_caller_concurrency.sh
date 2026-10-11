@@ -52,12 +52,13 @@ fi
 
 # Parsed, not grepped: a block this misses is a silently cancelled analysis, and both shapes of it
 # -- a bare group string and a mapping -- have to count.
-if ! python3 -c 'import yaml' 2>/dev/null; then
+# -P keeps the plugin checkout, the working directory, off the import path, so its yaml.py cannot stand in for the real module.
+if ! python3 -P -c 'import yaml' 2>/dev/null; then
   echo "PyYAML is not available, so the caller's concurrency cannot be checked" >&2
   exit 1
 fi
 
-python3 - "$CALLER_FILE" "$CALLER_PATH" "$UMBRELLA" <<'PY'
+python3 -P - "$CALLER_FILE" "$CALLER_PATH" "$UMBRELLA" <<'PY'
 import sys, yaml
 
 caller_file, caller_path, umbrella = sys.argv[1], sys.argv[2], sys.argv[3]

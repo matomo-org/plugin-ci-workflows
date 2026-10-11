@@ -38,7 +38,8 @@ if (( ${#workflow_files[@]} == 0 )) || ! grep -qF "$RELEASE_WORKFLOW" "${workflo
     exit 0
 fi
 
-if ! metadata=$(python3 -c 'import json; p = json.load(open("plugin.json", encoding="utf-8")); print(p["version"]); print(p["name"])' 2>&1); then
+# -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
+if ! metadata=$(python3 -P -c 'import json; p = json.load(open("plugin.json", encoding="utf-8")); print(p["version"]); print(p["name"])' 2>&1); then
     error plugin.json "Could not read the version and name from plugin.json: $metadata"
 fi
 mapfile -t metadata_lines <<< "$metadata"
