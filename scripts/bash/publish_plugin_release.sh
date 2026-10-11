@@ -28,6 +28,44 @@ trap 'rm -f "$release_notes" "$release_response" "$release_error"' EXIT
         "$GITHUB_REPOSITORY" "$VERSION"
 } > "$release_notes"
 
+# Prints true when VERSION is higher than the current latest release, or there is none, so a patch
+# on an older major never takes latest from a newer one. GitHub's own default is whichever was
+# published last.
+latest_flag() {
+    local response status=0 latest
+    response=$(gh api --include "repos/$GITHUB_REPOSITORY/releases/latest" 2>/dev/null) || status=$?
+    if (( status != 0 )); then
+        if grep -Eq '^HTTP/[0-9.]+[[:space:]]+404([[:space:]]|$)' <<< "$response"; then
+            echo true
+            return
+        fi
+        echo "Could not look up the latest GitHub Release." >&2
+        return 1
+    fi
+    # -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
+    latest=$(python3 -P -c '
+import json, re, sys
+for part in reversed(re.split(r"\r?\n\r?\n", sys.stdin.read())):
+    try:
+        payload = json.loads(part)
+    except json.JSONDecodeError:
+        continue
+    if isinstance(payload, dict) and "tag_name" in payload:
+        print(payload["tag_name"])
+        break
+' <<< "$response")
+    if [[ -z "$latest" ]]; then
+        echo "GitHub returned a latest release without a tag." >&2
+        return 1
+    fi
+    latest="${latest#v}"
+    if [[ "$latest" != "$VERSION" && "$(printf '%s\n%s\n' "$latest" "$VERSION" | sort -V | tail -n 1)" == "$VERSION" ]]; then
+        echo true
+    else
+        echo false
+    fi
+}
+
 # Takes the release's id and its author's login. The name and notes are left alone: a maintainer may
 # have edited them.
 mark_published() {
@@ -35,10 +73,12 @@ mark_published() {
         echo "::warning::The unpublished GitHub Release for $VERSION was made by $2, so it was left for them to publish."
         return
     fi
+    local make_latest
+    make_latest=$(latest_flag)
     gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$1" \
         --field draft=false \
         --field prerelease=false \
-        --raw-field make_latest=false >/dev/null
+        --raw-field "make_latest=$make_latest" >/dev/null
 }
 
 set +e
@@ -92,12 +132,13 @@ elif grep -Eq '^HTTP/[0-9.]+[[:space:]]+404([[:space:]]|$)' "$release_response";
     if [[ -n "${draft_id:-}" ]]; then
         mark_published "$draft_id" "${draft_author:-}"
     else
+        make_latest=$(latest_flag)
         gh release create "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --title "$PLUGIN_NAME $VERSION" \
             --notes-file "$release_notes" \
-            --latest=false
+            "--latest=$make_latest"
     fi
 else
     cat "$release_error" >&2

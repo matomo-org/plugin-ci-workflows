@@ -148,9 +148,9 @@ check(
     "--match-head-commit" in script("scripts/bash/merge_plugin_release_date_pr.sh"),
 )
 check(
-    "the published release never becomes the latest",
-    "--latest=false" in script("scripts/bash/publish_plugin_release.sh")
-    and "--raw-field make_latest=false" in script("scripts/bash/publish_plugin_release.sh"),
+    "the published release is only marked latest when it is the highest version",
+    '"--latest=$make_latest"' in script("scripts/bash/publish_plugin_release.sh")
+    and '--raw-field "make_latest=$make_latest"' in script("scripts/bash/publish_plugin_release.sh"),
 )
 
 check_jobs = check_doc.get("jobs") or {}

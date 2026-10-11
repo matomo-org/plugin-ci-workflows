@@ -543,7 +543,7 @@ The branch list is deliberately explicit rather than every `*.x-dev` branch a re
 `plugin-dev-release.yml` releases a plugin from its `N.x-dev` branch when `plugin.json` carries a stable version that has no tag yet. Merge the version bump with its `CHANGELOG.md` entry undated or marked Unreleased, such as `* 6.0.8 - Fix the export`, `## [6.0.8]`, `## v6.0.8 TBD` or `## 6.0.8 Unreleased`, and the run:
 
 1. dates the entry with the day it runs, in UTC, on `automated/release-date-<version>`;
-2. tags that commit and publishes its GitHub Release, not marked latest, but leaves a draft or prerelease someone else made for that version to them;
+2. tags that commit and publishes its GitHub Release, marked latest only when its version is higher than the current latest release, but leaves a draft or prerelease someone else made for that version to them;
 3. opens a pull request bringing the date into the branch, approves its held checks and sets it to merge once the branch protection's required checks pass.
 
 A version the workflow tagged is finished by later runs until its release is published and its date is on the branch, even after `plugin.json` has moved on: each run publishes the release and opens or merges the pull request from the tagged commit.
