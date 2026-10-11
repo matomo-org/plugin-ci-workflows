@@ -31,7 +31,7 @@ UNRELEASED_PATTERN = re.compile(
     # The lookahead keeps free text such as "Unreleased features" from being read as the marker. It
     # applies only to the bare words: on a parenthesized marker, backtracking would leave the ")" behind.
     r"^(?P<prefix>\s*(?:-\s*)?)"
-    r"(?:\(unreleased\)|\(not\s+yet\s+released\)|(?:unreleased|not\s+yet\s+released)(?=\s*(?:$|[^\w\s])))"
+    r"(?:\((?:unreleased|not\s+yet\s+released|tb[ad])\)|(?:unreleased|not\s+yet\s+released|tb[ad])(?=\s*(?:$|[^\w\s])))"
     r"(?P<suffix>.*)$",
     re.IGNORECASE,
 )
@@ -52,8 +52,8 @@ def version_line_pattern(version, plugin_name=None):
     labels = ["Version"] + ([re.escape(plugin_name)] if plugin_name else [])
     return re.compile(
         rf"^(?P<prefix>\s*(?:#{{1,6}}\s+|[-*+]\s+)?)(?P<label>(?:{'|'.join(labels)})\s+)?"
-        rf"(?P<emphasis>_{{0,2}}|\*{{0,2}})"
-        rf"{re.escape(version)}(?![0-9.]|[-+][A-Za-z0-9])(?P=emphasis)(?P<rest>.*)$"
+        rf"(?P<emphasis>_{{0,2}}|\*{{0,2}})(?P<bracket>\[)?(?P<v>v?)"
+        rf"{re.escape(version)}(?![0-9.]|[-+][A-Za-z0-9])(?(bracket)\](?![(\[]))(?P=emphasis)(?P<rest>.*)$"
     )
 
 
@@ -79,6 +79,15 @@ def date_from_match(date_match, release_date=None):
     return parsed_date.isoformat()
 
 
+def valid_date(date_match, version):
+    try:
+        return date_from_match(date_match)
+    except ValueError:
+        raise ValueError(
+            f"The changelog entry for {version} has an invalid date: {date_match.group(0)}"
+        ) from None
+
+
 def read_date(changelog, version, plugin_name=None):
     version_line = version_line_pattern(version, plugin_name)
     with changelog.open("r", encoding="utf-8", newline="") as changelog_file:
@@ -91,7 +100,7 @@ def read_date(changelog, version, plugin_name=None):
             date_match = DATE_PATTERN.match(rest.lstrip(DATE_LEAD))
             if not date_match:
                 break
-            return date_from_match(date_match)
+            return valid_date(date_match, version)
     raise ValueError(f"No release date found for version {version}")
 
 
@@ -111,6 +120,8 @@ def update_date(changelog, version, release_date, plugin_name=None):
         rest = match.group("rest")
         date_match = DATE_PATTERN.match(rest.lstrip(DATE_LEAD))
         if date_match:
+            # Replacing an impossible date would hide that the entry was dated by hand.
+            valid_date(date_match, version)
             date_offset = len(rest) - len(rest.lstrip(DATE_LEAD))
             replacement_date = release_date
             if date_match.group("slash"):
@@ -145,7 +156,10 @@ def update_date(changelog, version, release_date, plugin_name=None):
             match.group("prefix")
             + (match.group("label") or "")
             + match.group("emphasis")
+            + (match.group("bracket") or "")
+            + match.group("v")
             + version
+            + ("]" if match.group("bracket") else "")
             + match.group("emphasis")
             + updated_rest
         )

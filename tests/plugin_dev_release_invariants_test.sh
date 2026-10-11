@@ -66,7 +66,7 @@ check("the release job has a timeout", isinstance(release.get("timeout-minutes")
 check(
     "the release job grants only what releasing and merging need",
     release.get("permissions")
-    == {"actions": "write", "checks": "read", "contents": "write", "pull-requests": "write"},
+    == {"actions": "write", "contents": "write", "pull-requests": "write"},
 )
 concurrency = release_doc.get("concurrency") or {}
 check(

@@ -35,6 +35,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install the YAML parser the release date check needs
+        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
       - name: Check changelog dating
         run: bash tests/update_changelog_date_test.sh
       - name: Check release preparation, dating, tagging and the release date check

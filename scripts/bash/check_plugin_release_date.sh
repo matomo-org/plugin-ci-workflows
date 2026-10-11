@@ -33,9 +33,38 @@ expected_major="${BASH_REMATCH[1]}"
 
 shopt -s nullglob
 workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
-if (( ${#workflow_files[@]} == 0 )) || ! grep -qF "$RELEASE_WORKFLOW" "${workflow_files[@]}"; then
+# -P keeps the plugin checkout, the working directory, off the import path, so its yaml.py cannot stand in for the real module.
+if ! python3 -P -c 'import yaml' 2>/dev/null; then
+    echo "::error::PyYAML is not available, so the plugin's workflows cannot be read." >&2
+    exit 1
+fi
+# Parsed, not grepped, so a commented-out call does not count. Exits 3 when no job calls it, so an
+# unreadable workflow cannot pass as a plugin that does not.
+calls_status=0
+calls_error=$(python3 -P - "$RELEASE_WORKFLOW" "${workflow_files[@]}" 2>&1 <<'PY') || calls_status=$?
+import sys, yaml
+target = sys.argv[1]
+for path in sys.argv[2:]:
+    try:
+        with open(path, encoding='utf-8') as handle:
+            doc = yaml.safe_load(handle)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
+        sys.exit(f'{path}: {error}')
+    jobs = doc.get('jobs') if isinstance(doc, dict) else None
+    if not isinstance(jobs, dict):
+        continue
+    for job in jobs.values():
+        uses = job.get('uses') if isinstance(job, dict) else None
+        if isinstance(uses, str) and '@' in uses and (uses.split('@', 1)[0] + '@').endswith(target):
+            sys.exit(0)
+sys.exit(3)
+PY
+if (( calls_status == 3 )); then
     echo "This plugin does not call plugin-dev-release.yml, so its changelog dates are its own."
     exit 0
+elif (( calls_status != 0 )); then
+    echo "::error::Could not read the plugin's workflows: $calls_error" >&2
+    exit 1
 fi
 
 # -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.

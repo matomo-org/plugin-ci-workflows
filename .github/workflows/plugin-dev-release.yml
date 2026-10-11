@@ -2,9 +2,9 @@
 #
 # Its CHANGELOG.md entry is merged undated or Unreleased (Plugins CI's release date check fails one
 # dated by hand). This dates it on automated/release-date-<version>, tags and publishes that commit,
-# then opens a pull request bringing the date into the branch and merges it once its checks pass,
-# if the branch protection lets this token or the approver token do so. Otherwise the pull request
-# is left open for a person, with a warning; the release never waits on that merge.
+# then opens a pull request bringing the date into the branch and sets it to merge once the branch
+# protection's required checks pass, if it lets this token or the approver token do so. Otherwise
+# the pull request is left open for a person, with a warning; the release never waits on that merge.
 #
 # The caller owns the triggers: a weekly schedule, workflow_dispatch, and plugin-branch-sweep.yml to
 # dispatch it on the other maintained branch, since a schedule only runs on the default branch.
@@ -38,7 +38,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       actions: write # approve the held checks on the release date pull request
-      checks: read # wait for those checks
       contents: write # push the release date branch and the tag, publish the release
       pull-requests: write # open and merge the release date pull request
     timeout-minutes: 20
@@ -98,7 +97,7 @@ jobs:
       - name: Prepare release
         id: prepare
         shell: bash
-        run: bash "$RELEASE_SCRIPTS/bash/prepare_plugin_dev_release.sh" "$GITHUB_REF_NAME"
+        run: bash "$RELEASE_SCRIPTS/bash/prepare_plugin_dev_release.sh" "$GITHUB_REF"
 
       - name: Date the release
         if: steps.prepare.outputs.release_needed == 'true'
@@ -119,16 +118,29 @@ jobs:
         if: steps.prepare.outputs.publish_needed == 'true'
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
+          FINISH: ${{ steps.prepare.outputs.finish }}
           PLUGIN_NAME: ${{ steps.prepare.outputs.plugin_name }}
-          TODAY: ${{ steps.prepare.outputs.today }}
-          VERSION: ${{ steps.prepare.outputs.version }}
         shell: bash
-        run: bash "$RELEASE_SCRIPTS/bash/publish_plugin_release.sh" "$PLUGIN_NAME" "$VERSION" "$TODAY"
+        run: |
+          set -uo pipefail
+          # One version failing must not hold back the versions after it.
+          status=0
+          for release in $FINISH; do
+            bash "$RELEASE_SCRIPTS/bash/publish_plugin_release.sh" "$PLUGIN_NAME" "${release%%:*}" "${release#*:}" || status=1
+          done
+          exit "$status"
 
       - name: Merge the release date
         if: steps.prepare.outputs.publish_needed == 'true'
         env:
+          FINISH: ${{ steps.prepare.outputs.finish }}
           RELEASE_APPROVER_TOKEN: ${{ secrets.approver-token }}
-          VERSION: ${{ steps.prepare.outputs.version }}
         shell: bash
-        run: bash "$RELEASE_SCRIPTS/bash/merge_plugin_release_date_pr.sh" "$GITHUB_REF_NAME" "$VERSION"
+        run: |
+          set -uo pipefail
+          # One version failing must not hold back the versions after it.
+          status=0
+          for release in $FINISH; do
+            bash "$RELEASE_SCRIPTS/bash/merge_plugin_release_date_pr.sh" "$GITHUB_REF_NAME" "${release%%:*}" || status=1
+          done
+          exit "$status"

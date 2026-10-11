@@ -174,4 +174,41 @@ for heading in '## 6.0.2 – 2026-09-20' '## 6.0.2 - 20.09.2026' '## 6.0.2 - Sep
     assert_contains "$heading" "$WORK/unsupported-date.md"
 done
 
+while IFS='|' read -r heading dated; do
+    printf '## Changelog\n\n%s\n' "$heading" > "$WORK/heading-form.md"
+    python3 "$SCRIPT" "$WORK/heading-form.md" 6.0.2 2026-09-21 > /dev/null
+    assert_contains "$dated" "$WORK/heading-form.md"
+    [[ "$(python3 "$SCRIPT" --read-date "$WORK/heading-form.md" 6.0.2)" == 2026-09-21 ]]
+done <<'CASES'
+## [6.0.2]|## [6.0.2] - 2026-09-21
+## [6.0.2] - Fixes|## [6.0.2] - 2026-09-21 - Fixes
+## v6.0.2|## v6.0.2 - 2026-09-21
+* 6.0.2 - TBD|* 6.0.2 - 2026-09-21
+## 6.0.2 (TBA)|## 6.0.2 - 2026-09-21
+CASES
+
+# An unmatched bracket is not the version heading, and a date after a linked one would break the link.
+for heading in '## [6.0.2' '## [6.0.2](https://example.com/compare/6.0.1...6.0.2)' '## [6.0.2][compare]'; do
+    printf '## Changelog\n\n%s\n' "$heading" > "$WORK/open-bracket.md"
+    if python3 "$SCRIPT" "$WORK/open-bracket.md" 6.0.2 2026-09-21 2> /dev/null; then
+        echo "The heading '$heading' must not be dated" >&2
+        exit 1
+    fi
+done
+
+for heading in '* 6.0.2 - 2026-13-45' '* 6.0.2 - 31/02/2026'; do
+    printf '## Changelog\n\n%s\n' "$heading" > "$WORK/invalid-date.md"
+    if python3 "$SCRIPT" "$WORK/invalid-date.md" 6.0.2 2026-09-21 2> "$WORK/invalid-date-error"; then
+        echo "The impossible date in '$heading' must fail rather than be replaced" >&2
+        exit 1
+    fi
+    grep -Fq 'has an invalid date' "$WORK/invalid-date-error"
+    assert_contains "$heading" "$WORK/invalid-date.md"
+    if python3 "$SCRIPT" --read-date "$WORK/invalid-date.md" 6.0.2 2> "$WORK/invalid-date-error"; then
+        echo "The impossible date in '$heading' must not read as a date" >&2
+        exit 1
+    fi
+    grep -Fq 'has an invalid date' "$WORK/invalid-date-error"
+done
+
 echo 'All changelog date tests passed.'

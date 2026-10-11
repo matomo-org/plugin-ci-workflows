@@ -190,7 +190,13 @@ jobs:
     # three to four seconds AFTER the `push` run, on the pull request being opened and on a later
     # push to it, so the failing suite was the newest and the verdict held. That ordering is not
     # documented and the margin is seconds, so this is recorded rather than relied on.
-    if: ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request' }}
+    # The release date pull request plugin-dev-release.yml opens has no person to fill in the
+    # checklist; its merge script refuses it unless it only dates CHANGELOG.md.
+    if: >-
+      ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request'
+      && !(startsWith(github.head_ref, 'automated/release-date-')
+      && github.event.pull_request.user.login == 'github-actions[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository) }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ai-checklist.yml@main
     permissions:
       actions: read

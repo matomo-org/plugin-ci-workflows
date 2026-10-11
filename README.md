@@ -81,7 +81,7 @@ jobs:
 
 **The `push` and `workflow_dispatch` triggers are what make a build badge mean anything**, and they follow the shape `matomo-tests.yml` already uses across the fleet. A workflow that only runs on `pull_request` never runs on the default branch, so GitHub's badge — which takes the newest run on any branch when it cannot find one on the default branch — reports whichever pull request someone opened last. That is why `plugin-LogViewer`'s PHPStan badge reads *failing* off a feature branch while its `6.x-dev` is fine. With the triggers above, one `?branch=6.x-dev` badge on this workflow says whether the plugin's checks pass on the branch that ships.
 
-The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs on all three, but the timezone scan gates only on a pull request, where it compares with the base branch; on a push or a dispatch it reports findings without failing on them.
+The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. It is also skipped on the [weekly release](#weekly-release)'s own release date pull request, which no person describes. Everything else runs on all three, but the timezone scan gates only on a pull request, where it compares with the base branch; on a push or a dispatch it reports findings without failing on them.
 
 Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-compatibility`, `skip-license-check`, `skip-min-php-lint`, `skip-timezone-safety`, `skip-release-date` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Most inputs the individual workflows take are passed through; the four that take a PHP version are named `phpcs-php-version`, `phpstan-php-version`, `compatibility-php-version` and `min-php-lint-php-version`. PHPStan and the compatibility check share `dependent-plugins` and `matomo-targets`. The optional timezone regression job is called separately from a plugin's test workflow so it does not rerun on description edits in this umbrella.
 
@@ -540,25 +540,25 @@ The branch list is deliberately explicit rather than every `*.x-dev` branch a re
 
 ### Weekly release
 
-`plugin-dev-release.yml` releases a plugin from its `N.x-dev` branch when `plugin.json` carries a stable version that has no tag yet. Merge the version bump with its `CHANGELOG.md` entry undated or marked Unreleased, such as `* 6.0.8 - Fix the export` or `## 6.0.8 Unreleased`, and the run:
+`plugin-dev-release.yml` releases a plugin from its `N.x-dev` branch when `plugin.json` carries a stable version that has no tag yet. Merge the version bump with its `CHANGELOG.md` entry undated or marked Unreleased, such as `* 6.0.8 - Fix the export`, `## [6.0.8]`, `## v6.0.8 TBD` or `## 6.0.8 Unreleased`, and the run:
 
 1. dates the entry with the day it runs, in UTC, on `automated/release-date-<version>`;
-2. tags that commit and publishes its GitHub Release, not marked latest;
-3. opens a pull request bringing the date into the branch, approves its held checks, waits for them and merges it.
+2. tags that commit and publishes its GitHub Release, not marked latest, but leaves a draft or prerelease someone else made for that version to them;
+3. opens a pull request bringing the date into the branch, approves its held checks and sets it to merge once the branch protection's required checks pass.
 
-A run that fails after tagging is picked up by the next one, which publishes the release and opens or merges the pull request from the tagged commit.
+A version the workflow tagged is finished by later runs until its release is published and its date is on the branch, even after `plugin.json` has moved on: each run publishes the release and opens or merges the pull request from the tagged commit.
 
-When the branch protection does not let it merge, or a check fails or is still running after ten minutes, the pull request is left open for a person with a warning. The release is out either way. It only merges the commit it tagged, with a merge commit so that commit stays on the branch, and never a pull request that changes more than `CHANGELOG.md`.
+The pull request merges through auto-merge, so turn on the repository setting "Allow auto-merge"; without it, a pull request waiting on required checks is left open. When the branch protection does not let it merge, the pull request is left open for a person with a warning. The release is out either way. It only merges the commit it tagged, with a merge commit so that commit stays on the branch, and never a pull request that changes more than `CHANGELOG.md`.
 
 `GITHUB_TOKEN` opens the pull request, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests". Its checks are then held for approval, which the workflow gives.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `workflows-ref` | no | `main` | Ref of this repository for the release scripts |
+| `workflows-ref` | no | `main` | Ref of this repository for the release scripts. When `uses:` is pinned to a commit, pin this to the same commit, or the scripts still run from `main` |
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. Not yet exercised end to end |
+| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. Scope it to the one plugin repository: a fine-grained token, or a GitHub App, with contents and pull requests read and write. Not yet exercised end to end |
 
 ```yaml
 name: Weekly release
@@ -579,7 +579,6 @@ jobs:
   release:
     permissions:
       actions: write
-      checks: read
       contents: write
       pull-requests: write
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main
