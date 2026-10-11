@@ -175,7 +175,7 @@ if grep -Fq 'pr create' "$FAKE_GH_LOG"; then fail "no pull request is opened wit
 
 reset stale
 export FAKE_PR=''
-git -C "$WORK/origin.git" branch -q -f automated/release-date-6.0.3 "$(git -C "$WORK/origin.git" commit-tree -p "$TAGGED" -m later "$TAGGED^{tree}")"
+git -C "$WORK/origin.git" branch -q -f automated/release-date-6.0.3 "$(git -c user.name=Test -c user.email=test@example.com -C "$WORK/origin.git" commit-tree -p "$TAGGED" -m later "$TAGGED^{tree}")"
 run || fail "a date branch that moved on from the tag is not a failure"
 git -C "$WORK/origin.git" branch -q -f automated/release-date-6.0.3 "$TAGGED"
 says 'has moved on from the commit tagged 6.0.3' || fail "a moved date branch says why"

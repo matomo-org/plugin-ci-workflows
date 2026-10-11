@@ -178,7 +178,11 @@ if ! { says prepare-earlier 'release_needed=true' && says prepare-earlier 'versi
 fi
 
 mkdir "$WORK/prepare-earlier/bin"
-printf '#!/bin/bash\n[[ "$1" == fetch ]] && exit 128\nexec %s "$@"\n' "$(command -v git)" > "$WORK/prepare-earlier/bin/git"
+cat > "$WORK/prepare-earlier/bin/git" <<SH
+#!/bin/bash
+[[ "\$1" == fetch ]] && exit 128
+exec $(command -v git) "\$@"
+SH
 chmod +x "$WORK/prepare-earlier/bin/git"
 if PATH="$WORK/prepare-earlier/bin:$PATH" run prepare-earlier prepare_plugin_dev_release.sh refs/heads/6.x-dev; then
     fail "a tag that cannot be fetched fails rather than passing as someone else's"
