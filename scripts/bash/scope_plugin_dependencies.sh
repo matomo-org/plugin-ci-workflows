@@ -33,7 +33,7 @@ SCOPER_URL=https://github.com/matomo-org/matomo-scoper.git
 # The scoper's output is committed as code the plugin ships, and nobody reads a vendor/prefixed diff
 # line by line, so what runs is pinned rather than taken from a branch. The phar is the build the
 # pinned scoper downloads (its ScopeCommand::PHP_SCOPER_URL); move all three together.
-SCOPER_PINNED_REF=45ab803e32a44cde075cb64b552e2401a5d532b4
+SCOPER_PINNED_REF=e7639f86f16db608f4cbf3bfb8b13f2c5cb674a4
 PHP_SCOPER_URL=https://github.com/matomo-org/php-scoper/releases/download/custom-build-2/php-scoper.phar
 PHP_SCOPER_SHA256=0a130dacec0845f43225bcf4dba6c492b8257081089533723dd39fde130db3da
 
