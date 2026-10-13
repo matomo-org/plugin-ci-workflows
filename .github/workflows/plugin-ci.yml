@@ -51,6 +51,11 @@ on:
         required: false
         type: boolean
         default: false
+      skip-release-date:
+        description: "Do not run the release date check, which only fails a plugin that calls plugin-dev-release.yml"
+        required: false
+        type: boolean
+        default: false
 
       # --- pass-through, named per check because four of them take a php-version ---
       phpcs-php-version:
@@ -111,7 +116,7 @@ on:
         type: string
         default: 'main'
       workflows-ref:
-        description: "Ref of this repository for the timezone checker, pre-push hook, PHPStan bootstrap, caller concurrency guard, plugin floor resolver and compatibility test generator"
+        description: "Ref of this repository for the timezone checker, pre-push hook, PHPStan bootstrap, caller concurrency guard, plugin floor resolver, compatibility test generator and release date check"
         required: false
         type: string
         default: 'main'
@@ -185,7 +190,13 @@ jobs:
     # three to four seconds AFTER the `push` run, on the pull request being opened and on a later
     # push to it, so the failing suite was the newest and the verdict held. That ordering is not
     # documented and the margin is seconds, so this is recorded rather than relied on.
-    if: ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request' }}
+    # The release date pull request plugin-dev-release.yml opens has no person to fill in the
+    # checklist; its merge script refuses it unless it only dates CHANGELOG.md.
+    if: >-
+      ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request'
+      && !(startsWith(github.head_ref, 'automated/release-date-')
+      && github.event.pull_request.user.login == 'github-actions[bot]'
+      && github.event.pull_request.head.repo.full_name == github.repository) }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ai-checklist.yml@main
     permissions:
       actions: read
@@ -232,7 +243,7 @@ jobs:
       # only ever report the package already present -- which is exactly what it does today, and
       # it would fail to locate anything on the day the image stops shipping it.
       - name: Install the YAML parser the guard needs
-        run: python3 -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+        run: python3 -P -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
 
       - name: Check the caller declares no concurrency of its own
         run: bash "$WORKFLOWS_DIR/scripts/bash/check_caller_concurrency.sh" "$GITHUB_WORKFLOW_REF" .
@@ -328,6 +339,16 @@ jobs:
       plugin-name: ${{ inputs.plugin-name }}
       workflows-ref: ${{ inputs.workflows-ref }}
       timezone-regression-exempt: ${{ inputs.timezone-regression-exempt }}
+
+  # Passes in a plugin that does not call plugin-dev-release.yml, so a plugin opts in by adopting
+  # the weekly release and the check needs no input of its own.
+  release-date:
+    if: ${{ !inputs.skip-release-date }}
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-release-date-check.yml@main
+    permissions:
+      contents: read
+    with:
+      workflows-ref: ${{ inputs.workflows-ref }}
 
 # Codex review is not called from here, and should not be. It runs on `pull_request_target` with
 # secrets available, gated on a label; every check above runs on `pull_request`. Putting both in
