@@ -5,7 +5,7 @@
 # same tree. Run composer install or composer update in the plugin first; the scoper prefixes
 # whatever the unprefixed vendor/ tree holds.
 #
-# Needs php 8.1 or later, composer, jq, git and curl on PATH. It sets up no PHP of its own, so it never changes the PHP
+# Needs php 8.1 or later, composer, jq, git and curl on PATH, and python3 for downgrade-php auto below Matomo 6. It sets up no PHP of its own, so it never changes the PHP
 # that later steps of the caller's job run on.
 
 name: Scope plugin dependencies
@@ -17,7 +17,7 @@ inputs:
     required: false
     default: '.'
   downgrade-php:
-    description: "PHP version to transpile vendor/prefixed down to: 'auto' reads it from plugin.json (8.1 when the plugin requires Matomo 6 or later, 7.3 otherwise), 'none' skips Rector, or pass 7.3 or 8.1."
+    description: "PHP version to transpile vendor/prefixed down to: 'auto' reads it from the plugin (8.1 when it requires Matomo 6 or later, or PHP 8.1 or later, 7.3 otherwise), 'none' skips Rector, or pass 7.3 or 8.1."
     required: false
     default: 'auto'
   allowed-unprefixed-namespaces:

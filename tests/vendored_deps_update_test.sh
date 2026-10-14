@@ -548,6 +548,198 @@ expect_gaps "a class in PHP's Soap namespace is listed" 0 "vendor/prefixed/foo/s
 dir=$(floor_plugin floor-union '' '// FINDING method.notFound Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail().')
 expect_gaps "a method the floor lacks on a union of PHP classes is listed" 0 "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined method DateTime|DateTimeImmutable::modifyOrFail()." "$dir"
 
+# What OWN_MEMBERS_FILE receives, beside what the check prints.
+expect_own() {
+  local description="$1" want_own="$2" want="$3" dir="$4"
+  tests=$((tests + 1))
+  local output own="$WORK/own-members"
+  rm -f "$own"
+  echo '{"name": "Foo"}' > "$dir/plugin.json"
+  output=$(OWN_MEMBERS_FILE="$own" PHPSTAN_VERSION="$WORK/phpstan-version" bash "$GAPS" "$dir" 8.1 "$WORK/phpstan/phpstan" 2>/dev/null)
+  if [ "$output" != "$want" ] || [ "$(cat "$own" 2>/dev/null)" != "$want_own" ]; then
+    echo "FAIL - $description (printed '$output', wrote '$(cat "$own" 2>/dev/null)')"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+OWN='// FINDING staticMethod.notFound Call to an undefined static method Matomo\Dependencies\Foo\League\Uri\UriScheme::tryFrom().'
+dir=$(floor_plugin own-static '' "$OWN")
+expect_own "a static method the tree's own class lacks goes to OWN_MEMBERS_FILE" "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined static method Matomo\\Dependencies\\Foo\\League\\Uri\\UriScheme::tryFrom()." '' "$dir"
+# shellcheck disable=SC2016 # PHP source, not shell.
+dir=$(floor_plugin own-property '' '// FINDING property.notFound Access to an undefined property Matomo\Dependencies\Foo\Idna\Error::$value.')
+expect_own "a property the tree's own class lacks goes to OWN_MEMBERS_FILE" "vendor/prefixed/foo/src/Bar.php${TAB}Access to an undefined property Matomo\\Dependencies\\Foo\\Idna\\Error::\$value." '' "$dir"
+dir=$(floor_plugin own-known "$OWN" "$OWN")
+expect_own "a use of a missing member the earlier tree already made is not reported" '' '' "$dir"
+dir=$(floor_plugin own-class '' '// FINDING class.notFound Instantiated class Matomo\Dependencies\Foo\Optional not found.')
+expect_own "a missing class of the tree is not reported, since optional packages are not installed" '' '' "$dir"
+dir=$(floor_plugin own-other-plugin '' '// FINDING staticMethod.notFound Call to an undefined static method Matomo\Dependencies\Bar\UriScheme::tryFrom().')
+expect_own "a class under another plugin's prefix is not the tree's own" '' '' "$dir"
+dir=$(floor_plugin own-subclass '' '// FINDING method.notFound Call to an undefined method Matomo\Dependencies\Foo\MyDate::modifyOrFail().')
+expect_own "a newer PHP method called through a scoped subclass of PHP's class is not the tree's own" '' '' "$dir"
+dir=$(floor_plugin own-and-php '' "$FN"$'\n'"$OWN")
+expect_own "a PHP gap is still printed beside an own-member finding" "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined static method Matomo\\Dependencies\\Foo\\League\\Uri\\UriScheme::tryFrom()." "vendor/prefixed/foo/src/Bar.php${TAB}Function array_find not found." "$dir"
+dir=$(floor_plugin own-unset '' "$OWN")
+echo '{"name": "Foo"}' > "$dir/plugin.json"
+expect_gaps "without OWN_MEMBERS_FILE an own-member finding is not printed" 0 '' "$dir"
+
+UNLOADABLE="$ROOT/scripts/bash/find_new_unloadable_classes.sh"
+
+# A plugin whose committed vendor/prefixed autoloads src/ under Matomo\Dependencies\Foo: Square
+# implements Shape, Optional implements an interface the tree does not install, and Guarded throws
+# when loaded. The rebuild is whatever the caller then writes.
+loadable_plugin() {
+  local dir="$WORK/$1"
+  rm -rf "$dir"
+  mkdir -p "$dir/vendor/prefixed/vendor" "$dir/vendor/prefixed/src"
+  cat > "$dir/vendor/prefixed/vendor/autoload.php" <<'PHP'
+<?php
+spl_autoload_register(function ($class) {
+    $prefix = 'Matomo\\Dependencies\\Foo\\';
+    $file = __DIR__ . '/../src/' . str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+    if (strpos($class, $prefix) === 0 && is_file($file)) {
+        require $file;
+    } elseif ($class === 'Legacy') {
+        require __DIR__ . '/../src/Legacy.php';
+    }
+});
+PHP
+  printf '<?php\n\nclass Legacy\n{\n}\n' > "$dir/vendor/prefixed/src/Legacy.php"
+  # shellcheck disable=SC2016 # PHP source, not shell.
+  printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\ninterface Shape\n{\n    public function with($x): self;\n}\n' > "$dir/vendor/prefixed/src/Shape.php"
+  # shellcheck disable=SC2016 # PHP source, not shell.
+  printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Square implements Shape\n{\n    public function with($x): Shape { return $this; }\n}\n' > "$dir/vendor/prefixed/src/Square.php"
+  printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Optional implements Missing\\Thing\n{\n}\n' > "$dir/vendor/prefixed/src/Optional.php"
+  printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nthrow new \\LogicException("install something else");\nclass Guarded\n{\n}\n' > "$dir/vendor/prefixed/src/Guarded.php"
+  git -C "$dir" init -q
+  git -C "$dir" add vendor
+  git -C "$dir" -c user.email=t@t -c user.name=t commit -qm base
+  echo "$dir"
+}
+# Square as Rector left it in OAuth2's 5.x rebuild, without the return type its interface keeps.
+UNTYPED_SQUARE=$'<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Square implements Shape\n{\n    public function with($x) { return $this; }\n}\n'
+expect_unloadable() {
+  local description="$1" want_status="$2" pattern="$3" dir="$4"
+  tests=$((tests + 1))
+  local output status
+  output=$(bash "$UNLOADABLE" "$dir" 2>/dev/null)
+  status=$?
+  # Joined into one line, so that a pattern can span the classes.
+  if [ "$status" -ne "$want_status" ] || ! grep -qE -- "$pattern" <<< "$(paste -sd ' ' - <<< "${output:-<none>}")"; then
+    echo "FAIL - $description (exited $status, wanted $want_status): '$output'"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+
+dir=$(loadable_plugin unloadable-same)
+expect_unloadable "a tree whose classes all load as before lists nothing" 0 '^<none>$' "$dir"
+
+dir=$(loadable_plugin unloadable-untyped)
+printf '%s' "$UNTYPED_SQUARE" > "$dir/vendor/prefixed/src/Square.php"
+expect_unloadable "a class that loaded before and now fails to link is listed" 0 \
+  $'^Matomo\\\\Dependencies\\\\Foo\\\\Square\tDeclaration of Matomo\\\\Dependencies\\\\Foo\\\\Square::with\\(\\$x\\) must be compatible' "$dir"
+
+dir=$(loadable_plugin unloadable-after-fatal)
+# shellcheck disable=SC2016 # PHP source, not shell.
+printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Triangle implements Shape\n{\n    public function with($x): Shape { return $this; }\n}\n' > "$dir/vendor/prefixed/src/Triangle.php"
+git -C "$dir" add vendor/prefixed/src/Triangle.php
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm triangle
+printf '%s' "$UNTYPED_SQUARE" > "$dir/vendor/prefixed/src/Square.php"
+sed -i.bak 's/: Shape {/ {/' "$dir/vendor/prefixed/src/Triangle.php" && rm -f "$dir/vendor/prefixed/src/Triangle.php.bak"
+expect_unloadable "a class after one that ended the process is still loaded" 0 $' Matomo\\\\Dependencies\\\\Foo\\\\Triangle\t' "$dir"
+
+dir=$(loadable_plugin unloadable-known)
+expect_unloadable "a class that already failed to load before is not listed" 0 '^<none>$' "$dir"
+
+dir=$(loadable_plugin unloadable-new)
+printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Integration implements Missing\\Other\n{\n}\n' > "$dir/vendor/prefixed/src/Integration.php"
+expect_unloadable "a class the rebuild adds that never loads is not listed" 0 '^<none>$' "$dir"
+
+dir=$(loadable_plugin unloadable-removed)
+rm "$dir/vendor/prefixed/src/Square.php"
+expect_unloadable "a class the rebuild removes is not listed" 0 '^<none>$' "$dir"
+
+dir=$(loadable_plugin unloadable-autoloader)
+printf '<?php\nthrow new \\RuntimeException("broken autoloader");\n' > "$dir/vendor/prefixed/vendor/autoload.php"
+expect_unloadable "an autoloader that no longer runs is listed" 0 $'^\\(vendor/autoload.php\\)\t' "$dir"
+
+dir=$(loadable_plugin unloadable-first)
+git -C "$dir" rm -rq --cached vendor
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm 'no tree'
+printf '%s' "$UNTYPED_SQUARE" > "$dir/vendor/prefixed/src/Square.php"
+expect_unloadable "a first scoping lists every class that fails to load, and exits 3" 3 \
+  $'^Matomo\\\\Dependencies\\\\Foo\\\\Guarded\t.*Matomo\\\\Dependencies\\\\Foo\\\\Optional\t.*Matomo\\\\Dependencies\\\\Foo\\\\Square\t' "$dir"
+
+dir=$(loadable_plugin unloadable-base-autoloader)
+printf '<?php\nthrow new \\RuntimeException("broken autoloader");\n' > "$dir/vendor/prefixed/vendor/autoload.php"
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qam 'broken autoloader'
+git -C "$dir" checkout -q HEAD~1 -- vendor/prefixed/vendor/autoload.php
+printf '%s' "$UNTYPED_SQUARE" > "$dir/vendor/prefixed/src/Square.php"
+expect_unloadable "an earlier autoloader that does not run lists every class that fails to load, and exits 4" 4 \
+  $'Matomo\\\\Dependencies\\\\Foo\\\\Square\t' "$dir"
+
+dir=$(loadable_plugin unloadable-base-no-autoloader)
+git -C "$dir" rm -q --cached vendor/prefixed/vendor/autoload.php
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qm 'no autoloader'
+printf '%s' "$UNTYPED_SQUARE" > "$dir/vendor/prefixed/src/Square.php"
+expect_unloadable "an earlier tree without an autoloader lists every class that fails to load, and exits 4" 4 \
+  $'Matomo\\\\Dependencies\\\\Foo\\\\Square\t' "$dir"
+
+dir=$(loadable_plugin unloadable-stray-output)
+printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\necho "stray";\nclass Sq\n{\n}\n' > "$dir/vendor/prefixed/src/Sq.php"
+git -C "$dir" add vendor && git -C "$dir" -c user.email=t@t -c user.name=t commit -qm noisy
+printf '%s' "$UNTYPED_SQUARE" > "$dir/vendor/prefixed/src/Square.php"
+expect_unloadable "a class that prints without a newline does not hide the next one" 0 \
+  $'^Matomo\\\\Dependencies\\\\Foo\\\\Square\t' "$dir"
+
+dir=$(loadable_plugin unloadable-moved)
+rm "$dir/vendor/prefixed/src/Square.php"
+mkdir "$dir/vendor/prefixed/src/Shapes"
+printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Square\n{\n}\n' > "$dir/vendor/prefixed/src/Shapes/Square.php"
+expect_unloadable "a class the autoloader no longer finds is listed" 0 \
+  $'^Matomo\\\\Dependencies\\\\Foo\\\\Square\tThe autoloader did not find it.$' "$dir"
+
+dir=$(loadable_plugin unloadable-ignored)
+git -C "$dir" rm -q --cached vendor/prefixed/src/Shape.php
+echo 'vendor/prefixed/src/Shape.php' > "$dir/.gitignore"
+expect_unloadable "a class that needs a file the pull request would not commit is listed" 0 \
+  $'^Matomo\\\\Dependencies\\\\Foo\\\\Square\tError: Interface "?Matomo' "$dir"
+
+dir=$(loadable_plugin unloadable-global)
+printf '<?php\n\nclass Legacy implements Missing\n{\n}\n' > "$dir/vendor/prefixed/src/Legacy.php"
+expect_unloadable "a class in the global namespace is loaded too" 0 $'^Legacy\tError: Interface "?Missing"? not found' "$dir"
+
+dir=$(loadable_plugin unloadable-one-line)
+# shellcheck disable=SC2016 # PHP source, not shell.
+printf '<?php namespace Matomo\\Dependencies\\Foo; final class Square implements Shape { public function with($x): Shape { return $this; } }\n' > "$dir/vendor/prefixed/src/Square.php"
+git -C "$dir" -c user.email=t@t -c user.name=t commit -qam 'one line'
+# shellcheck disable=SC2016 # PHP source, not shell.
+printf '<?php namespace Matomo\\Dependencies\\Foo; final class Square implements Shape { public function with($x) { return $this; } }\n' > "$dir/vendor/prefixed/src/Square.php"
+expect_unloadable "a class declared on the line that opens its file is loaded too" 0 \
+  $'^Matomo\\\\Dependencies\\\\Foo\\\\Square\t.*must be compatible' "$dir"
+
+tests=$((tests + 1))
+dir=$(loadable_plugin unloadable-slow)
+printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nsleep(10);\nclass Slow\n{\n}\n' > "$dir/vendor/prefixed/src/Slow.php"
+if LOAD_TIMEOUT=2 bash "$UNLOADABLE" "$dir" > /dev/null 2>&1; [ "$?" -eq 1 ]; then
+  echo "ok - a class that takes too long to load stops the check"
+else
+  echo "FAIL - a class that takes too long to load stops the check"
+  failures+=("a class that takes too long to load stops the check")
+fi
+
+tests=$((tests + 1))
+dir=$(loadable_plugin unloadable-paths)
+printf '%s' "$UNTYPED_SQUARE" > "$dir/vendor/prefixed/src/Square.php"
+if bash "$UNLOADABLE" "$dir" 2>/dev/null | grep -qF "$dir"; then
+  echo "FAIL - a message does not name where the tree was checked out"
+  failures+=("a message does not name where the tree was checked out")
+else
+  echo "ok - a message does not name where the tree was checked out"
+fi
+
 dir=$(floor_plugin floor-slow '' "$FN")
 tests=$((tests + 1))
 if PHPSTAN_TIMEOUT=1 PHPSTAN_SLEEP=5 PHPSTAN_VERSION="$WORK/phpstan-version" bash "$GAPS" "$dir" 8.1 "$WORK/phpstan/phpstan" > /dev/null 2> "$WORK/slow.err"; then
@@ -641,15 +833,16 @@ fi
 
 # The downgrade target, from the script's dry run, which stops before anything is installed.
 expect_downgrade() {
-  local description="$1" matomo_constraint="$2" input="$3" want="$4"
+  local description="$1" matomo_constraint="$2" input="$3" want="$4" php="${5:-}" platform="${6:-}"
   tests=$((tests + 1))
   local dir="$WORK/downgrade" got
   rm -rf "$dir"
   mkdir -p "$dir"
-  if [ -n "$matomo_constraint" ]; then
-    jq -n --arg c "$matomo_constraint" '{name: "Foo", require: {matomo: $c}}' > "$dir/plugin.json"
-  else
-    echo '{"name": "Foo"}' > "$dir/plugin.json"
+  jq -n --arg c "$matomo_constraint" --arg php "$php" \
+    '{name: "Foo", require: ((if $c != "" then {matomo: $c} else {} end) + (if $php != "" then {php: $php} else {} end))}' \
+    > "$dir/plugin.json"
+  if [ -n "$platform" ]; then
+    jq -n --arg p "$platform" '{config: {platform: {php: $p}}}' > "$dir/composer.json"
   fi
   : > "$WORK/output"
   if ! GITHUB_OUTPUT="$WORK/output" bash "$SCOPE" --dry-run --downgrade-php="$input" "$dir" > /dev/null 2>&1; then
@@ -677,6 +870,27 @@ expect_downgrade "the lowest of several ranges decides when it comes last" '>=6.
 expect_downgrade "a caret requirement on Matomo 6 is transpiled to 8.1" '^6.0' auto 8.1
 expect_downgrade "a tilde requirement on Matomo 5 is transpiled to 7.3" '~5.0' auto 7.3
 expect_downgrade "a bound with no minor version still counts" '>=6,<7' auto 8.1
+expect_downgrade "a Matomo 5 plugin that needs PHP 8.1 is transpiled to 8.1" '>=5.0.0-b1,<6.0.0-b1' auto 8.1 '>=8.1.0'
+expect_downgrade "a Matomo 5 plugin that needs PHP 8.2 is transpiled to 8.1" '>=5.0.0-b1,<6.0.0-b1' auto 8.1 '>=8.2.0'
+expect_downgrade "a Matomo 5 plugin whose composer platform is 8.2 is transpiled to 8.1" '>=5.0.0-b1,<6.0.0-b1' auto 8.1 '' 8.2.0
+expect_downgrade "the lower of plugin.json and composer.json decides" '>=5.0.0-b1,<6.0.0-b1' auto 7.3 '>=7.2.5' 8.2.0
+expect_downgrade "a Matomo 5 plugin that needs PHP 7.4 is transpiled to 7.3" '>=5.0.0-b1,<6.0.0-b1' auto 7.3 '>=7.4'
+expect_downgrade "a Matomo 5 plugin that needs PHP 8.0 is transpiled to 7.3" '>=5.0.0-b1,<6.0.0-b1' auto 7.3 '>=8.0'
+expect_downgrade "a PHP 9 floor counts as above 8.1" '>=5.0.0-b1,<6.0.0-b1' auto 8.1 '>=9.0'
+expect_downgrade "a PHP floor does not override an explicit target" '>=5.0.0-b1,<6.0.0-b1' 7.3 7.3 '>=8.1.0'
+expect_downgrade "a PHP floor does not override none" '>=5.0.0-b1,<6.0.0-b1' none '' '>=8.1.0'
+
+tests=$((tests + 1))
+dir="$WORK/downgrade-unreadable"
+rm -rf "$dir" && mkdir -p "$dir"
+echo '{"name": "Foo", "require": {"matomo": ">=5.0.0-b1,<6.0.0-b1"}}' > "$dir/plugin.json"
+echo '{"config": ' > "$dir/composer.json"
+if ! output=$(GITHUB_OUTPUT=/dev/null bash "$SCOPE" --dry-run "$dir" 2>&1) || ! grep -q "Could not read .*composer.json" <<< "$output"; then
+  echo "FAIL - a floor that cannot be read says why"
+  failures+=("a floor that cannot be read says why")
+else
+  echo "ok - a floor that cannot be read says why"
+fi
 
 tests=$((tests + 1))
 echo '{"name": "Foo", "require": {"matomo": "*"}}' > "$WORK/downgrade/plugin.json"
@@ -1221,6 +1435,7 @@ expect_body() {
   rm -f "$body"
   if ! (cd "$WORK/workspace" && RUNNER_TEMP="$WORK/body-runner" PLUGIN_DIR="$dir" PLUGIN_NAME=Foo BASE_SHA="$base" DOWNGRADE="${BODY_DOWNGRADE-8.1}" FLOOR_PHP_VERSION="${BODY_FLOOR_PHP_VERSION-${BODY_DOWNGRADE-8.1}}" \
     PHPSTAN="$WORK/phpstan/phpstan" PHPSTAN_VERSION="$WORK/phpstan-version" FLOOR_PHP="$floor_php" \
+    LOAD_CHECKED="${BODY_LOAD_CHECKED-true}" LOAD_PHP_VERSION="${BODY_DOWNGRADE-8.1}" \
     GITHUB_RUN_ID=1 GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r bash -eo pipefail "$WORK/body-step.sh") > /dev/null 2>&1; then
     echo "FAIL - $description (the step failed)"
     failures+=("$description")
@@ -1296,6 +1511,11 @@ if [ -e "$WORK/phpstan-version" ]; then
 else
   echo "ok - PHPStan does not run when the floor PHP could not be set up"
 fi
+dir=$(make_plugin body-no-load-php)
+BODY_LOAD_CHECKED=false expect_body "the pull request says when the classes could not be loaded on the floor" "$dir" 'were not checked to still load on PHP 8.1' yes
+expect_body "the pull request says nothing about loading when the classes were loaded" "$dir" 'were not checked to still load' no
+BODY_LOAD_CHECKED=none expect_body "the pull request says nothing about loading on a first scoping" "$dir" 'were not checked to still load' no
+BODY_DOWNGRADE='' BODY_LOAD_CHECKED='' expect_body "the pull request says nothing about loading when nothing was transpiled" "$dir" 'were not checked to still load' no
 dir=$(floor_plugin body-73 "$FN" "$FN")
 BODY_DOWNGRADE=7.3 BODY_FLOOR_PHP_VERSION=7.4 expect_body "the pull request says a 7.3 floor was checked on 7.4" "$dir" 'does not report what PHP 7.4 added' yes
 dir=$(floor_plugin body-81 "$FN" "$FN")
@@ -1390,6 +1610,42 @@ check("a floor PHP that cannot be set up skips the check, not the pull request",
       floor.get('id') == 'floor-php' and floor.get('continue-on-error') is True
       and body['env'].get('FLOOR_PHP') == '${{ steps.floor-php.outcome }}'
       and names.index('Setup the floor PHP') + 1 == names.index('Write the pull request body'))
+load = step('Check the rebuilt classes load on the floor PHP')
+load_php = step('Setup the PHP the classes load on')
+check("the rebuilt classes are loaded on the floor itself, set up just before, and not on PHPStan's PHP",
+      names.index(load_php['name']) + 1 == names.index(load['name']) < names.index(floor['name'])
+      and load_php.get('id') == 'load-php' and load_php.get('continue-on-error') is True
+      and load_php['with'] == {**floor['with'], 'php-version': '${{ steps.floor-version.outputs.load }}'}
+      and load['if'] == floor['if'] == load_php['if']
+      and load.get('id') == 'load-check' and load['env'] == {'BASE_SHA': '${{ steps.update.outputs.base-sha }}',
+                          'FLOOR_PHP': '${{ steps.load-php.outcome }}',
+                          'FLOOR_PHP_VERSION': '${{ steps.floor-version.outputs.load }}'})
+def load_check(outcome, listing, status):
+    import os, subprocess, tempfile
+    with tempfile.TemporaryDirectory() as cwd, tempfile.NamedTemporaryFile('r') as out:
+        os.makedirs(cwd + '/.plugin-ci-workflows/scripts/bash')
+        with open(cwd + '/.plugin-ci-workflows/scripts/bash/find_new_unloadable_classes.sh', 'w') as stub:
+            stub.write(f"printf '%s' '{listing}'\nexit {status}\n")
+        done = subprocess.run(['bash', '-eo', 'pipefail', '-c', load['run']], cwd=cwd, capture_output=True, text=True,
+                              env={**os.environ, 'FLOOR_PHP': outcome, 'FLOOR_PHP_VERSION': '8.1',
+                                   'PLUGIN_DIR': 'plugin', 'BASE_SHA': 'abc', 'GITHUB_OUTPUT': out.name})
+        checked = [l for l in out.read().splitlines() if l.startswith('checked=')]
+        load_check.checked = checked[-1][len('checked='):] if checked else None
+        return done.returncode, done.stdout
+check("a class that no longer loads fails the run, with % escaped in its annotation",
+      load_check('success', 'A\\B\tFatal 100%', 0)
+      == (1, '::error::A\\B loaded before the rebuild and no longer does on PHP 8.1: Fatal 100%25\n'))
+check("a tree whose classes load as before passes", load_check('success', '', 0) == (0, '') and load_check.checked == 'true')
+check("a first scoping lists the classes that fail to load without failing",
+      load_check('success', 'A\\B\tFatal', 3)[0] == 0 and load_check.checked == 'none')
+check("an earlier tree whose autoloader does not run lists the classes and records that they were not checked",
+      load_check('success', 'A\\B\tFatal', 4)[0] == 0 and load_check.checked == 'false')
+check("a loader that cannot run warns and records that the classes were not checked",
+      load_check('success', '', 1)[0] == 0 and load_check.checked == 'false')
+check("a floor PHP that could not be set up skips the load check and records it",
+      load_check('failure', 'A\\B\tFatal', 0)[0] == 0 and load_check.checked == 'false')
+check("own-member findings stop the pull request body",
+      'OWN_MEMBERS_FILE="$own"' in body['run'] and 'own="$RUNNER_TEMP/own-members.txt"' in body['run'])
 check("the floor PHP is set up only when there is a floor, with no coverage driver",
       "steps.scope.outputs.downgrade-php-version != ''" in floor['if'] and floor['with'].get('coverage') == 'none')
 version = step('Choose the floor PHP')
@@ -1399,8 +1655,8 @@ def chosen(downgrade):
         subprocess.run(['bash', '-eo', 'pipefail', '-c', version['run']], check=True,
                        env={**os.environ, 'DOWNGRADE': downgrade, 'GITHUB_OUTPUT': out.name})
         return out.read()
-check("a 7.3 floor is set up on 7.4, and any other on itself",
-      chosen('7.3') == 'php=7.4\n' and chosen('8.1') == 'php=8.1\n' and version['if'] == floor['if'])
+check("PHPStan checks a 7.3 floor on 7.4 and any other on itself, and the classes load on the floor",
+      chosen('7.3') == 'php=7.4\nload=7.3\n' and chosen('8.1') == 'php=8.1\nload=8.1\n' and version['if'] == floor['if'])
 check("the setup and the body read the floor PHP from the one step",
       version.get('id') == 'floor-version'
       and floor['with']['php-version'] == '${{ steps.floor-version.outputs.php }}'

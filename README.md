@@ -47,6 +47,7 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`scripts/bash/check_scoped_tree.sh`](#scope-dependencies) | Standalone script | Checks a rebuilt `vendor/prefixed` tree is really scoped and really new |
 | [`scripts/bash/find_new_unprefixed_strings.sh`](#scope-dependencies) | Standalone script | Lists strings a rebuild added that name a scoped namespace without the prefix |
 | [`scripts/bash/find_new_floor_php_gaps.sh`](#vendored-dependencies-update) | Standalone script | Lists uses of PHP a rebuild added that the plugin's floor does not have |
+| [`scripts/bash/find_new_unloadable_classes.sh`](#vendored-dependencies-update) | Standalone script | Lists classes in a rebuilt `vendor/prefixed` that loaded before the rebuild and no longer do |
 | [`hooks/pre-push`](#the-pre-push-hook) | Local git hook | Runs PHPStan over a push's own changed files, before the push leaves the machine |
 
 ### Plugins CI
@@ -595,6 +596,8 @@ Before the update, the run compares the platform it resolves against with the pl
 
 Rector transpiles the rebuilt tree's syntax down to the plugin's floor, but not what newer PHP added to the standard library, so a release that starts calling `array_find()` or `json_validate()` still transpiles, and fails at runtime on the floor. The pull request lists each such use the rebuild added, found by `scripts/bash/find_new_floor_php_gaps.sh`: PHPStan, run on the floor PHP with the floor as `phpVersion`, over the tree before and after the rebuild. Only PHP's own functions, classes and members are kept, since a scoped tree refers to many packages it does not install, and only uses the rebuilt tree makes more often than the earlier tree did, listed for each file that makes them more often, since every tree already makes some guarded uses. It warns rather than fails, because a use behind a `function_exists()` or version check is fine. PHPStan gets five minutes for each tree, and past that the pull request says the check could not run. A global function or class is taken as PHP's own, so one from a package the plugin does not install is listed too. A method the floor lacks is missed when it is called through a scoped subclass, since PHPStan names the subclass rather than PHP's class. It cannot see members of extension classes whose stubs are incomplete, such as `ZipArchive`, and a 7.3 floor is checked on PHP 7.4, the oldest PHPStan runs on, so what 7.4 added is not reported. With `downgrade-php: none` nothing is checked.
 
+Two kinds of breakage fail the run instead of opening a pull request, because each is a fatal error for whatever touches it. First, every class in the rebuilt tree is loaded on the floor PHP by `scripts/bash/find_new_unloadable_classes.sh`, and a class that loaded before the rebuild and no longer does fails the run: linting reads one file at a time, so it misses a class whose method lost a return type its interface keeps. Classes that never loaded, such as integrations with packages the plugin does not install, are not counted. Second, the PHPStan pass above also fails the run when the rebuilt tree newly uses an enum's `from()`, `tryFrom()`, `cases()`, `->value` or `->name` on a class of the tree itself that lacks it, as when Rector turns an enum into a class of constants. When the floor PHP cannot be set up or a check cannot run, it is skipped, and the run and the pull request say so.
+
 The rebuild can run code the dependencies it installs ship, such as a Composer plugin, so it runs in a job with read-only permissions and hands the rebuilt `composer.lock` and `vendor/` to a second job as an artifact. Only that second job holds the write token, and it runs nothing from the dependencies. The caller still grants `contents: write` and `pull-requests: write`, as in the example, for the second job to use.
 
 ### Scope dependencies
@@ -602,7 +605,7 @@ The rebuild can run code the dependencies it installs ship, such as a Composer p
 `actions/scope-dependencies` rebuilds `vendor/prefixed` from whatever the plugin's unprefixed `vendor/` holds, so run `composer install` or `composer update` in the plugin first, passing the minimum PHP as [above](#vendored-dependencies-update) when `composer.json` pins no platform. The action runs `scripts/bash/scope_plugin_dependencies.sh`, which does what DevPluginCommands' `process-dependencies` command does, without Matomo's console:
 
 1. It scopes the dependencies with matomo-scoper, which also writes the `vendor/autoload.php` proxy.
-2. It transpiles `vendor/prefixed` with Rector, using the Rector version locked in `actions/scope-dependencies/tools` and the config in `actions/scope-dependencies/rector.php`. With `auto`, the target is 8.1 when the lowest Matomo that plugin.json accepts is 6 or later, and 7.3 otherwise.
+2. It transpiles `vendor/prefixed` with Rector, using the Rector version locked in `actions/scope-dependencies/tools` and the config in `actions/scope-dependencies/rector.php`. With `auto`, the target is 8.1 when the lowest Matomo that plugin.json accepts is 6 or later, or when the lowest PHP that plugin.json's `require.php` or composer.json's `config.platform.php` declares is 8.1 or later, and 7.3 otherwise.
 3. It runs `scripts/bash/check_scoped_tree.sh`, which fails on any of the following, each of which has happened locally while the tools reported success:
    - `vendor/autoload.php` is no longer the scoper's proxy.
    - A namespace under `vendor/prefixed` is outside `Matomo\Dependencies\<plugin>` and not on the allowed list.
@@ -610,12 +613,12 @@ The rebuild can run code the dependencies it installs ship, such as a Composer p
 
    It also warns, without failing, about each string literal the rebuild added that names a scoped namespace without the prefix, such as `'phpseclib3\\Math\\BigInteger'`. php-scoper does not rewrite class names built in strings, so a plugin's `scoper.inc.php` patchers do, and a patcher matching literal text silently stops working when a release builds the name another way. Every scoped tree already holds harmless strings like these, in error messages and comments, so only strings the tree at `HEAD` held nowhere are reported, which also keeps a file a release moved from being reported again. The comparison ignores the quotes, the escaping and a leading separator, so a string a release only rewrites in another form is not reported either. The [vendored dependencies update](#vendored-dependencies-update) also lists the first 50 in its pull request, for whoever merges it to check.
 
-It needs `php` 8.1 or later, `composer`, `jq`, `git` and `curl` on `PATH`, and sets up no PHP of its own, so the PHP of the steps after it is unchanged. Matomo core and DevPluginCommands aren't needed, and neither is any secret.
+It needs `php` 8.1 or later, `composer`, `jq`, `git` and `curl` on `PATH`, and `python3` when `downgrade-php` is `auto` on a plugin that supports Matomo 5, and sets up no PHP of its own, so the PHP of the steps after it is unchanged. Matomo core and DevPluginCommands aren't needed, and neither is any secret.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `plugin-path` | no | `.` | Path to the plugin, which must be a git checkout |
-| `downgrade-php` | no | `auto` | `auto` reads the target from plugin.json, `none` skips Rector, or pass `7.3` or `8.1` |
+| `downgrade-php` | no | `auto` | `auto` reads the target from plugin.json and the composer platform, `none` skips Rector, or pass `7.3` or `8.1` |
 | `allowed-unprefixed-namespaces` | no | `''` | Whitespace-separated namespaces allowed to stay global in `vendor/prefixed`, besides `Composer\Autoload`, which is always allowed |
 | `scoper-ref` | no | `''` | Ref of matomo-org/matomo-scoper. Empty uses the commit the script pins |
 
