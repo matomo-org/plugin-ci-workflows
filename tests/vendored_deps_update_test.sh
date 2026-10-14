@@ -566,6 +566,7 @@ expect_own() {
 OWN='// FINDING staticMethod.notFound Call to an undefined static method Matomo\Dependencies\Foo\League\Uri\UriScheme::tryFrom().'
 dir=$(floor_plugin own-static '' "$OWN")
 expect_own "a static method the tree's own class lacks goes to OWN_MEMBERS_FILE" "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined static method Matomo\\Dependencies\\Foo\\League\\Uri\\UriScheme::tryFrom()." '' "$dir"
+# shellcheck disable=SC2016 # PHP source, not shell.
 dir=$(floor_plugin own-property '' '// FINDING property.notFound Access to an undefined property Matomo\Dependencies\Foo\Idna\Error::$value.')
 expect_own "a property the tree's own class lacks goes to OWN_MEMBERS_FILE" "vendor/prefixed/foo/src/Bar.php${TAB}Access to an undefined property Matomo\\Dependencies\\Foo\\Idna\\Error::\$value." '' "$dir"
 dir=$(floor_plugin own-known "$OWN" "$OWN")
@@ -604,7 +605,9 @@ spl_autoload_register(function ($class) {
 });
 PHP
   printf '<?php\n\nclass Legacy\n{\n}\n' > "$dir/vendor/prefixed/src/Legacy.php"
+  # shellcheck disable=SC2016 # PHP source, not shell.
   printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\ninterface Shape\n{\n    public function with($x): self;\n}\n' > "$dir/vendor/prefixed/src/Shape.php"
+  # shellcheck disable=SC2016 # PHP source, not shell.
   printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Square implements Shape\n{\n    public function with($x): Shape { return $this; }\n}\n' > "$dir/vendor/prefixed/src/Square.php"
   printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Optional implements Missing\\Thing\n{\n}\n' > "$dir/vendor/prefixed/src/Optional.php"
   printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nthrow new \\LogicException("install something else");\nclass Guarded\n{\n}\n' > "$dir/vendor/prefixed/src/Guarded.php"
@@ -639,6 +642,7 @@ expect_unloadable "a class that loaded before and now fails to link is listed" 0
   $'^Matomo\\\\Dependencies\\\\Foo\\\\Square\tDeclaration of Matomo\\\\Dependencies\\\\Foo\\\\Square::with\\(\\$x\\) must be compatible' "$dir"
 
 dir=$(loadable_plugin unloadable-after-fatal)
+# shellcheck disable=SC2016 # PHP source, not shell.
 printf '<?php\nnamespace Matomo\\Dependencies\\Foo;\n\nclass Triangle implements Shape\n{\n    public function with($x): Shape { return $this; }\n}\n' > "$dir/vendor/prefixed/src/Triangle.php"
 git -C "$dir" add vendor/prefixed/src/Triangle.php
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qm triangle
@@ -708,8 +712,10 @@ printf '<?php\n\nclass Legacy implements Missing\n{\n}\n' > "$dir/vendor/prefixe
 expect_unloadable "a class in the global namespace is loaded too" 0 $'^Legacy\tError: Interface "?Missing"? not found' "$dir"
 
 dir=$(loadable_plugin unloadable-one-line)
+# shellcheck disable=SC2016 # PHP source, not shell.
 printf '<?php namespace Matomo\\Dependencies\\Foo; final class Square implements Shape { public function with($x): Shape { return $this; } }\n' > "$dir/vendor/prefixed/src/Square.php"
 git -C "$dir" -c user.email=t@t -c user.name=t commit -qam 'one line'
+# shellcheck disable=SC2016 # PHP source, not shell.
 printf '<?php namespace Matomo\\Dependencies\\Foo; final class Square implements Shape { public function with($x) { return $this; } }\n' > "$dir/vendor/prefixed/src/Square.php"
 expect_unloadable "a class declared on the line that opens its file is loaded too" 0 \
   $'^Matomo\\\\Dependencies\\\\Foo\\\\Square\t.*must be compatible' "$dir"
