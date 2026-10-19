@@ -55,6 +55,16 @@ on:
         required: false
         type: string
         default: 'main'
+      bump-version:
+        description: "Record the update in plugin.json and CHANGELOG.md: bump a released version to its next patch with a new changelog entry, or add to the entry of a version not yet released. The entry is left undated."
+        required: false
+        type: boolean
+        default: true
+      changelog-entry:
+        description: "The changelog line bump-version adds."
+        required: false
+        type: string
+        default: 'Updated dependencies'
     secrets:
       DEPS_PR_TOKEN:
         description: >-
@@ -100,6 +110,7 @@ jobs:
       base-sha: ${{ steps.update.outputs.base-sha }}
       update-head: ${{ steps.branch.outputs.head }}
       artifact: ${{ steps.update.outputs.artifact }}
+      bump-sha256: ${{ steps.bump.outputs.sha256 }}
     steps:
       - name: Check out the plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -279,6 +290,102 @@ jobs:
             printf '%s\n' "${result//[$'\r\n']/ }"
           fi
 
+      # Before the update, so no dependency code has run yet: the pull-request job trusts this step's
+      # outputs, and checks the bumped files against the hash among them. Never fails the run: a
+      # version left alone is something a person can add, and an update held back is not.
+      - name: Bump the plugin version
+        id: bump
+        if: ${{ inputs.bump-version && steps.branch.outputs.skip != 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENTRY: ${{ inputs.changelog-entry }}
+          WORKFLOWS_REF: ${{ inputs.workflows-ref }}
+          BUMP: .plugin-ci-workflows/scripts/python/bump_plugin_version.py
+        run: |
+          # On copies, so the rebuild and the checks after it see the plugin as committed.
+          work="$RUNNER_TEMP/bump"
+          rm -rf "$work"
+          mkdir -p "$work"
+          for file in plugin.json CHANGELOG.md; do
+            if [ -f "$PLUGIN_DIR/$file" ] && [ ! -L "$PLUGIN_DIR/$file" ]; then
+              cp "$PLUGIN_DIR/$file" "$work/"
+            fi
+          done
+          # A version is released once it is tagged. A changelog date says nothing either way: plenty
+          # of released versions have none.
+          version=$(jq -r '.version // empty' "$work/plugin.json" 2>/dev/null) || version=''
+          released=unreleased
+          note=''
+          unchecked="The version was not bumped, because whether $version is released could not be checked."
+          if [ ! -f "$BUMP" ]; then
+            note="The version was not bumped, because workflows-ref '$WORKFLOWS_REF' does not have scripts/python/bump_plugin_version.py."
+          elif [ -z "${ENTRY//[[:space:]]/}" ]; then
+            note="The version was not bumped, because the changelog-entry input is empty."
+          elif ! [[ "$version" =~ ^[0-9A-Za-z.+-]+$ ]]; then
+            note="The version was not bumped, because plugin.json has no version to look up."
+          else
+            for tag in "$version" "v$version"; do
+              if out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .ref 2>&1); then
+                released=released
+                break
+              fi
+              case "$out" in
+                *"HTTP 404"*) ;;
+                *)
+                  echo "::warning::Could not look up tag $tag: ${out//[$'\r\n']/ }"
+                  note="$unchecked"
+                  break
+                  ;;
+              esac
+            done
+            # A plugin.json behind its tags would otherwise be bumped to a version already released.
+            if [ -z "$note" ] && [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              next="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((10#${BASH_REMATCH[3]} + 1))"
+              for tag in "$next" "v$next"; do
+                if out=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq .ref 2>&1); then
+                  note="The version was not bumped, because $next is already tagged while plugin.json says $version."
+                  break
+                fi
+                case "$out" in
+                  *"HTTP 404"*) ;;
+                  *)
+                    echo "::warning::Could not look up tag $tag: ${out//[$'\r\n']/ }"
+                    note="The version was not bumped, because whether $next is already released could not be checked."
+                    break
+                    ;;
+                esac
+              done
+            fi
+            # With no tags at all, an untagged version says nothing about whether it was released.
+            if [ -z "$note" ] && [ "$released" = unreleased ]; then
+              if ! count=$(gh api "repos/$GITHUB_REPOSITORY/tags?per_page=1" --jq length 2>&1); then
+                echo "::warning::Could not list the repository's tags: ${count//[$'\r\n']/ }"
+                note="$unchecked"
+              elif [ "$count" = 0 ]; then
+                note="$unchecked The repository has no tags."
+              fi
+            fi
+          fi
+          if [ -z "$note" ]; then
+            status=0
+            # The script comes from the caller's workflows-ref, so it gets no token.
+            note=$(env -u GH_TOKEN python3 -I "$BUMP" "$work" "$released" "$ENTRY") || status=$?
+            if [ "$status" -ne 0 ] && [ "$status" -ne 3 ]; then
+              echo "::warning::bump_plugin_version.py exited $status."
+              note="The version was not bumped, because the script that bumps it failed; the run's log says why."
+            elif [ "$status" -eq 0 ] && ! { cmp -s "$work/plugin.json" "$PLUGIN_DIR/plugin.json" \
+              && cmp -s "$work/CHANGELOG.md" "$PLUGIN_DIR/CHANGELOG.md"; }; then
+              echo "sha256=$(cd "$work" && sha256sum plugin.json CHANGELOG.md | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          printf '%s\n' "$note"
+          if [[ "$note" == "The version was not bumped"* ]]; then
+            note+=" This changes code the plugin ships, so it needs the usual changelog entry and version bump before release."
+          fi
+          # On one line, so it cannot add an output of its own.
+          echo "note=${note//[$'\r\n']/ }" >> "$GITHUB_OUTPUT"
+
       # A full update also runs post-update-cmd, which is where plugins trim
       # google/apiclient-services with Google\Task\Composer::cleanup.
       - name: Update dependencies
@@ -384,6 +491,7 @@ jobs:
           PHPSTAN: ${{ runner.temp }}/scope-dependencies/rector/vendor/bin/phpstan
           FLOOR_PHP: ${{ steps.floor-php.outcome }}
           FLOOR_PHP_VERSION: ${{ steps.floor-version.outputs.php }}
+          BUMP_NOTE: ${{ steps.bump.outputs.note }}
         run: |
           body="$RUNNER_TEMP/pull-request-body.md"
           if [ -n "$DOWNGRADE" ]; then
@@ -468,7 +576,11 @@ jobs:
               echo "The check for PHP $DOWNGRADE ran on PHP $checked_on, the oldest PHPStan supports, so it does not report what PHP $checked_on added."
               echo
             fi
-            echo "This changes code the plugin ships, so it needs the usual changelog entry and version bump before release. Pushing either to this branch stops the scheduled update from refreshing it."
+            if [ -n "$BUMP_NOTE" ]; then
+              echo "$BUMP_NOTE Pushing to this branch stops the scheduled update from refreshing it."
+            else
+              echo "This changes code the plugin ships, so it needs the usual changelog entry and version bump before release. Pushing either to this branch stops the scheduled update from refreshing it."
+            fi
             echo
             echo "Opened by the [vendored dependencies update](https://github.com/matomo-org/plugin-ci-workflows#vendored-dependencies-update) workflow, run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
             # The repository's own template, so the checklist gate finds its items. They are left for
@@ -479,15 +591,21 @@ jobs:
             fi
           } > "$body"
 
-      # Only what a rebuild changes, which is also what the pull request commits. The unprefixed
+      # Only what a rebuild and the version bump change, which is also what the pull request commits. The unprefixed
       # vendor/ tree is gitignored, so listing vendor gives just the prefixed tree and the proxy
       # autoloader. A tar rather than the files themselves, because an artifact drops file modes.
       - name: Package the rebuilt tree
         if: ${{ steps.update.outputs.changed == 'true' }}
         shell: bash
+        env:
+          BUMP_SHA256: ${{ steps.bump.outputs.sha256 }}
         run: |
           mkdir -p "$RUNNER_TEMP/rebuilt"
           cp "$RUNNER_TEMP/pull-request-body.md" "$RUNNER_TEMP/rebuilt/"
+          if [ -n "$BUMP_SHA256" ]; then
+            mkdir -p "$RUNNER_TEMP/rebuilt/bump"
+            cp "$RUNNER_TEMP/bump/plugin.json" "$RUNNER_TEMP/bump/CHANGELOG.md" "$RUNNER_TEMP/rebuilt/bump/"
+          fi
           cd "$PLUGIN_DIR"
           # --cached still lists a tracked file the rebuild deleted, which tar would fail on.
           git ls-files -z --cached --others --exclude-standard -- composer.lock vendor \
@@ -555,6 +673,27 @@ jobs:
           git ls-files -z -- vendor | xargs -0 -r rm -f --
           tar -xf "$tree" -- composer.lock vendor
 
+      # Bumped by the update job before any dependency code ran, which is when it recorded this hash.
+      # The files came through the same untrusted artifact as the tree, so they must still match it.
+      - name: Apply the version bump
+        if: ${{ needs.update.outputs.bump-sha256 != '' }}
+        shell: bash
+        env:
+          EXPECTED: ${{ needs.update.outputs.bump-sha256 }}
+        run: |
+          bump="$RUNNER_TEMP/rebuilt/bump"
+          for file in plugin.json CHANGELOG.md; do
+            if [ ! -f "$bump/$file" ] || [ -L "$bump/$file" ]; then
+              echo "::error::The version bump's $file is missing or not a regular file, so the update was not applied."
+              exit 1
+            fi
+          done
+          if [ "$(cd "$bump" && sha256sum plugin.json CHANGELOG.md | sha256sum | cut -d' ' -f1)" != "$EXPECTED" ]; then
+            echo "::error::The version bump changed after the update job made it, so the update was not applied."
+            exit 1
+          fi
+          cp "$bump/plugin.json" "$bump/CHANGELOG.md" "$PLUGIN_DIR/"
+
       # The update job checked the branch minutes ago; a push since then would be force-pushed over.
       - name: Check the update branch has not moved
         shell: bash
@@ -584,11 +723,13 @@ jobs:
           base: ${{ env.BASE_BRANCH }}
           branch: ${{ env.UPDATE_BRANCH }}
           delete-branch: true
-          # Only what a rebuild changes. The unprefixed vendor/ tree is gitignored, so naming vendor
-          # adds just the prefixed tree and the proxy autoloader.
+          # Only what a rebuild and the version bump change. The unprefixed vendor/ tree is gitignored,
+          # so naming vendor adds just the prefixed tree and the proxy autoloader.
           add-paths: |
             composer.lock
             vendor
+            ${{ needs.update.outputs.bump-sha256 != '' && 'plugin.json' || '' }}
+            ${{ needs.update.outputs.bump-sha256 != '' && 'CHANGELOG.md' || '' }}
           commit-message: Update scoped dependencies
           # Both set to the bot, because the human-commit check above tells the workflow's own
           # commits apart by author and committer email; the default author is whoever triggered the run.
