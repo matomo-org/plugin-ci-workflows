@@ -22,6 +22,8 @@
 #                           for Composer's generated autoloader. Repeatable.
 #   --tools-dir=PATH        Where matomo-scoper and Rector are installed and kept between runs.
 #                           Defaults to ${XDG_CACHE_HOME:-~/.cache}/matomo-scope-dependencies.
+#   --enum-list=PATH        Write the enums vendor/prefixed declares to PATH, one per line, before
+#                           Rector turns them into classes of constants.
 #   --dry-run               Print the plugin and the downgrade target, and stop.
 #
 # Needs php 8.1 or later, composer, jq, git and curl on PATH, and python3 for auto below Matomo 6. The plugin
@@ -45,6 +47,7 @@ scoper_ref=''
 allowed=('Composer\Autoload')
 tools_dir="${XDG_CACHE_HOME:-$HOME/.cache}/matomo-scope-dependencies"
 dry_run=0
+enum_list=''
 plugin_path=''
 
 for arg in "$@"; do
@@ -54,6 +57,7 @@ for arg in "$@"; do
     --scoper-ref=*) scoper_ref="${arg#*=}" ;;
     --allow-namespace=*) allowed+=("${arg#*=}") ;;
     --tools-dir=*) tools_dir="${arg#*=}" ;;
+    --enum-list=*) enum_list="${arg#*=}" ;;
     --dry-run) dry_run=1 ;;
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -219,6 +223,10 @@ php "$scoper_dir/bin/matomo-scoper" scope "$plugin_dir" --yes --ignore-platform-
 if ! phar_runs; then
   echo "::error::php-scoper.phar did not download intact, so nothing was scoped. Restore vendor/ with composer install before running again." >&2
   exit 1
+fi
+
+if [ -n "$enum_list" ]; then
+  php "$ROOT/scripts/php/list_prefixed_enums.php" "$plugin_dir/vendor/prefixed" > "$enum_list"
 fi
 
 if [ -n "$downgrade" ]; then

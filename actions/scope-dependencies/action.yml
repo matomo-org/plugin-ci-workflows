@@ -36,6 +36,9 @@ outputs:
   downgrade-php-version:
     description: "The PHP version vendor/prefixed was transpiled to, or empty when Rector was skipped."
     value: ${{ steps.scope.outputs.downgrade }}
+  enum-list:
+    description: "A file listing the enums vendor/prefixed declared before Rector ran, one per line."
+    value: ${{ steps.scope.outputs.enum-list }}
 
 runs:
   using: composite
@@ -52,8 +55,9 @@ runs:
         # checkout, and whatever else it globs, also lives.
         TOOLS: ${{ runner.temp }}/scope-dependencies
       run: |
-        args=(--downgrade-php="$DOWNGRADE_INPUT" --scoper-ref="$SCOPER_REF" --tools-dir="$TOOLS")
+        args=(--downgrade-php="$DOWNGRADE_INPUT" --scoper-ref="$SCOPER_REF" --tools-dir="$TOOLS" --enum-list="$TOOLS/enums.txt")
         for namespace in $ALLOWED; do
           args+=(--allow-namespace="$namespace")
         done
         bash "$GITHUB_ACTION_PATH/../../scripts/bash/scope_plugin_dependencies.sh" "${args[@]}" "$PLUGIN_PATH"
+        echo "enum-list=$TOOLS/enums.txt" >> "$GITHUB_OUTPUT"

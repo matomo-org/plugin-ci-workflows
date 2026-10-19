@@ -550,12 +550,13 @@ expect_gaps "a method the floor lacks on a union of PHP classes is listed" 0 "ve
 
 # What OWN_MEMBERS_FILE receives, beside what the check prints.
 expect_own() {
-  local description="$1" want_own="$2" want="$3" dir="$4"
+  local description="$1" want_own="$2" want="$3" dir="$4" enums="${5:-}"
   tests=$((tests + 1))
   local output own="$WORK/own-members"
+  printf '%s' "$enums" > "$WORK/enums"
   rm -f "$own"
   echo '{"name": "Foo"}' > "$dir/plugin.json"
-  output=$(OWN_MEMBERS_FILE="$own" PHPSTAN_VERSION="$WORK/phpstan-version" bash "$GAPS" "$dir" 8.1 "$WORK/phpstan/phpstan" 2>/dev/null)
+  output=$(OWN_MEMBERS_FILE="$own" ENUM_LIST_FILE="$WORK/enums" PHPSTAN_VERSION="$WORK/phpstan-version" bash "$GAPS" "$dir" 8.1 "$WORK/phpstan/phpstan" 2>/dev/null)
   if [ "$output" != "$want" ] || [ "$(cat "$own" 2>/dev/null)" != "$want_own" ]; then
     echo "FAIL - $description (printed '$output', wrote '$(cat "$own" 2>/dev/null)')"
     failures+=("$description")
@@ -568,7 +569,11 @@ dir=$(floor_plugin own-static '' "$OWN")
 expect_own "a static method the tree's own class lacks goes to OWN_MEMBERS_FILE" "vendor/prefixed/foo/src/Bar.php${TAB}Call to an undefined static method Matomo\\Dependencies\\Foo\\League\\Uri\\UriScheme::tryFrom()." '' "$dir"
 # shellcheck disable=SC2016 # PHP source, not shell.
 dir=$(floor_plugin own-property '' '// FINDING property.notFound Access to an undefined property Matomo\Dependencies\Foo\Idna\Error::$value.')
-expect_own "a property the tree's own class lacks goes to OWN_MEMBERS_FILE" "vendor/prefixed/foo/src/Bar.php${TAB}Access to an undefined property Matomo\\Dependencies\\Foo\\Idna\\Error::\$value." '' "$dir"
+expect_own "a property the tree's own class lacks goes to OWN_MEMBERS_FILE" "vendor/prefixed/foo/src/Bar.php${TAB}Access to an undefined property Matomo\\Dependencies\\Foo\\Idna\\Error::\$value." '' "$dir" $'Matomo\\Dependencies\\Foo\\Other\nmatomo\\dependencies\\foo\\idna\\error\n'
+expect_own "a property the tree's own class lacks is not reported when the class was not an enum" '' '' "$dir"
+# shellcheck disable=SC2016 # PHP source, not shell.
+dir=$(floor_plugin own-dynamic '' '// FINDING property.notFound Access to an undefined property Matomo\Dependencies\Foo\Plain::$name.')
+expect_own "a dynamic \$name on an ordinary class of the tree is not reported" '' '' "$dir" 'Matomo\Dependencies\Foo\Idna\Error'
 dir=$(floor_plugin own-known "$OWN" "$OWN")
 expect_own "a use of a missing member the earlier tree already made is not reported" '' '' "$dir"
 dir=$(floor_plugin own-class '' '// FINDING class.notFound Instantiated class Matomo\Dependencies\Foo\Optional not found.')
@@ -582,6 +587,23 @@ expect_own "a PHP gap is still printed beside an own-member finding" "vendor/pre
 dir=$(floor_plugin own-unset '' "$OWN")
 echo '{"name": "Foo"}' > "$dir/plugin.json"
 expect_gaps "without OWN_MEMBERS_FILE an own-member finding is not printed" 0 '' "$dir"
+
+tests=$((tests + 1))
+mkdir -p "$WORK/enums-tree/src" "$WORK/enums-tree/vendor"
+cat > "$WORK/enums-tree/src/Scheme.php" <<'PHP'
+<?php
+namespace Matomo\Dependencies\Foo\Uri;
+enum Scheme: string { case Http = 'http'; }
+final class Plain { public function enum() { return Scheme::class; } }
+PHP
+printf '<?php\nenum ComposerOwn {}\n' > "$WORK/enums-tree/vendor/Own.php"
+got=$(php "$ROOT/scripts/php/list_prefixed_enums.php" "$WORK/enums-tree" 2>&1)
+if [ "$got" = 'Matomo\Dependencies\Foo\Uri\Scheme' ]; then
+  echo "ok - list_prefixed_enums.php lists the tree's enums and nothing else"
+else
+  echo "FAIL - list_prefixed_enums.php lists the tree's enums and nothing else (got: $got)"
+  failures+=("list_prefixed_enums.php lists the tree's enums")
+fi
 
 UNLOADABLE="$ROOT/scripts/bash/find_new_unloadable_classes.sh"
 
@@ -927,11 +949,11 @@ import yaml
 
 print(yaml.safe_load(open(sys.argv[1]))['runs']['steps'][0]['run'])
 PY
-got=$(GITHUB_ACTION_PATH="$fake/actions/scope-dependencies" PLUGIN_PATH=plugin DOWNGRADE_INPUT=none \
+got=$(GITHUB_OUTPUT="$WORK/action-output" GITHUB_ACTION_PATH="$fake/actions/scope-dependencies" PLUGIN_PATH=plugin DOWNGRADE_INPUT=none \
   ALLOWED=$'Composer\\Autoload\n  GPBMetadata ' SCOPER_REF=v1 TOOLS=/t bash -e "$WORK/action-step.sh" 2>&1)
-want=$'--downgrade-php=none\n--scoper-ref=v1\n--tools-dir=/t\n--allow-namespace=Composer\\Autoload\n--allow-namespace=GPBMetadata\nplugin'
-if [ "$got" = "$want" ]; then
-  echo "ok - the action passes each allowed namespace, and the plugin path last, to the script"
+want=$'--downgrade-php=none\n--scoper-ref=v1\n--tools-dir=/t\n--enum-list=/t/enums.txt\n--allow-namespace=Composer\\Autoload\n--allow-namespace=GPBMetadata\nplugin'
+if [ "$got" = "$want" ] && [ "$(cat "$WORK/action-output")" = "enum-list=/t/enums.txt" ]; then
+  echo "ok - the action passes each allowed namespace, and the plugin path last, to the script, and outputs the enum list"
 else
   echo "FAIL - the action passes each allowed namespace, and the plugin path last, to the script (got: $got)"
   failures+=("the action passes its inputs to the script")
