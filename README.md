@@ -621,6 +621,7 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the alias resolver |
 | `bump-version` | no | `true` | Record the update in `plugin.json` and `CHANGELOG.md`, as described below |
 | `changelog-entry` | no | `Updated dependencies` | The changelog line `bump-version` adds |
+| `reviewer-team` | no | `''` | Team in the repository's organisation that a new pull request requests review from. Empty picks `plugin-reviewers` in matomo-org and `premium-plugins-reviewers` in innocraft |
 
 | Secret | Required | Description |
 | --- | --- | --- |

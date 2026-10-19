@@ -65,6 +65,11 @@ on:
         required: false
         type: string
         default: 'Updated dependencies'
+      reviewer-team:
+        description: "Slug of the team in the repository's organisation that a new pull request requests review from. Empty picks plugin-reviewers in matomo-org and premium-plugins-reviewers in innocraft."
+        required: false
+        type: string
+        default: ''
     secrets:
       DEPS_PR_TOKEN:
         description: >-
@@ -787,6 +792,7 @@ jobs:
           fi
 
       - name: Open or update the pull request
+        id: pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           path: ${{ env.PLUGIN_DIR }}
@@ -808,6 +814,38 @@ jobs:
           committer: github-actions[bot] <${{ env.BOT_EMAIL }}>
           title: Update scoped dependencies (${{ env.BASE_BRANCH }})
           body-path: ${{ runner.temp }}/rebuilt/pull-request-body.md
+          labels: Needs Review
+
+      # Only on a new pull request, and not through the action's team-reviewers, which requests on
+      # every weekly refresh and would notify the team again while the pull request is in review.
+      - name: Request review from the plugin reviewers
+        if: ${{ steps.pr.outputs.pull-request-operation == 'created' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DEPS_PR_TOKEN }}
+          PR_NUMBER: ${{ steps.pr.outputs.pull-request-number }}
+          OWNER: ${{ github.repository_owner }}
+          TEAM: ${{ inputs.reviewer-team }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::No DEPS_PR_TOKEN, and GITHUB_TOKEN cannot request a team review, so request one on #$PR_NUMBER by hand."
+            exit 0
+          fi
+          if [ -z "$TEAM" ]; then
+            case "$OWNER" in
+              matomo-org) TEAM=plugin-reviewers ;;
+              innocraft) TEAM=premium-plugins-reviewers ;;
+              *)
+                echo "::warning::No reviewer team is known for $OWNER, so none was requested on #$PR_NUMBER. Pass reviewer-team to request one."
+                exit 0
+                ;;
+            esac
+          fi
+          if ! out=$(gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
+              -f "team_reviewers[]=$TEAM" 2>&1); then
+            echo "::error::Could not request review from $OWNER/$TEAM on #$PR_NUMBER: ${out//$'\n'/ }"
+            exit 1
+          fi
 
       - name: Warn when the plugin's CI will not start
         shell: bash

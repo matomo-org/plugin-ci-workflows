@@ -1726,6 +1726,40 @@ check("the commit the pull-request job checks out is read before composer can mo
 pr = step('Open or update the pull request', pr_steps)['with']
 check("the workflow's commits are authored by the address the human-commit check filters on",
       '${{ env.BOT_EMAIL }}' in pr['author'] and '${{ env.BOT_EMAIL }}' in pr['committer'])
+review = step('Request review from the plugin reviewers', pr_steps)
+check("every refresh keeps the review label, and only a new pull request requests review",
+      pr.get('labels') == 'Needs Review' and 'team-reviewers' not in pr
+      and step('Open or update the pull request', pr_steps).get('id') == 'pr'
+      and review['if'] == "${{ steps.pr.outputs.pull-request-operation == 'created' }}"
+      and review['env'] == {'GH_TOKEN': '${{ secrets.DEPS_PR_TOKEN }}',
+                            'PR_NUMBER': '${{ steps.pr.outputs.pull-request-number }}',
+                            'OWNER': '${{ github.repository_owner }}', 'TEAM': '${{ inputs.reviewer-team }}'})
+def requested(owner, team='', token='t', gh_status=0):
+    import os, subprocess, tempfile
+    with tempfile.TemporaryDirectory() as bindir:
+        with open(bindir + '/gh', 'w') as stub:
+            stub.write(f'printf "%s\\n" "$*" >> {bindir}/calls\necho denied\nexit {gh_status}\n')
+        os.chmod(bindir + '/gh', 0o755)
+        done = subprocess.run(['bash', '-eo', 'pipefail', '-c', review['run']], capture_output=True, text=True,
+                              env={**os.environ, 'PATH': bindir + ':' + os.environ['PATH'], 'GH_TOKEN': token,
+                                   'PR_NUMBER': '7', 'OWNER': owner, 'TEAM': team,
+                                   'GITHUB_REPOSITORY': owner + '/plugin-Foo'})
+        calls = open(bindir + '/calls').read() if os.path.exists(bindir + '/calls') else ''
+        return done.returncode, calls, done.stdout
+code, calls, _ = requested('matomo-org')
+check("a matomo-org pull request requests plugin-reviewers",
+      code == 0 and 'repos/matomo-org/plugin-Foo/pulls/7/requested_reviewers' in calls
+      and 'team_reviewers[]=plugin-reviewers' in calls)
+check("an innocraft pull request requests premium-plugins-reviewers",
+      'team_reviewers[]=premium-plugins-reviewers' in requested('innocraft')[1])
+check("reviewer-team overrides the organisation's team",
+      'team_reviewers[]=other-reviewers\n' in requested('matomo-org', 'other-reviewers')[1])
+for description, args in (("an organisation with no known team", ('someone-else',)),
+                          ("a run without DEPS_PR_TOKEN", ('matomo-org', '', ''))):
+    code, calls, out = requested(*args)
+    check(f"{description} warns and requests nothing", code == 0 and calls == '' and out.startswith('::warning::'))
+check("a refused review request fails the step with the reason",
+      requested('matomo-org', gh_status=1)[0::2] == (1, '::error::Could not request review from matomo-org/plugin-reviewers on #7: denied\n'))
 check("the platform is compared with plugin.json before composer can run the packages' code",
       order.index('Resolve the platform PHP')
       < order.index("Compare the platform PHP with the plugin's minimum")
