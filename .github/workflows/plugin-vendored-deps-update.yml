@@ -31,7 +31,7 @@ on:
         type: string
         default: ''
       downgrade-php:
-        description: "PHP version to transpile vendor/prefixed down to with Rector: 'auto' reads it from plugin.json, 'none' skips Rector, or pass 7.3 or 8.1."
+        description: "PHP version to transpile vendor/prefixed down to with Rector: 'auto' reads it from plugin.json and the composer platform, 'none' skips Rector, or pass 7.3 or 8.1."
         required: false
         type: string
         default: 'auto'
@@ -454,10 +454,10 @@ jobs:
           allowed-unprefixed-namespaces: ${{ inputs.allowed-unprefixed-namespaces }}
           scoper-ref: ${{ inputs.scoper-ref }}
 
-      # For find_new_floor_php_gaps.sh, which has to run on the floor: PHPStan counts whatever the
-      # running PHP has as present. Nothing after the check in this job runs PHP. The check only warns, so
-      # a failed setup skips it rather than the pull request; running it on the runner's PHP instead would
-      # report nothing, falsely.
+      # For the class-load check and find_new_floor_php_gaps.sh, which have to run on the floor: a class
+      # can load on a newer PHP only, and PHPStan counts whatever the running PHP has as present. Nothing
+      # after the checks in this job runs PHP. A failed setup skips them rather than the pull request;
+      # running them on the runner's PHP instead would report nothing, falsely.
       - name: Choose the floor PHP
         id: floor-version
         if: ${{ steps.update.outputs.changed == 'true' && steps.scope.outputs.downgrade-php-version != '' }}
@@ -465,10 +465,63 @@ jobs:
         env:
           DOWNGRADE: ${{ steps.scope.outputs.downgrade-php-version }}
         run: |
-          # PHPStan needs 7.4, so a 7.3 floor runs on that.
+          # PHPStan needs 7.4, so it checks a 7.3 floor on that. The classes are loaded on the floor itself.
           php="$DOWNGRADE"
           [ "$DOWNGRADE" != 7.3 ] || php=7.4
           echo "php=$php" >> "$GITHUB_OUTPUT"
+          echo "load=$DOWNGRADE" >> "$GITHUB_OUTPUT"
+
+      - name: Setup the PHP the classes load on
+        id: load-php
+        if: ${{ steps.update.outputs.changed == 'true' && steps.scope.outputs.downgrade-php-version != '' }}
+        continue-on-error: true
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
+        with:
+          php-version: ${{ steps.floor-version.outputs.load }}
+          coverage: none
+          tools: none
+
+      # Fails rather than warns: a class that loaded before the rebuild and no longer does is a fatal
+      # error for whatever touches it. A check that cannot run only warns, and the body says so.
+      - name: Check the rebuilt classes load on the floor PHP
+        id: load-check
+        if: ${{ steps.update.outputs.changed == 'true' && steps.scope.outputs.downgrade-php-version != '' }}
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.update.outputs.base-sha }}
+          FLOOR_PHP: ${{ steps.load-php.outcome }}
+          FLOOR_PHP_VERSION: ${{ steps.floor-version.outputs.load }}
+        run: |
+          if [ "$FLOOR_PHP" != success ]; then
+            echo "::warning::PHP $FLOOR_PHP_VERSION could not be set up, so the rebuilt classes were not loaded on it."
+            echo "checked=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          status=0
+          classes=$(bash .plugin-ci-workflows/scripts/bash/find_new_unloadable_classes.sh "$PLUGIN_DIR" "$BASE_SHA") || status=$?
+          case "$status" in
+            0) echo "checked=true" >> "$GITHUB_OUTPUT" ;;
+            3|4)
+              # 4: the earlier tree is there but its autoloader does not run, so the check did not either.
+              if [ "$status" = 3 ]; then echo "checked=none"; else echo "checked=false"; fi >> "$GITHUB_OUTPUT"
+              if [ -n "$classes" ]; then
+                echo "::warning::There is no earlier tree that loads to compare with, so these classes that fail to load on PHP $FLOOR_PHP_VERSION are listed, not checked:"
+                printf '%s\n' "$classes"
+              fi
+              exit 0
+              ;;
+            *)
+              echo "::warning::The rebuilt classes could not be checked on PHP $FLOOR_PHP_VERSION; the lines above say why."
+              echo "checked=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          [ -n "$classes" ] || exit 0
+          while IFS=$'\t' read -r class error; do
+            # GitHub decodes % in an annotation.
+            echo "::error::$class loaded before the rebuild and no longer does on PHP $FLOOR_PHP_VERSION: ${error//%/%25}"
+          done <<< "$classes"
+          exit 1
 
       - name: Setup the floor PHP
         id: floor-php
@@ -489,8 +542,11 @@ jobs:
           BASE_SHA: ${{ steps.update.outputs.base-sha }}
           # Installed by the scope-dependencies action along with Rector, which depends on it.
           PHPSTAN: ${{ runner.temp }}/scope-dependencies/rector/vendor/bin/phpstan
+          ENUM_LIST: ${{ steps.scope.outputs.enum-list }}
           FLOOR_PHP: ${{ steps.floor-php.outcome }}
           FLOOR_PHP_VERSION: ${{ steps.floor-version.outputs.php }}
+          LOAD_CHECKED: ${{ steps.load-check.outputs.checked }}
+          LOAD_PHP_VERSION: ${{ steps.floor-version.outputs.load }}
           BUMP_NOTE: ${{ steps.bump.outputs.note }}
         run: |
           body="$RUNNER_TEMP/pull-request-body.md"
@@ -529,10 +585,20 @@ jobs:
             gaps_checked=false
           elif [ -n "$DOWNGRADE" ]; then
             gaps_status=0
-            gaps=$(bash .plugin-ci-workflows/scripts/bash/find_new_floor_php_gaps.sh "$PLUGIN_DIR" "$DOWNGRADE" "$PHPSTAN" "$BASE_SHA") \
+            own="$RUNNER_TEMP/own-members.txt"
+            : > "$own"
+            gaps=$(OWN_MEMBERS_FILE="$own" ENUM_LIST_FILE="$ENUM_LIST" bash .plugin-ci-workflows/scripts/bash/find_new_floor_php_gaps.sh "$PLUGIN_DIR" "$DOWNGRADE" "$PHPSTAN" "$BASE_SHA") \
               || gaps_status=$?
             case "$gaps_status" in 0) ;; 3) gaps_checked=none ;; *) gaps_checked=false; gaps="" ;; esac
             [ -z "$gaps" ] || printf '%s\n' "$gaps"
+            # Unlike the gaps, these fail the job: the transpiled tree calls what its own classes lack.
+            if [ "$gaps_status" -eq 0 ] && [ -s "$own" ]; then
+              while IFS=$'\t' read -r path message; do
+                echo "::error::$path: ${message//%/%25}"
+              done < "$own"
+              echo "::error::The rebuilt tree uses enum members, such as tryFrom(), on its own classes that do not have them on PHP $DOWNGRADE, so it was not proposed."
+              exit 1
+            fi
           fi
           {
             echo "Updates the plugin's scoped dependencies to the newest versions composer.json allows, and regenerates \`vendor/prefixed\` with $tools."
@@ -574,6 +640,11 @@ jobs:
             fi
             if [ "$gaps_checked" = true ] && [ "$checked_on" != "$DOWNGRADE" ]; then
               echo "The check for PHP $DOWNGRADE ran on PHP $checked_on, the oldest PHPStan supports, so it does not report what PHP $checked_on added."
+              echo
+            fi
+            # Not none: a first scoping has nothing to compare with.
+            if [ -n "$DOWNGRADE" ] && [ "$LOAD_CHECKED" = false ]; then
+              echo "The rebuilt classes were not checked to still load on PHP $LOAD_PHP_VERSION; the run's log says why. Load them there before merging."
               echo
             fi
             if [ -n "$BUMP_NOTE" ]; then

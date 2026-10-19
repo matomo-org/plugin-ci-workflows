@@ -17,11 +17,17 @@
 # the rebuilt tree has it more often than the earlier tree did, and then for each file that has it more
 # often. A use that only moved to another file is not listed.
 #
+# With OWN_MEMBERS_FILE set, the new uses of an enum's from(), tryFrom(), cases(), or of ->value or
+# ->name on a value PHPStan types as a class of the tree itself, that lacks them go to that file, in the same format, instead of being
+# left out. No PHP adds those, so they are not the floor's gaps but the transpiled tree's own breakage.
+# ->value and ->name count only on a class ENUM_LIST_FILE names, one per line, since an ordinary class
+# can set either as a dynamic property, which PHPStan reports the same way.
+#
 # Usage: find_new_floor_php_gaps.sh <plugin-dir> <floor> <phpstan> [base-rev]
 # floor is the PHP version as major.minor, such as 8.1. phpstan is the PHPStan executable. base-rev
 # holds the tree before the rebuild, HEAD by default. Prints one line per new message in each file, the
 # path and the message separated by a tab, since a message can hold ": ". Exits 0 whether or not it
-# found any, 1 when jq or timeout is missing, it cannot read the tree at base-rev or PHPStan does not
+# found any, 1 when jq or timeout is missing, it cannot read the tree at base-rev or ENUM_LIST_FILE, or PHPStan does not
 # run, 2 on a usage error, or 3 when base-rev has no vendor/prefixed. PHPStan gets PHPSTAN_TIMEOUT
 # seconds for each tree, 300 by default.
 
@@ -49,6 +55,11 @@ for tool in timeout jq; do
     exit 1
   fi
 done
+
+prefix=''
+if name=$(jq -r '.name // empty' "$plugin_dir/plugin.json" 2> /dev/null) && [ -n "$name" ]; then
+  prefix="Matomo\\Dependencies\\$name\\"
+fi
 
 if ! git -C "$plugin_dir" rev-parse --quiet --verify "$base^{commit}" > /dev/null; then
   echo "Cannot read $base in $plugin_dir, so there is no earlier tree to compare vendor/prefixed with." >&2
@@ -105,7 +116,8 @@ filter='
       # The namespaces PHPStan has stubs of PHP for, in phpstan/php-8-stubs/stubs/ext.
       or any(("bcmath\\", "dba\\", "dom\\", "ffi\\", "filter\\", "ftp\\", "imap\\", "io\\", "ldap\\", "odbc\\", "openssl\\", "pcntl\\", "pdo\\", "pgsql\\", "pspell\\", "random\\", "snmp\\", "soap\\", "time\\", "uri\\");
         . as $ns | $s | startswith($ns));
-  .files
+  ($enums | split("\n") | map(select(. != "") | {key: ascii_downcase, value: true}) | from_entries) as $enum_classes
+  | .files
   | if type == "object" then to_entries else [] end
   # PHPStan reports a trait once for each class that uses it, keyed "<file> (in context of class X)",
   # so a release that adds such a class would repeat every use in the trait. A finding is kept once
@@ -118,8 +130,19 @@ filter='
   | select($pattern != null)
   # A docblock or type alias that names a missing class never runs, and catching one never fails.
   | select(.message | startswith("PHPDoc tag") or startswith("Type alias") or startswith("Caught class") | not)
-  | select([.message | capture($pattern)] | first | (.s // "") | (. != "" and builtin))
-  | [.identifier, (.message | gsub("[\t\n]"; " ")), $path]
+  | ([.message | capture($pattern)] | first | (.s // "")) as $s
+  | (if $s == "" then empty
+     elif $s | builtin then "php"
+     # Enum members on a class the tree itself declares: Rector turns an enum into a class of
+     # constants and leaves its from(), tryFrom(), cases(), ->value and ->name uses behind. Only those,
+     # since PHPStan also names a scoped subclass of a PHP class for a guarded call to a newer method.
+     elif $prefix != "" and (
+         (.identifier == "staticMethod.notFound" and (.message | test("::(from|tryFrom|cases)\\(\\)")))
+         or (.identifier == "property.notFound" and (.message | test("::\\$(value|name)\\.$"))
+           and $enum_classes[$s | ltrimstr("\\") | ascii_downcase]))
+       and ($s | ltrimstr("\\") | ascii_downcase | startswith($prefix | ascii_downcase)) then "own"
+     else empty end) as $kind
+  | [$kind + " " + .identifier, (.message | gsub("[\t\n]"; " ")), $path]
   | join("\t")
 '
 
@@ -150,7 +173,7 @@ analyse() {
     jq -r '.errors[]' "$work/$name.json" | head -n 20 >&2
     return 1
   fi
-  jq -r --arg root "$root/" "$filter" "$work/$name.json"
+  jq -r --arg root "$root/" --arg prefix "$prefix" --rawfile enums "${ENUM_LIST_FILE:-/dev/null}" "$filter" "$work/$name.json"
 }
 
 # Only the files the pull request commits, so not what .gitignore excludes: the base never has those, so
@@ -168,6 +191,9 @@ if ! (cd "$plugin_dir" && git ls-files -z --cached --others --exclude-standard -
 fi
 
 export LC_ALL=C
+if [ -n "${OWN_MEMBERS_FILE:-}" ] && [ -z "${ENUM_LIST_FILE:-}" ]; then
+  echo "No ENUM_LIST_FILE, so uses of ->value and ->name on the tree's own classes are not checked." >&2
+fi
 analyse "$work/base" base > "$work/known" || exit 1
 analyse "$work/rebuilt" rebuilt > "$work/found" || exit 1
 
@@ -175,14 +201,21 @@ analyse "$work/rebuilt" rebuilt > "$work/found" || exit 1
 awk -F '\t' '
     # Not NR == FNR, which an empty first file makes true of every line.
     FILENAME == ARGV[1] { known[$1 FS $2]++; known_in[$1 FS $2 FS $3]++; next }
-    { found[$1 FS $2]++; found_in[$1 FS $2 FS $3]++; message[$1 FS $2 FS $3] = $3 FS $2; use[$1 FS $2 FS $3] = $1 FS $2 }
+    { found[$1 FS $2]++; found_in[$1 FS $2 FS $3]++; message[$1 FS $2 FS $3] = substr($1, 1, index($1, " ") - 1) FS $3 FS $2; use[$1 FS $2 FS $3] = $1 FS $2 }
     END {
       for (k in found_in) {
         if (found[use[k]] > known[use[k]] && found_in[k] > known_in[k]) print message[k]
       }
     }' "$work/known" "$work/found" \
-  | sort -u
+  | sort -u > "$work/new"
 if [ "${PIPESTATUS[*]}" != "0 0" ]; then
   echo "Cannot compare the PHPStan messages for $plugin_dir." >&2
+  exit 1
+fi
+# Not sed's \t, which BSD sed reads as a t.
+kind() { awk -v kind="$1" '{ i = index($0, "\t"); if (substr($0, 1, i - 1) == kind) print substr($0, i + 1) }' "$work/new"; }
+kind php
+if [ -n "${OWN_MEMBERS_FILE:-}" ] && ! kind own > "$OWN_MEMBERS_FILE"; then
+  echo "Cannot write $OWN_MEMBERS_FILE." >&2
   exit 1
 fi

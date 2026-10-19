@@ -9,8 +9,10 @@
 #
 # Usage: scope_plugin_dependencies.sh [options] [plugin-dir]
 #
-#   --downgrade-php=TARGET  auto (default) reads it from plugin.json: 8.1 when the plugin requires
-#                           Matomo 6 or later, 7.3 otherwise. none skips Rector. Or 7.3 or 8.1.
+#   --downgrade-php=TARGET  auto (default) reads it from the plugin: 8.1 when it requires Matomo 6
+#                           or later, or PHP 8.1 or later in plugin.json's require.php or
+#                           composer.json's config.platform.php, 7.3
+#                           otherwise. none skips Rector. Or 7.3 or 8.1.
 #   --scoper-dir=PATH       Use an existing matomo-scoper checkout instead of fetching one.
 #   --scoper-ref=REF        Ref of matomo-org/matomo-scoper to fetch. Defaults to the commit pinned
 #                           below. Only the pinned commit has its php-scoper.phar checked against a
@@ -20,10 +22,12 @@
 #                           for Composer's generated autoloader. Repeatable.
 #   --tools-dir=PATH        Where matomo-scoper and Rector are installed and kept between runs.
 #                           Defaults to ${XDG_CACHE_HOME:-~/.cache}/matomo-scope-dependencies.
+#   --enum-list=PATH        Write the enums vendor/prefixed declares to PATH, one per line, before
+#                           Rector turns them into classes of constants.
 #   --dry-run               Print the plugin and the downgrade target, and stop.
 #
-# Needs php 8.1 or later, composer, jq, git and curl on PATH. The plugin directory must be a git checkout, because
-# the tree check compares composer.lock against HEAD.
+# Needs php 8.1 or later, composer, jq, git and curl on PATH, and python3 for auto below Matomo 6. The plugin
+# directory must be a git checkout, because the tree check compares composer.lock against HEAD.
 
 set -euo pipefail
 
@@ -43,6 +47,7 @@ scoper_ref=''
 allowed=('Composer\Autoload')
 tools_dir="${XDG_CACHE_HOME:-$HOME/.cache}/matomo-scope-dependencies"
 dry_run=0
+enum_list=''
 plugin_path=''
 
 for arg in "$@"; do
@@ -52,6 +57,7 @@ for arg in "$@"; do
     --scoper-ref=*) scoper_ref="${arg#*=}" ;;
     --allow-namespace=*) allowed+=("${arg#*=}") ;;
     --tools-dir=*) tools_dir="${arg#*=}" ;;
+    --enum-list=*) enum_list="${arg#*=}" ;;
     --dry-run) dry_run=1 ;;
     -h|--help)
       sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
@@ -105,14 +111,30 @@ case "$downgrade_input" in
     constraint=$(jq -r '.require.matomo // empty' "$plugin_dir/plugin.json")
     major=$(printf '%s' "$constraint" | grep -oE '(>=|\^|~)[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | sort -n | head -1 || true)
     if [ -z "$major" ]; then
-      echo "::warning::No >=, ^ or ~ lower bound in the Matomo requirement '$constraint', so transpiling to the lowest target. Pass --downgrade-php to choose one." >&2
+      echo "::warning::No >=, ^ or ~ lower bound in the Matomo requirement '$constraint', so only the plugin's own PHP floor can raise the target above 7.3. Pass --downgrade-php to choose one." >&2
       downgrade=7.3
     elif [ "$major" -ge 6 ]; then
       downgrade=8.1
     else
       downgrade=7.3
     fi
-    echo "Transpiling down to PHP $downgrade, from the Matomo requirement '$constraint'."
+    reason="the Matomo requirement '$constraint'"
+    # A plugin can need a newer PHP than its oldest Matomo does, and its dependencies are then
+    # resolved for that PHP. Rector cannot take such a tree all the way down: on OAuth2's 5.x branch
+    # it turned enums into constant classes that were still called with tryFrom(), and dropped
+    # return types that an interface kept.
+    # Its stderr says why when it finds no floor, which also covers a plugin that declares none.
+    if [ "$downgrade" = 7.3 ] && ! command -v python3 > /dev/null; then
+      echo "::error::python3 is not on PATH, and auto needs it to read the plugin's own PHP floor." >&2
+      exit 1
+    fi
+    if [ "$downgrade" = 7.3 ] && floor=$(bash "$ROOT/scripts/bash/resolve_plugin_min_php.sh" "$plugin_dir") \
+      && [[ "$floor" =~ ^([0-9]+)\.([0-9]+)$ ]] \
+      && { [ "${BASH_REMATCH[1]}" -gt 8 ] || { [ "${BASH_REMATCH[1]}" -eq 8 ] && [ "${BASH_REMATCH[2]}" -ge 1 ]; }; }; then
+      downgrade=8.1
+      reason="the plugin's own PHP floor, $floor"
+    fi
+    echo "Transpiling down to PHP $downgrade, from $reason."
     ;;
   *)
     echo "::error::--downgrade-php must be auto, none, 7.3 or 8.1, not '$downgrade_input'." >&2
@@ -201,6 +223,10 @@ php "$scoper_dir/bin/matomo-scoper" scope "$plugin_dir" --yes --ignore-platform-
 if ! phar_runs; then
   echo "::error::php-scoper.phar did not download intact, so nothing was scoped. Restore vendor/ with composer install before running again." >&2
   exit 1
+fi
+
+if [ -n "$enum_list" ]; then
+  php "$ROOT/scripts/php/list_prefixed_enums.php" "$plugin_dir/vendor/prefixed" > "$enum_list"
 fi
 
 if [ -n "$downgrade" ]; then
