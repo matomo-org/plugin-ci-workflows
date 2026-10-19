@@ -58,6 +58,10 @@ fi
 
 if [[ "$1" == release && "$2" == create ]]; then
     touch "$FAKE_GH_CREATED"
+    while (( $# )); do
+        [[ "$1" == --notes-file ]] && cp "$2" "$FAKE_GH_NOTES"
+        shift
+    done
     exit 0
 fi
 
@@ -66,20 +70,40 @@ exit 1
 SH
 chmod +x "$FAKE_BIN/gh"
 
+# A plugin repository whose 5.0.0 tag has a changelog entry for the release notes.
+PLUGIN_REPO="$WORK/plugin"
+git init -q "$PLUGIN_REPO"
+printf '## Changelog\n\n5.0.1\n- Not released yet\n\n5.0.0 - 2026-09-21\n- Fixed a report\n- Added a setting\n\n4.9.0 - 2026-09-14\n- Older change\n' \
+    > "$PLUGIN_REPO/CHANGELOG.md"
+git -C "$PLUGIN_REPO" add CHANGELOG.md
+git -C "$PLUGIN_REPO" -c user.name=Test -c user.email=test@example.com commit -qm Release
+git -C "$PLUGIN_REPO" tag 5.0.0
+# The branch has moved on, so only the tag's changelog has the released wording.
+sed -i 's/Fixed a report/Fixed a report later/' "$PLUGIN_REPO/CHANGELOG.md"
+git -C "$PLUGIN_REPO" -c user.name=Test -c user.email=test@example.com commit -qam 'Reword after release'
+NO_TAG_REPO="$WORK/no-tag"
+git init -q "$NO_TAG_REPO"
+
 run_publisher() {
     local mode="$1" log="$2"
     : > "$log"
+    cd "${PUBLISH_FROM:-$PLUGIN_REPO}"
     PATH="$FAKE_BIN:$PATH" \
         FAKE_GH_MODE="$mode" \
         FAKE_GH_LATEST="${FAKE_GH_LATEST-4.9.0}" \
         FAKE_GH_LOG="$log" \
         FAKE_GH_CREATED="$WORK/created-$mode" \
+        FAKE_GH_NOTES="$WORK/notes-$mode" \
         GH_TOKEN=test-token \
         GITHUB_REPOSITORY=matomo-org/TestPlugin \
         bash "$SCRIPT" TestPlugin 5.0.0 2026-09-21
 }
 
-run_publisher existing "$WORK/existing.log" > /dev/null
+run_publisher existing "$WORK/existing.log" > /dev/null 2> "$WORK/existing.err"
+if grep -Fq 'release notes' "$WORK/existing.err"; then
+    echo 'A run that writes no release notes must not warn about them' >&2
+    exit 1
+fi
 if grep -Fq -- '--method PATCH' "$WORK/existing.log"; then
     echo 'A published release must be left unchanged' >&2
     exit 1
@@ -114,6 +138,21 @@ if grep -Fq -- '--method PATCH' "$WORK/not-found.log"; then
 fi
 grep -Eq '^release create 5\.0\.0 .*--verify-tag .*--latest=true$' "$WORK/not-found.log" || {
     echo 'A new release must be made only from the existing tag, and as the latest when it is the highest version' >&2
+    exit 1
+}
+CHANGELOG_LINK='See [CHANGELOG.md](https://github.com/matomo-org/TestPlugin/blob/5.0.0/CHANGELOG.md) for the full changelog.'
+[[ "$(cat "$WORK/notes-not-found")" == "$(printf 'Released on 2026-09-21.\n\n- Fixed a report\n- Added a setting\n\n%s' "$CHANGELOG_LINK")" ]] || {
+    echo "A new release must list the changes in its tag's changelog entry" >&2
+    exit 1
+}
+
+PUBLISH_FROM="$NO_TAG_REPO" run_publisher not-found "$WORK/no-tag.log" 2> "$WORK/no-tag.err"
+grep -Eq '^::warning::No changes were read .*\(.+\), so its release notes only link to CHANGELOG.md$' "$WORK/no-tag.err" || {
+    echo 'A release whose notes fall back to the link must warn with the reason' >&2
+    exit 1
+}
+[[ "$(cat "$WORK/notes-not-found")" == "$(printf 'Released on 2026-09-21.\n\n%s' "$CHANGELOG_LINK")" ]] || {
+    echo 'Without a changelog entry to read, the release notes must link to the changelog' >&2
     exit 1
 }
 

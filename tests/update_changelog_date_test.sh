@@ -211,4 +211,147 @@ for heading in '* 6.0.2 - 2026-13-45' '* 6.0.2 - 31/02/2026'; do
     grep -Fq 'has an invalid date' "$WORK/invalid-date-error"
 done
 
+# Each changelog form must yield only its own entry's changes, as the release notes.
+assert_notes() {
+    local description="$1" changelog="$2" expected="$3"
+    printf '%b' "$changelog" > "$WORK/notes.md"
+    [[ "$(python3 "$SCRIPT" --read-notes --plugin-name LoginLdap "$WORK/notes.md" 6.0.2)" == "$(printf '%b' "$expected")" ]] || {
+        echo "The release notes for $description were not read as expected" >&2
+        exit 1
+    }
+}
+assert_notes 'a plain entry' \
+    '## Changelog\n\n6.0.3\n- Next\n\n6.0.2 - 2026-09-21\n- Fixed a report\n- Added a setting\n\n6.0.1 - 2026-09-14\n- Older\n' \
+    '- Fixed a report\n- Added a setting'
+assert_notes 'the last entry' '## Changelog\n\n__6.0.2__ - 2026-09-21\n* Fixed a report\n\n' '* Fixed a report'
+assert_notes 'a heading entry' \
+    '## Changelog\n\n### 6.0.2 - 2026-09-21\n\nFixed a report.\n\n#### Notes\n- Detail\n\n### 6.0.1\n- Older\n' \
+    'Fixed a report.\n\n#### Notes\n- Detail'
+assert_notes 'an entry before a thematic break' '### 6.0.2\n\nFixed a report.\n\n---\n\nFooter\n' 'Fixed a report.'
+assert_notes 'one-line list entries' \
+    '* 6.0.3 - 2026-09-28 - Next\n* 6.0.2 - 2026-09-21 - Fixed a report\n* 6.0.1 - Older\n' '* Fixed a report'
+assert_notes 'items nested under a list entry' \
+    '- 6.0.2 - 2026-09-21\n  - Fixed a report\n    - Detail\n- 6.0.1 - 2026-09-14\n  - Older\n' \
+    '- Fixed a report\n  - Detail'
+assert_notes 'an item naming a version' \
+    '6.0.2 - 2026-09-21\n- 2.0.0 of a library is now bundled\n- Fixed a report\n\n6.0.1\n- Older\n' \
+    '- 2.0.0 of a library is now bundled\n- Fixed a report'
+assert_notes 'a nested item naming a version' \
+    '- 6.0.2 - 2026-09-21\n  - Fixed a report\n  - 2.0.0 of a library is now bundled\n- 6.0.1\n' \
+    '- Fixed a report\n- 2.0.0 of a library is now bundled'
+assert_notes 'a plain entry with subheadings' \
+    '## Changelog\n\n6.0.2 - 2026-09-21\n### Fixed\n- A report\n\n6.0.1\n- Older\n' '### Fixed\n- A report'
+assert_notes 'a bold date' '## 6.0.2 **2026-09-21**\n- Fixed a report\n' '- Fixed a report'
+assert_notes 'a bracketed date' '* 6.0.2 - [2026-09-21] Fixed a report\n* 6.0.1\n' '* Fixed a report'
+assert_notes 'a parenthesized date' '## 6.0.2 (2026-09-21)\n- Fixed a report\n' '- Fixed a report'
+assert_notes 'an undated one-line entry' '* 6.0.2 - [Fixed](https://example.com) a report 100%\n' \
+    '* [Fixed](https://example.com) a report 100%'
+assert_notes 'an entry before a prerelease entry' \
+    '* 6.0.2 - 2026-09-21 - Fixed a report\n* 6.0.2-b1 - 2026-09-01 - Beta\n' '* Fixed a report'
+assert_notes 'a heading entry with a paragraph naming a version' \
+    '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n6.0.1 compatibility is kept\n### 6.0.2-rc1 changes\n- More\n\n## 6.0.1\n' \
+    '- Fixed a report\n\n6.0.1 compatibility is kept\n### 6.0.2-rc1 changes\n- More'
+assert_notes 'an entry with a fenced code block' \
+    '## 6.0.2 - 2026-09-21\n- Changed the config:\n```\n## setting\n---\n```\n- Fixed a report\n## 6.0.1\n' \
+    '- Changed the config:\n```\n## setting\n---\n```\n- Fixed a report'
+assert_notes 'the last entry before link reference definitions' \
+    '## [6.0.2] - 2026-09-21\n### Fixed\n- A report\n\n[Unreleased]: https://example.com/compare\n[6.0.2]: https://example.com/6.0.2\n' \
+    '### Fixed\n- A report'
+assert_notes 'a heading entry above list entries' \
+    '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.1 - 2026-09-14 - Older\n* 6.0.0 - 2026-09-07 - Oldest\n' \
+    '- Fixed a report'
+assert_notes 'a plain entry above list entries' \
+    '6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.1 - 2026-09-14 - Older\n' '- Fixed a report'
+assert_notes 'a heading entry above undated list entries' \
+    '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.1\n  * Older\n* 6.0.0\n' '- Fixed a report'
+assert_notes 'a heading entry above an undated bold entry' \
+    '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n**6.0.1**\n- Older\n' '- Fixed a report'
+assert_notes 'a plain entry above an undated list entry' \
+    '6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.1\n  * Older\n' '- Fixed a report'
+assert_notes 'a plain entry above an undated plain entry with text' \
+    '6.0.2 - 2026-09-21\n- Fixed a report\n\n6.0.1 Older change\n' '- Fixed a report'
+assert_notes 'a plain entry with a line naming a version' \
+    '6.0.2 - 2026-09-21\nFixed a report.\n2.0.0 compatibility was added.\n\n6.0.1\n- Older\n' \
+    'Fixed a report.\n2.0.0 compatibility was added.'
+assert_notes 'an entry with inline triple backticks' \
+    '## 6.0.2 - 2026-09-21\n```x``` is now escaped\n## 6.0.1\n- Older\n' '```x``` is now escaped'
+assert_notes 'a fence holding a line with an info string' \
+    '## 6.0.2 - 2026-09-21\n````\n```php\n## not a heading\n````\n- Fixed a report\n## 6.0.1\n' \
+    '````\n```php\n## not a heading\n````\n- Fixed a report'
+{
+    printf '## 6.0.2 - 2026-09-21\n'
+    for i in $(seq 1 200); do printf -- '- Change %03d that is long enough to fill the notes past the limit\n' "$i"; done
+} > "$WORK/notes-long.md"
+if python3 "$SCRIPT" --read-notes "$WORK/notes-long.md" 6.0.2 > /dev/null 2> "$WORK/notes-long-error"; then
+    echo 'Notes far longer than any one entry must not be read as an entry' >&2
+    exit 1
+fi
+grep -Fq 'more than the 8000 expected of one entry' "$WORK/notes-long-error"
+assert_notes 'a labelled entry' '## LoginLdap 6.0.2 - 2026-09-21\n- Fixed a report\n## LoginLdap 6.0.1\n- Older\n' '- Fixed a report'
+assert_notes 'an entry with an indented code block' \
+    '## 6.0.2 - 2026-09-21\nChanged the config:\n\n    # setting\n    ---\n\n- Fixed a report\n## 6.0.1\n' \
+    'Changed the config:\n\n    # setting\n    ---\n\n- Fixed a report'
+assert_notes 'a heading entry above undated one-line list entries' \
+    '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.1 - Older change\n* 6.0.0 - Oldest change\n' '- Fixed a report'
+assert_notes 'a plain entry above undated one-line list entries' \
+    '6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.1: Older change\n' '- Fixed a report'
+assert_notes 'a plain entry with a line naming a version after a code block' \
+    '6.0.2 - 2026-09-21\nFixed a report.\n\n```\ncode\n```\n2.0.0 compatibility was added.\n\n6.0.1\n- Older\n' \
+    'Fixed a report.\n\n```\ncode\n```\n2.0.0 compatibility was added.'
+assert_notes 'an underlined entry' \
+    '6.0.2 - 2026-09-21\n------------------\n- Fixed a report\n\n6.0.1 - 2026-09-14\n------------------\n- Older\n' \
+    '- Fixed a report'
+assert_notes 'a double-underlined entry' '6.0.2 - 2026-09-21\n==================\n- Fixed a report\n\n6.0.1\n======\n' \
+    '- Fixed a report'
+assert_notes 'a heading entry with a remark' \
+    '## 6.0.2 - 2026-09-21 (security release)\n- Fixed a report\n## 6.0.1\n' '(security release)\n\n- Fixed a report'
+assert_notes 'an entry above a two-part version' '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n6.0\n- Older\n' \
+    '- Fixed a report'
+assert_notes 'a list entry above a dated two-part version' \
+    '* 6.0.2 - 2026-09-21\n  * Fixed a report\n* 6.0 - 2026-09-01\n  * Older\n' '* Fixed a report'
+assert_notes 'the last entry in a version group' \
+    '## Version 6\n6.0.2 - 2026-09-21\n- Fixed a report\n\n### Version 5\n5.4.0 - 2026-01-05\n' '- Fixed a report'
+assert_notes 'a heading entry above undated plain entries' \
+    '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n6.0.1 - Older change\n- Older\n\n**6.0.0** - Oldest\n' '- Fixed a report'
+assert_notes 'a plain entry with a paragraph naming its own version' \
+    '6.0.2 - 2026-09-21\n- Fixed a report\n\n6.0.2 compatibility is retained.\n\n6.0.1\n- Older\n' \
+    '- Fixed a report\n\n6.0.2 compatibility is retained.'
+assert_notes 'an underlined entry with a remark' \
+    '6.0.2 - 2026-09-21 (security release)\n-----\n- Fixed a report\n\n6.0.1\n-----\n' '(security release)\n\n- Fixed a report'
+assert_notes 'an entry above an undated prerelease' \
+    '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.2-b1 - Beta\n' '- Fixed a report'
+assert_notes 'an indented code block holding a fence' \
+    '## 6.0.2 - 2026-09-21\nRun:\n\n    ```\n    php console\n\n- Fixed a report\n## 6.0.1\n' \
+    'Run:\n\n    ```\n    php console\n\n- Fixed a report'
+assert_notes 'a list item holding a fence' \
+    '## 6.0.2 - 2026-09-21\n- Changed the config:\n    ```\n    ## setting\n    ```\n- Fixed a report\n## 6.0.1\n' \
+    '- Changed the config:\n    ```\n    ## setting\n    ```\n- Fixed a report'
+assert_notes 'an entry with reference-style links' \
+    '## 6.0.2 - 2026-09-21\n- Fixed [#12][i12]\n## 6.0.1\n- Fixed [#11][i11]\n\n[i11]: https://example.com/11\n[i12]: https://example.com/12\n' \
+    '- Fixed [#12][i12]\n\n[i12]: https://example.com/12'
+assert_notes 'a one-line list entry with nested changes' \
+    '  * 6.0.2 - 2026-09-21 - Fixed a report\n    * Added a setting\n      * Detail\n  * 6.0.1\n' \
+    '* Fixed a report\n  * Added a setting\n    * Detail'
+# Each malformed entry must fail with its reason, so the release links to the changelog instead.
+assert_notes_error() {
+    local description="$1" changelog="$2" reason="$3"
+    printf '%b' "$changelog" > "$WORK/notes.md"
+    if python3 "$SCRIPT" --read-notes "$WORK/notes.md" 6.0.2 > /dev/null 2> "$WORK/notes-error"; then
+        echo "The release notes for $description must not be read" >&2
+        exit 1
+    fi
+    grep -Fq "$reason" "$WORK/notes-error" || {
+        echo "The error for $description must say: $reason" >&2
+        exit 1
+    }
+}
+assert_notes_error 'an entry with no changes' '6.0.2 - 2026-09-21\n\n6.0.1\n- Older\n' 'lists no changes'
+assert_notes_error 'an entry with an unclosed code block' \
+    '## 6.0.2 - 2026-09-21\n```\ncode\n## 6.0.1\n- Older\n' 'has a code block that is never closed'
+printf '## Changelog\n\n6.0.1\n- Older\n' > "$WORK/notes-missing.md"
+if python3 "$SCRIPT" --read-notes "$WORK/notes-missing.md" 6.0.2 2> /dev/null; then
+    echo 'A version with no changelog entry must not read as having release notes' >&2
+    exit 1
+fi
+
 echo 'All changelog date tests passed.'
