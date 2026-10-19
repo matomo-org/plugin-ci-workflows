@@ -251,6 +251,7 @@ assert_notes 'an entry before a prerelease entry' \
 assert_notes 'a heading entry with a paragraph naming a version' \
     '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n6.0.1 compatibility is kept\n### 6.0.2-rc1 changes\n- More\n\n## 6.0.1\n' \
     '- Fixed a report\n\n6.0.1 compatibility is kept\n### 6.0.2-rc1 changes\n- More'
+# shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
 assert_notes 'an entry with a fenced code block' \
     '## 6.0.2 - 2026-09-21\n- Changed the config:\n```\n## setting\n---\n```\n- Fixed a report\n## 6.0.1\n' \
     '- Changed the config:\n```\n## setting\n---\n```\n- Fixed a report'
@@ -273,8 +274,10 @@ assert_notes 'a plain entry above an undated plain entry with text' \
 assert_notes 'a plain entry with a line naming a version' \
     '6.0.2 - 2026-09-21\nFixed a report.\n2.0.0 compatibility was added.\n\n6.0.1\n- Older\n' \
     'Fixed a report.\n2.0.0 compatibility was added.'
+# shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
 assert_notes 'an entry with inline triple backticks' \
     '## 6.0.2 - 2026-09-21\n```x``` is now escaped\n## 6.0.1\n- Older\n' '```x``` is now escaped'
+# shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
 assert_notes 'a fence holding a line with an info string' \
     '## 6.0.2 - 2026-09-21\n````\n```php\n## not a heading\n````\n- Fixed a report\n## 6.0.1\n' \
     '````\n```php\n## not a heading\n````\n- Fixed a report'
@@ -295,6 +298,7 @@ assert_notes 'a heading entry above undated one-line list entries' \
     '## 6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.1 - Older change\n* 6.0.0 - Oldest change\n' '- Fixed a report'
 assert_notes 'a plain entry above undated one-line list entries' \
     '6.0.2 - 2026-09-21\n- Fixed a report\n\n* 6.0.1: Older change\n' '- Fixed a report'
+# shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
 assert_notes 'a plain entry with a line naming a version after a code block' \
     '6.0.2 - 2026-09-21\nFixed a report.\n\n```\ncode\n```\n2.0.0 compatibility was added.\n\n6.0.1\n- Older\n' \
     'Fixed a report.\n\n```\ncode\n```\n2.0.0 compatibility was added.'
@@ -323,6 +327,7 @@ assert_notes 'an entry above an undated prerelease' \
 assert_notes 'an indented code block holding a fence' \
     '## 6.0.2 - 2026-09-21\nRun:\n\n    ```\n    php console\n\n- Fixed a report\n## 6.0.1\n' \
     'Run:\n\n    ```\n    php console\n\n- Fixed a report'
+# shellcheck disable=SC2016 # the backticks are Markdown, not a command substitution.
 assert_notes 'a list item holding a fence' \
     '## 6.0.2 - 2026-09-21\n- Changed the config:\n    ```\n    ## setting\n    ```\n- Fixed a report\n## 6.0.1\n' \
     '- Changed the config:\n    ```\n    ## setting\n    ```\n- Fixed a report'
