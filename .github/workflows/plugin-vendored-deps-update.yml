@@ -80,7 +80,9 @@ on:
           does not run on the pull request by itself. After each refresh, close and reopen it to
           run Plugins CI, and run matomo-tests.yml on the update branch from the Actions tab: the
           matomo-tests.yml that `generate:test-action` writes does not subscribe to `reopened`.
-          Pushing to it starts both, but stops this workflow refreshing it.
+          Pushing to it starts both, but stops this workflow refreshing it. It also requests the
+          team review, so a token that cannot request one fails the run; a GitHub App needs
+          organisation Members read access for that. Without the token no review is requested.
         required: false
 
 # The job that runs composer update can also run code the newly resolved packages ship, such as a
@@ -816,19 +818,23 @@ jobs:
           body-path: ${{ runner.temp }}/rebuilt/pull-request-body.md
           labels: Needs Review
 
-      # Only on a new pull request, and not through the action's team-reviewers, which requests on
-      # every weekly refresh and would notify the team again while the pull request is in review.
+      # Not the action's team-reviewers, which requests on every weekly refresh and would notify the
+      # team again while the pull request is in review. This runs on every refresh too, so a refused
+      # request is retried, but requests only while nobody is requested and nobody has reviewed.
       - name: Request review from the plugin reviewers
-        if: ${{ steps.pr.outputs.pull-request-operation == 'created' }}
+        if: ${{ steps.pr.outputs.pull-request-number != '' }}
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.DEPS_PR_TOKEN }}
           PR_NUMBER: ${{ steps.pr.outputs.pull-request-number }}
+          OPERATION: ${{ steps.pr.outputs.pull-request-operation }}
           OWNER: ${{ github.repository_owner }}
           TEAM: ${{ inputs.reviewer-team }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::No DEPS_PR_TOKEN, and GITHUB_TOKEN cannot request a team review, so request one on #$PR_NUMBER by hand."
+            if [ "$OPERATION" = created ]; then
+              echo "::warning::No DEPS_PR_TOKEN, so no review was requested on #$PR_NUMBER. Request one by hand."
+            fi
             exit 0
           fi
           if [ -z "$TEAM" ]; then
@@ -836,16 +842,28 @@ jobs:
               matomo-org) TEAM=plugin-reviewers ;;
               innocraft) TEAM=premium-plugins-reviewers ;;
               *)
-                echo "::warning::No reviewer team is known for $OWNER, so none was requested on #$PR_NUMBER. Pass reviewer-team to request one."
+                if [ "$OPERATION" = created ]; then
+                  echo "::warning::No reviewer team is known for $OWNER, so none was requested on #$PR_NUMBER. Pass reviewer-team to request one."
+                fi
                 exit 0
                 ;;
             esac
           fi
-          if ! out=$(gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/requested_reviewers" \
-              -f "team_reviewers[]=$TEAM" 2>&1); then
-            echo "::error::Could not request review from $OWNER/$TEAM on #$PR_NUMBER: ${out//$'\n'/ }"
+          fail() {
+            local out="${2//[$'\r\n']/ }"
+            # GitHub decodes % in an annotation.
+            echo "::error::$1 on #$PR_NUMBER: ${out//%/%25}. The next run that refreshes it tries again."
             exit 1
-          fi
+          }
+          pr="repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER"
+          # A reviewer leaves requested_reviewers once they review, so the reviews are read as well.
+          out=$(gh api "$pr/requested_reviewers" --jq '(.users | length) + (.teams | length)' 2>&1) \
+            || fail 'Could not read the requested reviewers' "$out"
+          [ "$out" = 0 ] || exit 0
+          out=$(gh api "$pr/reviews" --jq 'length' 2>&1) || fail 'Could not read the reviews' "$out"
+          [ "$out" = 0 ] || exit 0
+          out=$(gh api --method POST "$pr/requested_reviewers" -f "team_reviewers[]=$TEAM" 2>&1) \
+            || fail "Could not request review from $OWNER/$TEAM" "$out"
 
       - name: Warn when the plugin's CI will not start
         shell: bash
