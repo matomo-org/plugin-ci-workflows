@@ -66,7 +66,7 @@ on:
         type: string
         default: 'Updated dependencies'
       reviewer-team:
-        description: "Slug of the team in the repository's organisation that a new pull request requests review from. Empty picks plugin-reviewers in matomo-org and premium-plugins-reviewers in innocraft."
+        description: "Slug of the team in the repository's organisation whose review the pull request requests while nobody is requested and nobody has reviewed. Empty picks plugin-reviewers in matomo-org and premium-plugins-reviewers in innocraft."
         required: false
         type: string
         default: ''
