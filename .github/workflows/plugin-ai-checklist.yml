@@ -3,10 +3,11 @@ name: AI Checklist
 on:
   workflow_call: {}
 
-# The gate reads the pull request description; callers must grant these two
-# scopes in their own permissions block.
+# The gate reads the pull request description, and contents: read looks up the release tag below;
+# callers must grant these three scopes in their own permissions block.
 permissions:
   actions: read
+  contents: read
   pull-requests: read
 
 jobs:
@@ -14,5 +15,33 @@ jobs:
     name: AI checklist gate
     runs-on: ubuntu-24.04
     steps:
+      # The release date pull request plugin-dev-release.yml opens has no person to fill in the
+      # checklist. It is recognised by its head being the commit its version was tagged at, which
+      # only the workflow (or someone who can already push tags) makes, not by branch or author
+      # names anyone can push. The job still runs and passes, so the gate's check is reported.
+      - name: Recognise the release date pull request
+        id: release-date
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tagged=false
+          if [[ "$HEAD_REF" =~ ^automated/release-date-([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            version="${BASH_REMATCH[1]}"
+            if ! tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$version" \
+              --jq 'select(.object.type == "commit") | .object.sha' 2>&1); then
+              # A missing tag is an ordinary pull request; any other failure would leave the date pull
+              # request failing the gate with nothing saying why.
+              [[ "$tag_sha" == *"HTTP 404"* ]] || echo "::warning::Could not look up the $version tag: $tag_sha"
+              tag_sha=
+            fi
+            if [[ -n "$tag_sha" && "$tag_sha" == "$HEAD_SHA" ]]; then
+              tagged=true
+              echo "The head is the commit $version was released from, so the checklist is not required."
+            fi
+          fi
+          echo "tagged=$tagged" >> "$GITHUB_OUTPUT"
       - name: Run the checklist gate
+        if: steps.release-date.outputs.tagged != 'true'
         uses: matomo-org/github-action-checklist-gate@d5f101a2538ef30ddb3b06cc366f852c9851b588 # main as of 2026-08-04
