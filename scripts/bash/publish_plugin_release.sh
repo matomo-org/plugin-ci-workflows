@@ -6,6 +6,7 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_NAME="${1:-}"
 VERSION="${2:-}"
 RELEASE_DATE="${3:-}"
@@ -20,13 +21,28 @@ fi
 release_notes=$(mktemp)
 release_response=$(mktemp)
 release_error=$(mktemp)
-trap 'rm -f "$release_notes" "$release_response" "$release_error"' EXIT
+notes_error=$(mktemp)
+trap 'rm -f "$release_notes" "$release_response" "$release_error" "$notes_error"' EXIT
 
-{
-    printf 'Released on %s.\n\n' "$RELEASE_DATE"
-    printf 'See [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md) for the changes in this release.\n' \
-        "$GITHUB_REPOSITORY" "$VERSION"
-} > "$release_notes"
+# Reads the tag's changelog, since a run finishing an earlier version has a later commit checked out.
+write_release_notes() {
+    local changes reason
+    changes=$( { git show "refs/tags/$VERSION:CHANGELOG.md" \
+        | python3 "$SCRIPT_DIR/../python/update_changelog_date.py" \
+            --read-notes --plugin-name "$PLUGIN_NAME" /dev/stdin "$VERSION"; } 2> "$notes_error") || changes=""
+    {
+        printf 'Released on %s.\n\n' "$RELEASE_DATE"
+        if [[ -n "$changes" ]]; then
+            printf '%s\n\n' "$changes"
+        else
+            reason=$(tr '\n' ' ' < "$notes_error")
+            echo "::warning::No changes were read from the changelog entry for $VERSION in its tag${reason:+ (${reason% })}, so its release notes only link to CHANGELOG.md" >&2
+        fi
+        # Kept after the changes too, in case the entry's end was misread.
+        printf 'See [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md) for the full changelog.\n' \
+            "$GITHUB_REPOSITORY" "$VERSION"
+    } > "$release_notes"
+}
 
 # Prints true when VERSION is higher than the current latest release, or there is none, so a patch
 # on an older major never takes latest from a newer one. GitHub's own default is whichever was
@@ -133,6 +149,7 @@ elif grep -Eq '^HTTP/[0-9.]+[[:space:]]+404([[:space:]]|$)' "$release_response";
         mark_published "$draft_id" "${draft_author:-}"
     else
         make_latest=$(latest_flag)
+        write_release_notes
         gh release create "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
