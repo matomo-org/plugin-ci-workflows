@@ -433,6 +433,39 @@ new_repo check-invalid '* 6.0.3 - 2026-13-45 - Three'
 if run check-invalid check_plugin_release_date.sh 6.x-dev; then fail "an impossible date fails"; fi
 says check-invalid 'invalid date' || fail "an impossible date says why"
 
+new_repo check-skipped '* 6.0.3 Three'
+printf '## Changelog\n\n6.0.3\n- Three\n\n6.0.2\n- Two\n' > "$WORK/check-skipped/clone/CHANGELOG.md"
+if run check-skipped check_plugin_release_date.sh 6.x-dev; then fail "a version bumped past an unreleased one fails"; fi
+says check-skipped '::error file=CHANGELOG.md::The 6.0.2 entry is undated and 6.0.2 has not been released' || fail "a skipped version is named"
+
+new_repo check-skipped-list '* 6.0.3 Three'
+printf '## Changelog\n\n* 6.0.3 Three\n* 6.0.2 Two\n' > "$WORK/check-skipped-list/clone/CHANGELOG.md"
+if run check-skipped-list check_plugin_release_date.sh 6.x-dev; then fail "a one-line entry bumped past an unreleased one fails"; fi
+says check-skipped-list 'The 6.0.2 entry is undated' || fail "a skipped one-line entry is named"
+
+new_repo check-earlier-v-tag '* 6.0.3 Three'
+printf '## Changelog\n\n* 6.0.3 Three\n* 6.0.2 Two\n' > "$WORK/check-earlier-v-tag/clone/CHANGELOG.md"
+git -C "$WORK/check-earlier-v-tag/origin.git" tag v6.0.2 6.x-dev
+run check-earlier-v-tag check_plugin_release_date.sh 6.x-dev || fail "an undated entry below that was released as v6.0.2 passes"
+
+new_repo check-earlier-major '* 6.0.0 Six'
+set_version check-earlier-major 6.0.0
+printf '## Changelog\n\n* 6.0.0 Six\n* 5.9.0 Five\n' > "$WORK/check-earlier-major/clone/CHANGELOG.md"
+run check-earlier-major check_plugin_release_date.sh 6.x-dev || fail "an undated entry below from the previous major passes"
+
+new_repo check-earlier-long-date '* 6.0.3 Three'
+printf '## Changelog\n\n## 6.0.3\n- Three\n\n## 6.0.2 September 20, 2026\n- Two\n' > "$WORK/check-earlier-long-date/clone/CHANGELOG.md"
+run check-earlier-long-date check_plugin_release_date.sh 6.x-dev || fail "an entry below dated in a format the release cannot write passes"
+
+new_repo check-earlier-released '* 6.0.3 Three'
+printf '## Changelog\n\n* 6.0.3 Three\n* 6.0.2 Two\n' > "$WORK/check-earlier-released/clone/CHANGELOG.md"
+git -C "$WORK/check-earlier-released/origin.git" tag 6.0.2 6.x-dev
+run check-earlier-released check_plugin_release_date.sh 6.x-dev || fail "an undated entry below that was released passes"
+
+new_repo check-version-in-notes '* 6.0.3 Three'
+printf '## Changelog\n\n## 6.0.3\n- Three\n\n6.0.2 behaviour is kept\n\n## 6.0.2 - 2026-10-05\n- Two\n' > "$WORK/check-version-in-notes/clone/CHANGELOG.md"
+run check-version-in-notes check_plugin_release_date.sh 6.x-dev || { cat "$WORK/check-version-in-notes/out" >&2; fail "a note starting with a version is not read as an entry"; }
+
 new_repo check-other-branch '* 6.0.3 - 2026-10-12 - Three'
 run check-other-branch check_plugin_release_date.sh 6.x-prod || fail "a branch other than N.x-dev passes"
 

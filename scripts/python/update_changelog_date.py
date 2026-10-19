@@ -47,6 +47,7 @@ def parse_args():
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--read-date", action="store_true")
     parser.add_argument("--read-notes", action="store_true")
+    parser.add_argument("--read-next-undated", action="store_true")
     parser.add_argument("--plugin-name")
     return parser.parse_args()
 
@@ -107,7 +108,19 @@ def read_date(changelog, version, plugin_name=None):
     raise ValueError(f"No release date found for version {version}")
 
 
-def read_notes(changelog, version, plugin_name=None):
+# The version of the entry straight after this one when it is undated, found by where read_notes ends
+# this one, so a note that starts with a version is not taken for an entry.
+def read_next_undated(changelog, version, plugin_name=None):
+    next_line = read_notes(changelog, version, plugin_name, next_entry=True)
+    match = next_line is not None and version_line_pattern(None, plugin_name, r"(?P<number>\d+\.\d+\.\d+)").match(next_line)
+    rest = match.group("rest") if match else ""
+    # A date the release could not write is still a date, so that entry is not taken for an unreleased one.
+    if match and not DATE_PATTERN.match(rest.lstrip(DATE_LEAD)) and not UNSUPPORTED_DATE_PATTERN.match(rest.lstrip(UNSUPPORTED_DATE_LEAD)):
+        return match.group("number")
+    return None
+
+
+def read_notes(changelog, version, plugin_name=None, next_entry=False):
     version_line = version_line_pattern(version, plugin_name)
     any_version_line = version_line_pattern(
         None, plugin_name, r"(?P<number>\d+\.\d+\.\d+)(?P<pre>-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?"
@@ -152,6 +165,7 @@ def read_notes(changelog, version, plugin_name=None):
         fence = None
         previous_blank = False
         indented_code = False
+        ended_by = None
         for line in body:
             line_indent = len(line) - len(line.lstrip())
             # Indented four or more past the version line, it is code, not a heading or a break.
@@ -226,10 +240,13 @@ def read_notes(changelog, version, plugin_name=None):
                 # A grouping heading such as "### Version 5" ends an entry at any level.
                 or (next_heading and re.fullmatch(r"\s*#+\s+\[?Version\s+v?\d+(?:\.\d+)?(?:\.x)?\]?\s*", line, re.I))
             ):
+                ended_by = line
                 break
             notes.append(line)
             previous_blank = not line.strip()
 
+        if next_entry:
+            return ended_by
         if fence is not None:
             raise ValueError(f"The changelog entry for {version} has a code block that is never closed")
         while notes and not notes[0].strip():
@@ -343,11 +360,22 @@ def main():
 
     changelog = Path(args.changelog)
     if args.read_notes:
-        if args.release_date is not None or args.check or args.read_date:
-            print("--read-notes cannot be combined with a release date, --check or --read-date", file=sys.stderr)
+        if args.release_date is not None or args.check or args.read_date or args.read_next_undated:
+            print("--read-notes cannot be combined with a release date, --check, --read-date or --read-next-undated", file=sys.stderr)
             return 1
         try:
             print(read_notes(changelog, args.version, args.plugin_name))
+        except (OSError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 1
+        return 0
+
+    if args.read_next_undated:
+        if args.release_date is not None or args.check or args.read_date:
+            print("--read-next-undated cannot be combined with a release date, --check or --read-date", file=sys.stderr)
+            return 1
+        try:
+            print(read_next_undated(changelog, args.version, args.plugin_name) or "")
         except (OSError, ValueError) as error:
             print(error, file=sys.stderr)
             return 1
