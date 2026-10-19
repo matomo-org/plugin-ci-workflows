@@ -550,17 +550,18 @@ The branch list is deliberately explicit rather than every `*.x-dev` branch a re
 
 A version the workflow tagged is finished by later runs until its release is published and its date is on the branch, even after `plugin.json` has moved on: each run publishes the release and opens or merges the pull request from the tagged commit.
 
-The pull request merges through auto-merge, so turn on the repository setting "Allow auto-merge"; without it, a pull request waiting on required checks is left open. When the branch protection does not let it merge, the pull request is left open for a person with a warning. The release is out either way. It only merges the commit it tagged, with a merge commit so that commit stays on the branch, and never a pull request that changes more than `CHANGELOG.md`.
+The pull request merges through auto-merge, so turn on the repository setting "Allow auto-merge"; without it, a pull request waiting on required checks is left open. When the branch protection does not let it merge, the pull request is left open for a person with a warning, labelled `Needs Review`, and, with `approver-token`, sent for review to `reviewer-team`; a rerun does not request it again while someone is requested or anyone other than the approver has reviewed. A pull request that merges by itself is neither labelled nor sent for review. The release is out either way. It only merges the commit it tagged, with a merge commit so that commit stays on the branch, and never a pull request that changes more than `CHANGELOG.md`.
 
 `GITHUB_TOKEN` opens the pull request, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests". Its checks are then held for approval, which the workflow gives.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `workflows-ref` | no | `main` | Ref of this repository for the release scripts. When `uses:` is pinned to a commit, pin this to the same commit, or the scripts still run from `main` |
+| `reviewer-team` | no | `plugin-reviewers` in matomo-org, `premium-plugins-reviewers` in innocraft | Slug of the team in the repository's organisation that a release date pull request left waiting on a person requests review from. In any other organisation nothing is requested unless this is set |
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. Scope it to the one plugin repository: a fine-grained token, or a GitHub App, with contents and pull requests read and write. Not yet exercised end to end |
+| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. Scope it to the one plugin repository: a fine-grained token, or a GitHub App, with contents and pull requests read and write. It also requests the team review, for which a GitHub App needs organisation Members read access. Not yet exercised end to end |
 
 ```yaml
 name: Weekly release

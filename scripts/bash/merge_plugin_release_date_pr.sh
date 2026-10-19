@@ -7,6 +7,8 @@
 # request it opened.
 # Refuses a pull request that changes anything but CHANGELOG.md or carries a commit from anyone
 # other than the workflow, since that is all the approver is trusted to approve.
+# A pull request left waiting on a person is labelled Needs Review and, with the approver token,
+# sent for review to RELEASE_REVIEWER_TEAM or the organisation's plugin reviewers.
 # Usage: merge_plugin_release_date_pr.sh <base-branch> <version>
 
 set -euo pipefail
@@ -17,14 +19,58 @@ BRANCH="automated/release-date-$VERSION"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 RUNS_WAIT_SECONDS="${RUNS_WAIT_SECONDS:-120}"
 RUNS_POLL_SECONDS="${RUNS_POLL_SECONDS:-10}"
+APPROVAL_BODY="Dates the $VERSION release; approved by the release workflow."
 
 if [[ -z "$BASE_BRANCH" || -z "$VERSION" ]]; then
     echo "Usage: $0 <base-branch> <version>" >&2
     exit 1
 fi
 
+# GitHub decodes % in an annotation.
+annotation() {
+    local s="${1//[$'\r\n']/ }"
+    echo "${s//%/%25}"
+}
+
+# Only for a pull request waiting on a person, so a release that merges itself notifies nobody.
+# Requests review the way plugin-vendored-deps-update.yml's step does, which cannot share this:
+# that job holds a write token, so it runs nothing from workflows-ref.
+ask_for_review() {
+    local out team="${RELEASE_REVIEWER_TEAM:-}" owner="${GITHUB_REPOSITORY%%/*}"
+    local api="repos/$GITHUB_REPOSITORY/pulls/$pr"
+    out=$(gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$pr/labels" -f 'labels[]=Needs Review' 2>&1 >/dev/null) \
+        || echo "::warning::Could not label #$pr Needs Review: $(annotation "$out")"
+    if [[ -z "${RELEASE_APPROVER_TOKEN:-}" ]]; then
+        echo "::warning::No approver token, so no review was requested on #$pr. Request one by hand."
+        return 0
+    fi
+    if [[ -z "$team" ]]; then
+        case "$owner" in
+            matomo-org) team=plugin-reviewers ;;
+            innocraft) team=premium-plugins-reviewers ;;
+            *)
+                echo "::warning::No reviewer team is known for $owner, so none was requested on #$pr. Pass reviewer-team to request one."
+                return 0
+                ;;
+        esac
+    fi
+    # GITHUB_TOKEN cannot request a team review; the approver token can. A rerun must not notify the
+    # team again, and a reviewer leaves requested_reviewers once they review, so both are read. The
+    # approver's own approval is not someone reviewing it.
+    out=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh api "$api/requested_reviewers" --jq '(.users | length) + (.teams | length)' 2>&1) \
+        || { echo "::warning::Could not read the requested reviewers on #$pr: $(annotation "$out")"; return 0; }
+    [[ "$out" == 0 ]] || return 0
+    out=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh api "$api/reviews" \
+        --jq "[.[] | select(.body != \"$APPROVAL_BODY\")] | length" 2>&1) \
+        || { echo "::warning::Could not read the reviews on #$pr: $(annotation "$out")"; return 0; }
+    [[ "$out" == 0 ]] || return 0
+    out=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh api --method POST "$api/requested_reviewers" -f "team_reviewers[]=$team" 2>&1) \
+        || echo "::warning::Could not request review from $owner/$team on #$pr: $(annotation "$out")"
+}
+
 leave_open() {
     echo "::warning::Release date pull request #$pr was left open for a person to merge: $*"
+    ask_for_review
     exit 0
 }
 
@@ -108,7 +154,7 @@ done
 
 if [[ -n "${RELEASE_APPROVER_TOKEN:-}" ]]; then
     if ! approve_output=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh pr review "$pr" --approve \
-        --body "Dates the $VERSION release; approved by the release workflow." 2>&1); then
+        --body "$APPROVAL_BODY" 2>&1); then
         leave_open "the approver token could not approve it: $approve_output"
     fi
     echo "Approved #$pr."
@@ -130,4 +176,15 @@ if ! merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" --auto 2>&1); then
         *) leave_open "$merge_output" ;;
     esac
 fi
+# Auto-merge also waits, without a word, on an approving review the branch protection needs, and on
+# a person's requested changes.
+decision=$(gh pr view "$pr" --json state,reviewDecision --jq '.state + " " + .reviewDecision' 2>&1) \
+    || echo "::warning::Could not read whether #$pr waits on an approving review: $(annotation "$decision")"
+case "$decision" in
+    "OPEN REVIEW_REQUIRED" | "OPEN CHANGES_REQUESTED")
+        echo "::warning::Release date pull request #$pr is set to merge, but waits on a review (${decision#OPEN })."
+        ask_for_review
+        exit 0
+        ;;
+esac
 echo "#$pr merges into $BASE_BRANCH once its required checks pass, if it has not already."
