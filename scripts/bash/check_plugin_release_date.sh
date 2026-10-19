@@ -41,7 +41,7 @@ fi
 # Parsed, not grepped, so a commented-out call does not count. Exits 3 when no job calls it, so an
 # unreadable workflow cannot pass as a plugin that does not.
 calls_status=0
-calls_error=$(python3 -P - "$RELEASE_WORKFLOW" "${workflow_files[@]}" 2>&1 <<'PY') || calls_status=$?
+calls_error=$(python3 -P - "$RELEASE_WORKFLOW" "${workflow_files[@]}" 2>&1 <<'PY'
 import sys, yaml
 target = sys.argv[1]
 for path in sys.argv[2:]:
@@ -59,6 +59,7 @@ for path in sys.argv[2:]:
             sys.exit(0)
 sys.exit(3)
 PY
+) || calls_status=$?
 if (( calls_status == 3 )); then
     echo "This plugin does not call plugin-dev-release.yml, so its changelog dates are its own."
     exit 0

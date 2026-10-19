@@ -158,9 +158,28 @@ new_earlier() {
     if [[ "$by" == workflow ]]; then
         run "$name" push_plugin_release_date.sh 6.x-dev 2026-10-05 || fail "dating the earlier version succeeds"
     else
+        # Every other value commits as the bot, forging the workflow's date commit in that way.
+        local as=()
+        [[ "$by" == human ]] || as=("${BOT[@]}")
         git -C "$clone" switch -q -c automated/release-date-6.0.3
+        if [[ "$by" == unreviewed-parent ]]; then
+            printf 'unreviewed\n' > "$clone/extra.php"
+            git -C "$clone" add extra.php
+            git -C "$clone" commit -q -m 'an unreviewed commit'
+        fi
         sed -i 's/6.0.3 - Three/6.0.3 - 2026-10-05 - Three/' "$clone/CHANGELOG.md"
-        git -C "$clone" commit -q -am 'Add release date for 6.0.3'
+        if [[ "$by" == extra-file ]]; then
+            printf 'unreviewed\n' > "$clone/extra.php"
+            git -C "$clone" add extra.php
+        fi
+        if [[ "$by" == merge ]]; then
+            git -C "$clone" switch -q -c side
+            git -C "$clone" commit -q -am 'a side commit'
+            git -C "$clone" switch -q automated/release-date-6.0.3
+            env "${as[@]}" git -C "$clone" merge -q --no-ff -m 'Add release date for 6.0.3' side
+        else
+            env "${as[@]}" git -C "$clone" commit -q -am 'Add release date for 6.0.3'
+        fi
         git -C "$clone" push -q origin automated/release-date-6.0.3
     fi
     git -C "$clone" tag 6.0.3
@@ -176,6 +195,7 @@ if ! { says prepare-earlier 'release_needed=true' && says prepare-earlier 'versi
     && says prepare-earlier 'finish=6.0.3:2026-10-05 6.0.4:2026-10-12'; }; then
     fail "an earlier unfinished version is finished first, then plugin.json's is released"
 fi
+! says prepare-earlier 'tag carries this workflow' || fail "the workflow's own date commit is not warned about"
 
 mkdir "$WORK/prepare-earlier/bin"
 cat > "$WORK/prepare-earlier/bin/git" <<SH
@@ -199,6 +219,15 @@ says prepare-earlier-done 'finish=6.0.4:2026-10-12' || fail "an earlier finished
 new_earlier prepare-earlier-human human
 run prepare-earlier-human prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "an earlier version tagged by a person is skipped, not failed"
 says prepare-earlier-human 'finish=6.0.4:2026-10-12' || fail "an earlier version tagged by a person is never published by the workflow"
+
+for forged in extra-file unreviewed-parent merge; do
+    new_earlier "prepare-forged-$forged" "$forged"
+    run "prepare-forged-$forged" prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+        || fail "a forged date commit ($forged) is skipped, not failed"
+    says "prepare-forged-$forged" 'finish=6.0.4:2026-10-12' \
+        || fail "a commit only dressed as the workflow's ($forged) is never published"
+    says "prepare-forged-$forged" 'The 6.0.3 tag carries this workflow' || fail "a rejected forged tag ($forged) says so"
+done
 
 new_repo prepare-prerelease '* 6.0.3-rc1 - Three'
 set_version prepare-prerelease 6.0.3-rc1
@@ -363,6 +392,8 @@ run shadow tag_plugin_dev_release.sh 6.0.3 2026-10-12 || { cat "$WORK/shadow/out
 
 new_repo check-undated '* 6.0.3 Three'
 run check-undated check_plugin_release_date.sh 6.x-dev || fail "an undated entry passes"
+# Bash 5.2 only warns about a here-document left outside its $( ); bash 5.1 runs its body as commands.
+! says check-undated 'here-document' || fail "every here-document closes inside its command substitution"
 
 new_repo check-unreleased '* 6.0.3 Unreleased - Three'
 run check-unreleased check_plugin_release_date.sh 6.x-dev || fail "an Unreleased entry passes"

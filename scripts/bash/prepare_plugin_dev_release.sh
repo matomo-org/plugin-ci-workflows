@@ -57,8 +57,19 @@ ours() {
         echo "::error::Could not fetch the $1 tag from origin." >&2
         exit 1
     fi
-    [[ "$(git log -1 --format='%ae%n%ce%n%s' "refs/tags/$1^{commit}")" \
-        == "$(printf '%s\n%s\n%s' "$BOT_EMAIL" "$BOT_EMAIL" "Add release date for $1")" ]]
+    local commit
+    commit=$(git rev-parse "refs/tags/$1^{commit}") || return 1
+    # Anyone who can push can forge the bot's identity, so the commit must also be what the workflow
+    # makes: one dated CHANGELOG.md on top of a commit already on the branch.
+    [[ "$(git log -1 --format='%ae%n%ce%n%s' "$commit")" \
+        == "$(printf '%s\n%s\n%s' "$BOT_EMAIL" "$BOT_EMAIL" "Add release date for $1")" ]] || return 1
+    if [[ "$(git rev-list --no-walk --parents "$commit" | wc -w)" == 2 ]] \
+        && git merge-base --is-ancestor "$commit^" "refs/remotes/origin/$BRANCH" \
+        && [[ "$(git diff --name-only "$commit^" "$commit")" == CHANGELOG.md ]]; then
+        return 0
+    fi
+    echo "::warning::The $1 tag carries this workflow's identity but is not one dated CHANGELOG.md on $BRANCH, so it is not resumed." >&2
+    return 1
 }
 
 # However the date pull request was merged, the branch then dates the version.

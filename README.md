@@ -81,7 +81,7 @@ jobs:
 
 **The `push` and `workflow_dispatch` triggers are what make a build badge mean anything**, and they follow the shape `matomo-tests.yml` already uses across the fleet. A workflow that only runs on `pull_request` never runs on the default branch, so GitHub's badge — which takes the newest run on any branch when it cannot find one on the default branch — reports whichever pull request someone opened last. That is why `plugin-LogViewer`'s PHPStan badge reads *failing* off a feature branch while its `6.x-dev` is fine. With the triggers above, one `?branch=6.x-dev` badge on this workflow says whether the plugin's checks pass on the branch that ships.
 
-The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. It is also skipped on the [weekly release](#weekly-release)'s own release date pull request, which no person describes. Everything else runs on all three, but the timezone scan gates only on a pull request, where it compares with the base branch; on a push or a dispatch it reports findings without failing on them.
+The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. On the [weekly release](#weekly-release)'s own release date pull request, which no person describes, it passes without reading the description once the pull request's head is the commit the version was tagged at. Everything else runs on all three, but the timezone scan gates only on a pull request, where it compares with the base branch; on a push or a dispatch it reports findings without failing on them.
 
 Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-compatibility`, `skip-license-check`, `skip-min-php-lint`, `skip-timezone-safety`, `skip-release-date` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Most inputs the individual workflows take are passed through; the four that take a PHP version are named `phpcs-php-version`, `phpstan-php-version`, `compatibility-php-version` and `min-php-lint-php-version`. PHPStan and the compatibility check share `dependent-plugins` and `matomo-targets`. The optional timezone regression job is called separately from a plugin's test workflow so it does not rerun on description edits in this umbrella.
 
@@ -382,7 +382,7 @@ jobs:
 
 Runs [`github-action-checklist-gate`](https://github.com/matomo-org/github-action-checklist-gate) against the pull request description, which is what enforces the two AI attestation items in the pull request template. No inputs.
 
-The gate reads the pull request description, so the caller has to grant `actions: read` and `pull-requests: read` in its own `permissions` block — a called workflow cannot widen the caller's token.
+The gate reads the pull request description and looks up the release tag that lets the weekly release's date pull request pass, so the caller has to grant `actions: read`, `contents: read` and `pull-requests: read` in its own `permissions` block — a called workflow cannot widen the caller's token.
 
 ```yaml
 name: AI Checklist
@@ -392,6 +392,7 @@ on:
 
 permissions:
   actions: read
+  contents: read
   pull-requests: read
 
 concurrency:

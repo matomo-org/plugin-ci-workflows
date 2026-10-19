@@ -169,6 +169,34 @@ check(
     "plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@" in script("scripts/bash/check_plugin_release_date.sh"),
 )
 
+# A skipped calling job reports as `ai-checklist`, never as the gate's own check, so a branch that
+# requires the gate would hold the release date pull request forever. Names are pushable, a tag at
+# the head is not, so the date pull request is passed inside the gate, on its tag.
+ci_checklist = (load("plugin-ci.yml").get("jobs") or {}).get("ai-checklist") or {}
+checklist_jobs = load("plugin-ai-checklist.yml").get("jobs") or {}
+gate_job = next(iter(checklist_jobs.values()), {})
+gate_steps = [step for step in gate_job.get("steps") or [] if isinstance(step, dict)]
+recognise = next((step for step in gate_steps if step.get("id") == "release-date"), {})
+check(
+    "Plugins CI does not skip the checklist on branch or author names",
+    not any(name in str(ci_checklist.get("if", "")) for name in ("head_ref", "user.login", "release-date")),
+)
+check("the checklist gate job itself is never skipped", len(checklist_jobs) == 1 and "if" not in gate_job)
+check(
+    "the date pull request is recognised by its head being the release tag",
+    "git/ref/tags/" in str(recognise.get("run", ""))
+    and "pull_request.head.sha" in str(recognise.get("env", "")),
+)
+check(
+    "only the gate step is passed over for it",
+    any("checklist-gate" in str(step.get("uses", "")) and "steps.release-date.outputs.tagged" in str(step.get("if", ""))
+        for step in gate_steps),
+)
+check(
+    "Plugins CI grants the checklist the contents scope its tag lookup needs",
+    (ci_checklist.get("permissions") or {}).get("contents") == "read",
+)
+
 print()
 print(f"{tests} tests, {len(failures)} failures")
 if failures:

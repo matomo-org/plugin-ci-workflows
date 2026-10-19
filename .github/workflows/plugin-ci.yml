@@ -132,7 +132,7 @@ on:
         required: false
 
 # The union of what the checks below need, which is the cost of one caller: a plugin that only
-# wanted PHPCS previously needed no scopes at all, and now grants the checklist gate's two.
+# wanted PHPCS previously needed no scopes at all, and now grants the checklist gate's three.
 permissions:
   actions: read
   contents: read
@@ -190,16 +190,14 @@ jobs:
     # three to four seconds AFTER the `push` run, on the pull request being opened and on a later
     # push to it, so the failing suite was the newest and the verdict held. That ordering is not
     # documented and the margin is seconds, so this is recorded rather than relied on.
-    # The release date pull request plugin-dev-release.yml opens has no person to fill in the
-    # checklist; its merge script refuses it unless it only dates CHANGELOG.md.
-    if: >-
-      ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request'
-      && !(startsWith(github.head_ref, 'automated/release-date-')
-      && github.event.pull_request.user.login == 'github-actions[bot]'
-      && github.event.pull_request.head.repo.full_name == github.repository) }}
+    # The release date pull request plugin-dev-release.yml opens is passed inside the called
+    # workflow, not skipped here: a skip here reports as `ai-checklist`, never as the gate's own
+    # check, so a branch requiring the gate would hold that pull request forever.
+    if: ${{ !inputs.skip-ai-checklist && github.event_name == 'pull_request' }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-ai-checklist.yml@main
     permissions:
       actions: read
+      contents: read
       pull-requests: read
 
   # The lane above is worth nothing if the caller declares a group of its own: this workflow cannot
