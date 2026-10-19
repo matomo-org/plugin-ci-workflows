@@ -1,6 +1,7 @@
 #!/bin/bash
 # Tests for scripts/bash/check_scoped_tree.sh, scripts/bash/scope_plugin_dependencies.sh, the
-# scope-dependencies action and .github/workflows/plugin-vendored-deps-update.yml.
+# scope-dependencies action, scripts/python/bump_plugin_version.py and
+# .github/workflows/plugin-vendored-deps-update.yml.
 # Usage: bash tests/vendored_deps_update_test.sh
 #
 # The check exists because the scoping pipeline reports success on output it did not produce, so
@@ -1765,6 +1766,281 @@ if [ "$yaml_status" -ne 0 ]; then
   echo "FAIL - the workflow invariants block ran to completion (exited $yaml_status)"
   failures+=("the workflow invariants block ran to completion")
 fi
+
+# scripts/python/bump_plugin_version.py, then the step that runs it.
+BUMP="$ROOT/scripts/python/bump_plugin_version.py"
+
+# A plugin named $1 at version $2 whose CHANGELOG.md is $3, in a git repository so a test can check it is untouched.
+bump_plugin() {
+  local dir="$WORK/bump/$1"
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  printf '{\n    "name": "Foo",\n    "version": "%s",\n    "require": {"matomo": ">=6.0.0-b1,<7.0.0-b1"}\n}\n' "$2" > "$dir/plugin.json"
+  printf '%b' "$3" > "$dir/CHANGELOG.md"
+  git -C "$dir" init -q
+  git -C "$dir" add plugin.json CHANGELOG.md
+  git -C "$dir" -c user.email=t@t -c user.name=t commit -qm base
+  echo "$dir"
+}
+
+# Runs the script and compares its exit status, plugin.json version and CHANGELOG.md with what is wanted.
+expect_bump() {
+  local description="$1" dir="$2" released="$3" want_status="$4" want_version="$5" want_changelog="$6"
+  tests=$((tests + 1))
+  local output status got_version
+  output=$(python3 -I "$BUMP" "$dir" "$released" 'Updated dependencies' 2>&1)
+  status=$?
+  got_version=$(jq -r .version "$dir/plugin.json")
+  if [ "$status" -ne "$want_status" ]; then
+    echo "FAIL - $description (exited $status, wanted $want_status): $output"
+    failures+=("$description")
+  elif [ "$got_version" != "$want_version" ]; then
+    echo "FAIL - $description (version $got_version, wanted $want_version): $output"
+    failures+=("$description")
+  elif [ "$(cat "$dir/CHANGELOG.md")" != "$(printf '%b' "$want_changelog")" ]; then
+    echo "FAIL - $description (changelog differs): $(diff <(printf '%b' "$want_changelog") "$dir/CHANGELOG.md")"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+
+PLAIN='## Changelog\n\n6.0.3 - 2026-10-12\n- Fixed a thing\n\n6.0.2 - 2026-09-21\n- Fixed another\n'
+dir=$(bump_plugin plain 6.0.3 "$PLAIN")
+expect_bump "a released version is bumped to the next patch with a new, undated entry above the newest" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n6.0.4\n- Updated dependencies\n\n6.0.3 - 2026-10-12\n- Fixed a thing\n\n6.0.2 - 2026-09-21\n- Fixed another\n'
+expect_true "the bump edits plugin.json in place rather than reformatting it" \
+  grep -qxF '    "require": {"matomo": ">=6.0.0-b1,<7.0.0-b1"}' "$dir/plugin.json"
+
+dir=$(bump_plugin labelled 6.0.3 '# Foo Changelog\n\n#### Foo 6.0.3 - 2026-10-12\n* Fixed a thing\n')
+expect_bump "a new entry copies the newest one's heading and list marker" "$dir" released 0 6.0.4 \
+  '# Foo Changelog\n\n#### Foo 6.0.4\n* Updated dependencies\n\n#### Foo 6.0.3 - 2026-10-12\n* Fixed a thing\n'
+
+dir=$(bump_plugin spaced 6.0.4 '## Changelog\n\n# 6.0.4 - 2026-10-05\n\n- Fixed a thing\n')
+expect_bump "a new entry keeps the blank line the newest one has under its heading" "$dir" released 0 6.0.5 \
+  '## Changelog\n\n# 6.0.5\n\n- Updated dependencies\n\n# 6.0.4 - 2026-10-05\n\n- Fixed a thing\n'
+
+dir=$(bump_plugin emphasis 6.0.6 '__6.0.6__ - 2026-10-19\n- Fixed a thing\n')
+expect_bump "a new entry keeps the newest one's emphasis around the version" "$dir" released 0 6.0.7 \
+  '__6.0.7__\n- Updated dependencies\n\n__6.0.6__ - 2026-10-19\n- Fixed a thing\n'
+
+dir=$(bump_plugin pending 6.0.3 '## Changelog\n\n6.0.3\n- Fixed a thing\n  over two lines\n\n6.0.2 - 2026-09-21\n- Fixed another\n')
+expect_bump "an unreleased version keeps its number and gains the line at the end of its entry" "$dir" unreleased 0 6.0.3 \
+  '## Changelog\n\n6.0.3\n- Fixed a thing\n  over two lines\n- Updated dependencies\n\n6.0.2 - 2026-09-21\n- Fixed another\n'
+expect_bump "an unreleased entry that already has the line is left as it is" "$dir" unreleased 0 6.0.3 \
+  '## Changelog\n\n6.0.3\n- Fixed a thing\n  over two lines\n- Updated dependencies\n\n6.0.2 - 2026-09-21\n- Fixed another\n'
+
+dir=$(bump_plugin no-entry 6.0.4 "$PLAIN")
+expect_bump "an unreleased version with no entry yet gets one" "$dir" unreleased 0 6.0.4 \
+  '## Changelog\n\n6.0.4\n- Updated dependencies\n\n6.0.3 - 2026-10-12\n- Fixed a thing\n\n6.0.2 - 2026-09-21\n- Fixed another\n'
+
+dir=$(bump_plugin crlf 6.0.3 '## Changelog\r\n\r\n6.0.3 - 2026-10-12\r\n- Fixed a thing\r\n')
+expect_bump "a changelog with CRLF line endings keeps them" "$dir" released 0 6.0.4 \
+  '## Changelog\r\n\r\n6.0.4\r\n- Updated dependencies\r\n\r\n6.0.3 - 2026-10-12\r\n- Fixed a thing\r\n'
+
+ONE_LINE='## Changelog\n\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
+dir=$(bump_plugin one-line 6.0.3 "$ONE_LINE")
+expect_bump "a one-line-per-version changelog is left alone" "$dir" released 3 6.0.3 "$ONE_LINE"
+
+FREE_TEXT='## Changelog\n\n6.0.3 - 2026-10-12 - Compatibility with Matomo 6\n- Fixed a thing\n'
+dir=$(bump_plugin free-text 6.0.3 "$FREE_TEXT")
+expect_bump "a heading with text beside the date is left alone" "$dir" released 3 6.0.3 "$FREE_TEXT"
+
+SUBHEADINGS='## Changelog\n\n## 6.0.3\n### Fixed\n- Fixed a thing\n'
+dir=$(bump_plugin subheadings 6.0.3 "$SUBHEADINGS")
+expect_bump "an entry with headings of its own is left alone" "$dir" unreleased 3 6.0.3 "$SUBHEADINGS"
+
+dir=$(bump_plugin prerelease 6.0.0-b2 '## Changelog\n\n6.0.0-b2\n- Fixed a thing\n')
+expect_bump "a released prerelease is not bumped, since its next version is not obvious" "$dir" released 3 6.0.0-b2 \
+  '## Changelog\n\n6.0.0-b2\n- Fixed a thing\n'
+
+dir=$(bump_plugin next-exists 6.0.3 '## Changelog\n\n6.0.4\n- Fixed a thing\n\n6.0.3 - 2026-10-12\n- Fixed another\n')
+expect_bump "a changelog already ahead of plugin.json is left alone" "$dir" released 3 6.0.3 \
+  '## Changelog\n\n6.0.4\n- Fixed a thing\n\n6.0.3 - 2026-10-12\n- Fixed another\n'
+
+dir=$(bump_plugin ahead 6.0.3 '## Changelog\n\n6.0.4\n- Fixed a thing\n\n6.0.2 - 2026-09-21\n- Fixed another\n')
+expect_bump "an unreleased version older than the newest entry is left alone" "$dir" unreleased 3 6.0.3 \
+  '## Changelog\n\n6.0.4\n- Fixed a thing\n\n6.0.2 - 2026-09-21\n- Fixed another\n'
+
+AHEAD_MINOR='## Changelog\n\n6.1.0\n- Added a thing\n\n6.0.3 - 2026-10-12\n- Fixed a thing\n'
+dir=$(bump_plugin ahead-minor 6.0.3 "$AHEAD_MINOR")
+expect_bump "a released version is not bumped below a newer entry" "$dir" released 3 6.0.3 "$AHEAD_MINOR"
+
+dir=$(bump_plugin dated 6.0.3 "$PLAIN")
+expect_bump "an untagged version whose entry is dated is left alone, since it may have shipped" "$dir" unreleased 3 6.0.3 "$PLAIN"
+
+AHEAD_PENDING='## Changelog\n\n6.1.0\n- Added a thing\n\n6.0.3\n- Fixed a thing\n'
+dir=$(bump_plugin ahead-pending 6.0.3 "$AHEAD_PENDING")
+expect_bump "an unreleased version below a newer entry is left alone" "$dir" unreleased 3 6.0.3 "$AHEAD_PENDING"
+
+dir=$(bump_plugin footer 6.0.3 '## Changelog\n\n6.0.3\n- Fixed a thing\n\n[docs]: https://example.com\n')
+expect_bump "the line goes after the list, not after a footer below it" "$dir" unreleased 0 6.0.3 \
+  '## Changelog\n\n6.0.3\n- Fixed a thing\n- Updated dependencies\n\n[docs]: https://example.com\n'
+
+OLDEST_FIRST='## Changelog\n\n6.0.2\n- Fixed another\n\n6.0.3 - 2026-10-12\n- Fixed a thing\n'
+dir=$(bump_plugin oldest-first 6.0.3 "$OLDEST_FIRST")
+expect_bump "an oldest-first changelog is left alone" "$dir" released 3 6.0.3 "$OLDEST_FIRST"
+
+python3 - "$WORKFLOW" > "$WORK/bump-step.sh" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']
+print(next(s for s in steps if s.get('name') == 'Bump the plugin version')['run'])
+PY
+pr_step 'Apply the version bump' > "$WORK/apply-bump-step.sh"
+mkdir -p "$WORK/tagbin"
+cat > "$WORK/tagbin/gh" <<'SH'
+#!/bin/bash
+case "$2" in
+  */git/ref/tags/6.0.4 | */git/ref/tags/v6.0.4) answer="${GH_NEXT_TAG-$NOT_FOUND}" ;;
+  */git/ref/tags/v*) answer="$GH_V_TAG" ;;
+  */git/ref/tags/*) answer="$GH_TAG" ;;
+  */tags\?per_page=1) answer="${GH_TAGS-1}" ;;
+esac
+case "$answer" in
+  fail:*) echo "${answer#fail:}" >&2; exit 1 ;;
+  *) [ -n "$answer" ] && echo "$answer"; exit 0 ;;
+esac
+SH
+chmod +x "$WORK/tagbin/gh"
+export NOT_FOUND='fail:gh: Not Found (HTTP 404)'
+
+# Runs the update job's step on a plugin at 6.0.3 whose changelog is $CHANGELOG (or $PLAIN), then
+# checks the version of the bumped copy, that the plugin itself is untouched, and the note it outputs.
+# A hash is output exactly when the copy differs.
+expect_bump_step() {
+  local description="$1" tag="$2" v_tag="$3" want_version="$4" want_note="$5" want_hash="${6:-no}"
+  tests=$((tests + 1))
+  local dir runner got_version
+  dir=$(bump_plugin step 6.0.3 "${CHANGELOG-$PLAIN}")
+  runner="$WORK/bump/runner"
+  rm -rf "$runner"
+  mkdir -p "$runner"
+  if ! (cd "$WORK/bump" && PATH="$WORK/tagbin:$PATH" GITHUB_REPOSITORY=matomo-org/plugin-Foo PLUGIN_DIR=step \
+    RUNNER_TEMP="$runner" GITHUB_OUTPUT="$runner/output" BUMP="${BUMP_SCRIPT-$BUMP}" ENTRY="${BUMP_ENTRY-Updated dependencies}" \
+    GH_TOKEN=secret-token GH_TAG="$tag" GH_V_TAG="$v_tag" bash -eo pipefail "$WORK/bump-step.sh" > /dev/null 2>&1); then
+    echo "FAIL - $description (the step failed)"
+    failures+=("$description")
+    return
+  fi
+  got_version=$(jq -r .version "$runner/bump/plugin.json")
+  if [ "$got_version" != "$want_version" ]; then
+    echo "FAIL - $description (version $got_version, wanted $want_version)"
+    failures+=("$description")
+  elif ! git -C "$dir" diff --quiet; then
+    echo "FAIL - $description (the plugin itself was changed)"
+    failures+=("$description")
+  elif ! grep -qF -- "$want_note" <(grep '^note=' "$runner/output"); then
+    echo "FAIL - $description (outputs: $(tr '\n' ' ' < "$runner/output"))"
+    failures+=("$description")
+  elif [ "$(grep -c '^sha256=' "$runner/output")" != "$([ "$want_hash" = yes ] && echo 1 || echo 0)" ]; then
+    echo "FAIL - $description (sha256 output wrong for want_hash=$want_hash)"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+expect_bump_step "a tagged version is bumped" refs/tags/6.0.3 "$NOT_FOUND" 6.0.4 'bumped to 6.0.4' yes
+expect_bump_step "a version tagged with a v prefix is bumped" "$NOT_FOUND" refs/tags/v6.0.3 6.0.4 'bumped to 6.0.4' yes
+CHANGELOG='## Changelog\n\n6.0.3\n- Fixed a thing\n' \
+  expect_bump_step "an untagged version keeps its number" "$NOT_FOUND" "$NOT_FOUND" 6.0.3 'not released yet' yes
+GH_TAGS=0 expect_bump_step "a repository with no tags at all leaves the version, and says why" \
+  "$NOT_FOUND" "$NOT_FOUND" 6.0.3 'could not be checked. The repository has no tags.'
+expect_bump_step "a tag lookup that fails leaves the version, and says it still needs a bump" \
+  'fail:gh: Server Error (HTTP 500)' "$NOT_FOUND" 6.0.3 'needs the usual changelog entry and version bump'
+CHANGELOG="$ONE_LINE" expect_bump_step "a changelog the script leaves alone does not fail the step, and the output says why" \
+  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'not bumped, because no version heading'
+CHANGELOG='## Changelog\n\n6.0.3\n- Updated dependencies\n' \
+  expect_bump_step "an entry that already has the line gives a note but no files to apply" \
+  "$NOT_FOUND" "$NOT_FOUND" 6.0.3 'already says'
+GH_NEXT_TAG=refs/tags/6.0.4 expect_bump_step "a version whose next patch is already tagged is not bumped to it" \
+  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 '6.0.4 is already tagged'
+GH_NEXT_TAG=refs/tags/6.0.4 expect_bump_step "an untagged version whose next patch is already tagged is left alone" \
+  "$NOT_FOUND" "$NOT_FOUND" 6.0.3 '6.0.4 is already tagged'
+GH_TAGS='fail:gh: Server Error (HTTP 500)' expect_bump_step "a tag listing that fails leaves the version, and says why" \
+  "$NOT_FOUND" "$NOT_FOUND" 6.0.3 'could not be checked'
+BUMP_SCRIPT="$WORK/bump/missing.py" expect_bump_step "a workflows-ref without the script leaves the version, and says why" \
+  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'does not have scripts/python/bump_plugin_version.py'
+BUMP_ENTRY='  ' expect_bump_step "an empty changelog-entry leaves the version, and says why" \
+  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'changelog-entry input is empty'
+printf '#!/usr/bin/env python3\nimport sys\nopen(sys.argv[1] + "/CHANGELOG.md", "a").write("half")\nsys.exit(1)\n' > "$WORK/bump/fail.py"
+printf '#!/usr/bin/env python3\nimport os\nprint("The version was not bumped, because token=" + os.environ.get("GH_TOKEN", "unset"))\nraise SystemExit(3)\n' > "$WORK/bump/token.py"
+BUMP_SCRIPT="$WORK/bump/token.py" expect_bump_step "the script from workflows-ref gets no token" \
+  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'token=unset'
+BUMP_SCRIPT="$WORK/bump/fail.py" expect_bump_step "a script that fails part-way is not applied, and the output says so" \
+  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'the script that bumps it failed'
+
+# The pull-request job's side: the bumped files are applied only when they still match the hash.
+expect_apply_bump() {
+  local description="$1" want="$2" tamper="${3:-}"
+  tests=$((tests + 1))
+  local dir runner hash status=0
+  dir=$(bump_plugin apply 6.0.3 "$PLAIN")
+  runner="$WORK/bump/apply-runner"
+  rm -rf "$runner"
+  mkdir -p "$runner/rebuilt/bump"
+  printf '{"version": "6.0.4"}\n' > "$runner/rebuilt/bump/plugin.json"
+  printf 'bumped\n' > "$runner/rebuilt/bump/CHANGELOG.md"
+  hash=$(cd "$runner/rebuilt/bump" && sha256sum plugin.json CHANGELOG.md | sha256sum | cut -d' ' -f1)
+  case "$tamper" in
+    edit) echo more >> "$runner/rebuilt/bump/CHANGELOG.md" ;;
+    # To identical content, so only the symlink check can refuse it.
+    link) mv "$runner/rebuilt/bump/CHANGELOG.md" "$runner/same.md"; ln -s "$runner/same.md" "$runner/rebuilt/bump/CHANGELOG.md" ;;
+  esac
+  (cd "$WORK/bump" && RUNNER_TEMP="$runner" PLUGIN_DIR=apply EXPECTED="$hash" \
+    bash -eo pipefail "$WORK/apply-bump-step.sh" > /dev/null 2>&1) || status=$?
+  if [ "$want" = applied ] && { [ "$status" -ne 0 ] || [ "$(jq -r .version "$dir/plugin.json")" != 6.0.4 ]; }; then
+    echo "FAIL - $description (exited $status)"
+    failures+=("$description")
+  elif [ "$want" = refused ] && { [ "$status" -eq 0 ] || ! git -C "$dir" diff --quiet; }; then
+    echo "FAIL - $description (exited $status)"
+    failures+=("$description")
+  else
+    echo "ok - $description"
+  fi
+}
+expect_apply_bump "the bump is applied when it matches the update job's hash" applied
+expect_apply_bump "a bump changed after the hash was taken is refused" refused edit
+expect_apply_bump "a bump file that is a symlink is refused" refused link
+
+# What ties the two jobs and the commit together.
+dir=$(make_plugin body-bump)
+BUMP_NOTE='6.0.3 is released, so the version is bumped to 6.0.4' \
+  expect_body "the pull request body says what the bump did" "$dir" 'bumped to 6.0.4' yes
+dir=$(make_plugin body-bump-note)
+BUMP_NOTE='6.0.3 is released, so the version is bumped to 6.0.4' \
+  expect_body "a body with the bump's note does not also ask for a bump" "$dir" 'needs the usual changelog entry' no
+dir=$(make_plugin body-bump-push)
+BUMP_NOTE='6.0.3 is released, so the version is bumped to 6.0.4' \
+  expect_body "a body with the bump's note still says pushing stops the refresh" "$dir" 'Pushing to this branch stops' yes
+dir=$(make_plugin body-bump-off)
+expect_body "without a bump the body still asks for a changelog entry and version bump" "$dir" \
+  'needs the usual changelog entry and version bump' yes
+expect_true "the bump runs before any dependency code" python3 - "$WORKFLOW" <<'PY'
+import sys
+import yaml
+
+names = [s.get('name') for s in yaml.safe_load(open(sys.argv[1]))['jobs']['update']['steps']]
+sys.exit(0 if names.index('Bump the plugin version') < names.index('Update dependencies') else 1)
+PY
+expect_true "the pull-request job runs nothing from workflows-ref" python3 - "$WORKFLOW" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['pull-request']['steps']
+sys.exit(1 if any('plugin-ci-workflows' in str(s) for s in steps) else 0)
+PY
+# A path that does not exist makes git add stage nothing, so the two files are listed only with a bump.
+expect_true "the pull request commits what the bump changes, and only when there is one" python3 - "$WORKFLOW" <<'PY'
+import sys
+import yaml
+
+steps = yaml.safe_load(open(sys.argv[1]))['jobs']['pull-request']['steps']
+paths = next(s for s in steps if s.get('name') == 'Open or update the pull request')['with']['add-paths'].splitlines()
+want = {f"${{{{ needs.update.outputs.bump-sha256 != '' && '{f}' || '' }}}}" for f in ('plugin.json', 'CHANGELOG.md')}
+sys.exit(0 if want <= {p.strip() for p in paths} and not {'plugin.json', 'CHANGELOG.md'} & set(paths) else 1)
+PY
 
 echo
 echo "$tests tests, ${#failures[@]} failures"

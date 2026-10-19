@@ -40,6 +40,8 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`plugin-ci.yml`](#plugins-ci) | Reusable workflow | The whole pull request check set behind one caller |
 | [`plugin-codex-review.yml`](#codex-review) | Reusable workflow | Runs the Codex pull request review when a maintainer applies the trigger label |
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
+| [`plugin-dev-release.yml`](#weekly-release) | Reusable workflow | Releases a development branch's new `plugin.json` version, dating its changelog entry on the day |
+| [`plugin-release-date-check.yml`](#weekly-release) | Reusable workflow | Fails a changelog date written by hand in a plugin that uses the weekly release |
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
 | [`plugin-vendored-deps-update.yml`](#vendored-dependencies-update) | Reusable workflow | Updates a plugin's scoped dependencies, rebuilds `vendor/prefixed` and opens a pull request |
 | [`actions/scope-dependencies`](#scope-dependencies) | Composite action | Scopes a plugin's dependencies with matomo-scoper, downgrades them with Rector, and checks the result |
@@ -52,7 +54,7 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 
 ### Plugins CI
 
-Runs PHPCS, PHPStan, the compatibility check, the license check, the minimum PHP lint, the timezone safety check and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
+Runs PHPCS, PHPStan, the compatibility check, the license check, the minimum PHP lint, the timezone safety check, the [release date check](#weekly-release) and the AI checklist gate from a single caller — plus the pre-push hook check, for the repositories that ask for it — so a plugin repository carries its name and nothing else, and a check added here reaches every plugin without a pull request against any of them.
 
 ```yaml
 name: Plugins CI
@@ -80,9 +82,9 @@ jobs:
 
 **The `push` and `workflow_dispatch` triggers are what make a build badge mean anything**, and they follow the shape `matomo-tests.yml` already uses across the fleet. A workflow that only runs on `pull_request` never runs on the default branch, so GitHub's badge — which takes the newest run on any branch when it cannot find one on the default branch — reports whichever pull request someone opened last. That is why `plugin-LogViewer`'s PHPStan badge reads *failing* off a feature branch while its `6.x-dev` is fine. With the triggers above, one `?branch=6.x-dev` badge on this workflow says whether the plugin's checks pass on the branch that ships.
 
-The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. Everything else runs on all three, but the timezone scan gates only on a pull request, where it compares with the base branch; on a push or a dispatch it reports findings without failing on them.
+The AI checklist gate is the one job that cannot run outside a pull request — it reads the description — so it is conditioned to `pull_request` and simply does not appear on a push or a dispatch. On the [weekly release](#weekly-release)'s own release date pull request, which no person describes, it passes without reading the description once the pull request's head is the commit the version was tagged at. Everything else runs on all three, but the timezone scan gates only on a pull request, where it compares with the base branch; on a push or a dispatch it reports findings without failing on them.
 
-Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-compatibility`, `skip-license-check`, `skip-min-php-lint`, `skip-timezone-safety` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Most inputs the individual workflows take are passed through; the four that take a PHP version are named `phpcs-php-version`, `phpstan-php-version`, `compatibility-php-version` and `min-php-lint-php-version`. PHPStan and the compatibility check share `dependent-plugins` and `matomo-targets`. The optional timezone regression job is called separately from a plugin's test workflow so it does not rerun on description edits in this umbrella.
+Checks are opt **out**, through `skip-phpcs`, `skip-phpstan`, `skip-compatibility`, `skip-license-check`, `skip-min-php-lint`, `skip-timezone-safety`, `skip-release-date` and `skip-ai-checklist`. The one exception is `hook-check`, which is opt *in* through `verify-hook` and so needs no switch to turn off: a plugin declines it by not asking, and running it by default would fail every repository whose vendored hook has not been synced, which is most of them. Opt-in switches would leave a newly added check running nowhere until every caller added a line, which is the problem this workflow exists to remove. Most inputs the individual workflows take are passed through; the four that take a PHP version are named `phpcs-php-version`, `phpstan-php-version`, `compatibility-php-version` and `min-php-lint-php-version`. PHPStan and the compatibility check share `dependent-plugins` and `matomo-targets`. The optional timezone regression job is called separately from a plugin's test workflow so it does not rerun on description edits in this umbrella.
 
 The caller subscribes to `edited` so the checklist gate re-runs when someone fixes a description, and **every check runs on that event like any other**. Skipping the code checks on an edit is the obvious economy and it is the one thing this workflow must not do: a run whose checks are all skipped concludes `success`, and GitHub resolves a commit's verdict from the newest check suite per workflow, ordered by suite *creation* time — so the edited run's green suite replaces the code run's verdict, while the analysis is still running, and still after it fails. Nine of the fleet's migration pull requests had a red license check hidden that way before this was found. `tests/plugin_ci_invariants_test.sh` fails the build if any job conditions itself on `github.event.action`.
 
@@ -381,7 +383,7 @@ jobs:
 
 Runs [`github-action-checklist-gate`](https://github.com/matomo-org/github-action-checklist-gate) against the pull request description, which is what enforces the two AI attestation items in the pull request template. No inputs.
 
-The gate reads the pull request description, so the caller has to grant `actions: read` and `pull-requests: read` in its own `permissions` block — a called workflow cannot widen the caller's token.
+The gate reads the pull request description and looks up the release tag that lets the weekly release's date pull request pass, so the caller has to grant `actions: read`, `contents: read` and `pull-requests: read` in its own `permissions` block — a called workflow cannot widen the caller's token.
 
 ```yaml
 name: AI Checklist
@@ -391,6 +393,7 @@ on:
 
 permissions:
   actions: read
+  contents: read
   pull-requests: read
 
 concurrency:
@@ -537,6 +540,69 @@ One bound is worth knowing before adopting this: GitHub disables scheduled workf
 
 The branch list is deliberately explicit rather than every `*.x-dev` branch a repository has: most still carry dead `2.x-dev`, `3.x-dev` and `4.x-dev` lines. Dispatching `4.x-dev` queues for 24 hours and is then auto-cancelled, because its workflow requests a runner label that no longer exists, and the older two carry no test workflow at all.
 
+### Weekly release
+
+`plugin-dev-release.yml` releases a plugin from its `N.x-dev` branch when `plugin.json` carries a stable version that has no tag yet. Merge the version bump with its `CHANGELOG.md` entry undated or marked Unreleased, such as `* 6.0.8 - Fix the export`, `## [6.0.8]`, `## v6.0.8 TBD` or `## 6.0.8 Unreleased`, and the run:
+
+1. dates the entry with the day it runs, in UTC, on `automated/release-date-<version>`;
+2. tags that commit and publishes its GitHub Release, with the entry's changes and a link to `CHANGELOG.md` as its notes (only the link when no changes can be read), marked latest only when its version is higher than the current latest release, but leaves a draft or prerelease someone else made for that version to them;
+3. opens a pull request bringing the date into the branch, approves its held checks and sets it to merge once the branch protection's required checks pass.
+
+A version the workflow tagged is finished by later runs until its release is published and its date is on the branch, even after `plugin.json` has moved on: each run publishes the release and opens or merges the pull request from the tagged commit.
+
+The pull request merges through auto-merge, so turn on the repository setting "Allow auto-merge"; without it, a pull request waiting on required checks is left open. When the branch protection does not let it merge, the pull request is left open for a person with a warning. The release is out either way. It only merges the commit it tagged, with a merge commit so that commit stays on the branch, and never a pull request that changes more than `CHANGELOG.md`.
+
+`GITHUB_TOKEN` opens the pull request, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests". Its checks are then held for approval, which the workflow gives.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `workflows-ref` | no | `main` | Ref of this repository for the release scripts. When `uses:` is pinned to a commit, pin this to the same commit, or the scripts still run from `main` |
+
+| Secret | Required | Description |
+| --- | --- | --- |
+| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. Scope it to the one plugin repository: a fine-grained token, or a GitHub App, with contents and pull requests read and write. Not yet exercised end to end |
+
+```yaml
+name: Weekly release
+on:
+  schedule:
+    # Mondays 02:15 UTC, the NZ afternoon, so the release is dated that Monday.
+    - cron: '15 2 * * 1'
+  workflow_dispatch:
+    inputs:
+      all-branches:
+        description: "Also release the other maintained branches, as the schedule does"
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  release:
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main
+    # Optional; leave it out to merge with the workflow's own token.
+    secrets:
+      approver-token: ${{ secrets.RELEASE_APPROVER_TOKEN }}
+
+  # A dispatched run must not dispatch again, or the branches would keep dispatching each other.
+  other-branches:
+    if: github.event_name == 'schedule' || inputs.all-branches
+    permissions:
+      actions: write
+      contents: read
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-branch-sweep.yml@main
+    with:
+      workflow-file: weekly-release.yml
+```
+
+Save it as `.github/workflows/weekly-release.yml` on every maintained branch, since `workflow-file` names it. The schedule only runs on the default branch, so the [branch sweep](#branch-sweep) dispatches the same file on the other maintained branch, which releases itself from its own copy. Run by hand, it releases the branch it is run on, and `all-branches` dispatches the others too. As with Plugins CI, the caller grants the permissions above and declares no `concurrency` of its own, which the release job checks. GitHub disables a public repository's schedule after 60 days without activity.
+
+Plugins CI's `release-date` job keeps the entry undated: on a pull request into `N.x-dev` it fails when the untagged version's entry carries a date, or has no entry the release could date. It passes in a plugin that does not call `plugin-dev-release.yml`, so adopting the weekly release is what turns it on, and it passes on the release date pull request, whose version is tagged by then.
+
 ### Vendored dependencies update
 
 Dependabot cannot update a plugin that commits only `vendor/prefixed`, such as SearchEngineKeywordsPerformance or GoogleAnalyticsImporter. It edits `composer.json` and `composer.lock` and nothing else, so its pull request would test the old prefixed code under a new lock file and pass. This workflow does what a developer does locally instead: `composer update`, then the [scope-dependencies](#scope-dependencies) action, which runs matomo-scoper and Rector and checks the result. It then opens a pull request with the rebuilt tree, or refreshes the one already open.
@@ -553,6 +619,8 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 | `scoper-ref` | no | `''` | Passed to the action |
 | `workflows-ref` | no | `main` | Ref of this repository to take the action and the plugin floor resolver from |
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the alias resolver |
+| `bump-version` | no | `true` | Record the update in `plugin.json` and `CHANGELOG.md`, as described below |
+| `changelog-entry` | no | `Updated dependencies` | The changelog line `bump-version` adds |
 
 | Secret | Required | Description |
 | --- | --- | --- |
@@ -588,7 +656,7 @@ jobs:
       DEPS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN }}
 ```
 
-Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for the changelog entry and version bump the pull request still needs, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. Composer otherwise resolves against the runner's PHP, so the example passes each branch's minimum as `platform-php`. A plugin whose `composer.json` pins `config.platform.php` can leave it out.
+Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for a changelog entry and version bump when `bump-version` is off or the bump was skipped, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. Composer otherwise resolves against the runner's PHP, so the example passes each branch's minimum as `platform-php`. A plugin whose `composer.json` pins `config.platform.php` can leave it out.
 
 Without that pin the lock records no platform, so working on the tree locally needs the minimum passed by hand. On a PHP newer than the minimum, `composer install` refuses any locked package whose own PHP constraint stops short of the PHP running it, so install with `composer install --ignore-platform-req='php*'`. To update, resolve against the minimum and then take it back out, as the workflow does: `cp composer.json composer.json.orig && composer config platform.php 8.1.0 && composer update`, then `mv composer.json.orig composer.json && composer update --lock --no-install --ignore-platform-req='php*' --no-scripts`. Restore the copy rather than running `composer config --unset`, which leaves an empty `platform` object that the lock's hash still counts. A plain `composer update` resolves against the local PHP, and the next scheduled run reverts it.
 
@@ -598,7 +666,9 @@ Rector transpiles the rebuilt tree's syntax down to the plugin's floor, but not 
 
 Two kinds of breakage fail the run instead of opening a pull request, because each is a fatal error for whatever touches it. First, every class in the rebuilt tree is loaded on the floor PHP by `scripts/bash/find_new_unloadable_classes.sh`, and a class that loaded before the rebuild and no longer does fails the run: linting reads one file at a time, so it misses a class whose method lost a return type its interface keeps. Classes that never loaded, such as integrations with packages the plugin does not install, are not counted. Second, the PHPStan pass above also fails the run when the rebuilt tree newly uses an enum's `from()`, `tryFrom()` or `cases()` on a class of the tree itself that lacks it, or `->value` or `->name` on one that was an enum before Rector turned it into a class of constants. When the floor PHP cannot be set up or a check cannot run, it is skipped, and the run and the pull request say so.
 
-The rebuild can run code the dependencies it installs ship, such as a Composer plugin, so it runs in a job with read-only permissions and hands the rebuilt `composer.lock` and `vendor/` to a second job as an artifact. Only that second job holds the write token, and it runs nothing from the dependencies. The caller still grants `contents: write` and `pull-requests: write`, as in the example, for the second job to use.
+The rebuild changes code the plugin ships, so with `bump-version`, the default, the pull request also records it for release. When the version in `plugin.json` is already tagged, as `6.0.3` or `v6.0.3`, it is bumped to the next patch and `CHANGELOG.md` gets a new entry above the newest one, in the same heading and list style, holding `changelog-entry`. When the version is not tagged yet and its entry is undated, the version stays and `changelog-entry` is added to its entry, or the entry is created if the newest one is older; a line already saying the same is not repeated. Either way the entry is left undated, for whoever releases it to date. Each refresh recomputes this from the base branch, so a version bumped there in the meantime is picked up rather than bumped twice. A changelog it cannot edit with confidence, such as one entry per line (`* 6.0.1 - 2026-09-14 Fixed ...`) or sections with headings of their own, is left alone, and the pull request body says why so that a person can add the entry. So is a changelog whose newest entry is ahead of `plugin.json`, a version whose next patch is already tagged, an untagged version whose entry is dated, a failed tag lookup, and a repository with no tags at all. None of these fails the run.
+
+The rebuild can run code the dependencies it installs ship, such as a Composer plugin, so it runs in a job with read-only permissions and hands the rebuilt `composer.lock` and `vendor/` to a second job as an artifact. Only that second job holds the write token, and it runs nothing from the dependencies. The version bump is made in the first job before the dependencies are installed, and the second job applies it only if it still matches the hash recorded then. The caller still grants `contents: write` and `pull-requests: write`, as in the example, for the second job to use.
 
 ### Scope dependencies
 
