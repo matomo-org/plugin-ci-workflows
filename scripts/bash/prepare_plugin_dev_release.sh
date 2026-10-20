@@ -182,7 +182,9 @@ else
                 ci_read_failed=true
                 break
             fi
+            # shellcheck disable=SC2016 # awk conditions: $3 and $4 are fields, not shell expansions.
             ci_failed=$(list_ci_runs '$3 == "completed" && $4 !~ /^(success|skipped|neutral)$/')
+            # shellcheck disable=SC2016 # awk condition, as above.
             ci_running=$(list_ci_runs '$3 != "completed"')
             # A failure is final until someone reruns it, so only running CI is waited on.
             if [[ -n "$ci_failed" || -z "$ci_running" ]] || (( ci_polls-- <= 0 || SECONDS >= ci_deadline )); then

@@ -296,7 +296,7 @@ if says prepare-ci 'Other ('; then fail "a passing workflow is not named"; fi
 export FAKE_GH_RUNS='11:500:completed:failure:Plugins-CI 11:502:completed:success:Plugins-CI 12:501:completed:skipped:Other'
 run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a version whose CI passed on a later run is prepared"
 says prepare-ci 'release_needed=true' || fail "the newest run of each workflow decides"
-says prepare-ci 'ci_held=' && ! says prepare-ci 'ci_held=6' || fail "a release CI passed is not held"
+if ! grep -qx 'ci_held=' "$WORK/prepare-ci/out"; then fail "a release CI passed is not held"; fi
 export FAKE_GH_RUNS='11:500:in_progress::Plugins-CI'
 run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a version whose CI is running is skipped, not failed"
 says prepare-ci 'release_needed=false' || fail "a version whose CI is still running is not released"
