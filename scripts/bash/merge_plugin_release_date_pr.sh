@@ -19,6 +19,7 @@ BRANCH="automated/release-date-$VERSION"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 RUNS_WAIT_SECONDS="${RUNS_WAIT_SECONDS:-120}"
 RUNS_POLL_SECONDS="${RUNS_POLL_SECONDS:-10}"
+(( RUNS_POLL_SECONDS > 0 )) || RUNS_POLL_SECONDS=1
 APPROVAL_BODY="Dates the $VERSION release; approved by the release workflow."
 
 if [[ -z "$BASE_BRANCH" || -z "$VERSION" ]]; then
@@ -129,8 +130,9 @@ if [[ -n "$identities" ]] && grep -qvxF "$BOT_EMAIL" <<< "$identities"; then
 fi
 
 # The pull_request runs appear a little after the pull request does, not necessarily together, so
-# every held run seen before the deadline is approved.
-deadline=$((SECONDS + RUNS_WAIT_SECONDS))
+# every held run seen while waiting is approved. Polls are counted rather than timed against
+# SECONDS, whose whole-second ticks can end a short wait before the second look.
+polls=$(( (RUNS_WAIT_SECONDS + RUNS_POLL_SECONDS - 1) / RUNS_POLL_SECONDS ))
 approved=" "
 while :; do
     runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head_sha&event=pull_request" \
@@ -146,7 +148,7 @@ while :; do
             echo "::warning::Could not approve held run $run_id: $approve_run_output"
         fi
     done <<< "$runs"
-    if (( SECONDS >= deadline )); then
+    if (( polls-- <= 0 )); then
         break
     fi
     sleep "$RUNS_POLL_SECONDS"

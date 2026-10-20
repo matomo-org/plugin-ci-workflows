@@ -511,7 +511,7 @@ It dispatches rather than building another branch's source from here, which matt
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `maintained-branches` | no | `6.x-dev 5.x-dev` | Whitespace-separated branches to keep built, whichever of them is not the default. A YAML block scalar works as well as a single line |
-| `workflow-file` | no | `matomo-tests.yml` | Workflow file to dispatch in the plugin repository |
+| `workflow-file` | no | `matomo-tests.yml` | Workflow file to dispatch in the plugin repository. A branch without it, or one that does not exist, is skipped with a notice |
 
 ```yaml
 name: Weekly branch sweep
@@ -544,9 +544,11 @@ The branch list is deliberately explicit rather than every `*.x-dev` branch a re
 
 `plugin-dev-release.yml` releases a plugin from its `N.x-dev` branch when `plugin.json` carries a stable version that has no tag yet. Merge the version bump with its `CHANGELOG.md` entry undated or marked Unreleased, such as `* 6.0.8 - Fix the export`, `## [6.0.8]`, `## v6.0.8 TBD` or `## 6.0.8 Unreleased`, and the run:
 
-1. dates the entry with the day it runs, in UTC, on `automated/release-date-<version>`;
+1. dates the entry with the day it runs, in UTC, on `automated/release-date-<version>`, with a warning when the branch already dates it otherwise;
 2. tags that commit and publishes its GitHub Release, with the entry's changes and a link to `CHANGELOG.md` as its notes (only the link when no changes can be read), marked latest only when its version is higher than the current latest release, but leaves a draft or prerelease someone else made for that version to them;
 3. opens a pull request bringing the date into the branch, approves its held checks and sets it to merge once the branch protection's required checks pass.
+
+Nothing is released while a push-triggered workflow run on the branch's head has failed, or is still running after `ci-wait-minutes`: the new version is skipped and the run fails once any earlier version it is finishing is done, and the newest run of each workflow is the one that counts, so rerunning a failed one clears it. A head with no push runs, such as a merge made with `GITHUB_TOKEN`, is released, and runs that cannot be read hold the version the same way. When the failure is not the release's concern, run the workflow by hand with `skip-ci-check`.
 
 A version the workflow tagged is finished by later runs until its release is published and its date is on the branch, even after `plugin.json` has moved on: each run publishes the release and opens or merges the pull request from the tagged commit.
 
@@ -558,6 +560,9 @@ The pull request merges through auto-merge, so turn on the repository setting "A
 | --- | --- | --- | --- |
 | `workflows-ref` | no | `main` | Ref of this repository for the release scripts. When `uses:` is pinned to a commit, pin this to the same commit, or the scripts still run from `main` |
 | `reviewer-team` | no | `plugin-reviewers` in matomo-org, `premium-plugins-reviewers` in innocraft | Slug of the team in the repository's organisation that a release date pull request left waiting on a person requests review from. In any other organisation nothing is requested unless this is set |
+| `skip-ci-check` | no | `false` | Release even when a push CI run on the branch's head failed or is still running. Meant for a run by hand |
+| `ci-wait-minutes` | no | `45` | How long to wait, from 0 to 45 minutes, for push CI still running on the branch's head before failing without a release |
+| `require-approver-token` | no | `false` | Fail before releasing when `approver-token` is empty, so a secret that was renamed, removed or not passed is noticed |
 
 | Secret | Required | Description |
 | --- | --- | --- |
@@ -575,6 +580,10 @@ on:
         description: "Also release the other maintained branches, as the schedule does"
         type: boolean
         default: false
+      skip-ci-check:
+        description: "Release even though CI on the branch's head failed or is still running"
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -585,6 +594,8 @@ jobs:
       contents: write
       pull-requests: write
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main
+    with:
+      skip-ci-check: ${{ inputs.skip-ci-check || false }}
     # Optional; leave it out to merge with the workflow's own token.
     secrets:
       approver-token: ${{ secrets.RELEASE_APPROVER_TOKEN }}

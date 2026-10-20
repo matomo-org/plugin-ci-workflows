@@ -43,7 +43,7 @@ on:
 
 permissions:
   actions: write # dispatch the plugin's build workflow
-  contents: read # read the default branch name and check a branch exists
+  contents: read # read the default branch name, check a branch exists and has the workflow file
 
 # Queued rather than superseded, because losing a sweep is losing a week of builds for that
 # branch. Cancelling would be the wrong trade even though the job is seconds long. (Queueing does
@@ -136,6 +136,17 @@ jobs:
               ;;
           esac
 
+          # The caller runs from the default branch, so the file is missing there only when
+          # workflow-file is wrong. Without this, every branch would be skipped as unadopted.
+          if ! retry_unless '*HTTP 404*' \
+            gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$WORKFLOW_FILE?ref=$default" --jq .sha >/dev/null; then
+            case "$RETRY_ERROR" in
+              *"HTTP 404"*) echo "::error::Could not find .github/workflows/$WORKFLOW_FILE on $default, so nothing was dispatched. Check workflow-file." ;;
+              *) echo "::error::Could not check whether $default has $WORKFLOW_FILE, so nothing was dispatched: $RETRY_ERROR" ;;
+            esac
+            exit 1
+          fi
+
           echo "Default branch is $default; its own schedule builds it."
 
           # Unquoted on purpose, so the list splits on newlines as well as spaces: the input is a
@@ -166,6 +177,23 @@ jobs:
                   ;;
                 *)
                   echo "::error::Could not check whether $branch exists: $RETRY_ERROR"
+                  failed=1
+                  ;;
+              esac
+              continue
+            fi
+
+            # A branch that has not adopted the workflow yet is not a failure. Dispatching it would
+            # be refused with a 422 that reads the same as a file missing its trigger, so look first.
+            if ! retry_unless '*HTTP 404*' \
+              gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$WORKFLOW_FILE?ref=$branch" --jq .sha >/dev/null; then
+              case "$RETRY_ERROR" in
+                *"HTTP 404"*)
+                  echo "::notice::Skipping $branch: it has no .github/workflows/$WORKFLOW_FILE."
+                  absent=$(( absent + 1 ))
+                  ;;
+                *)
+                  echo "::error::Could not check whether $branch has $WORKFLOW_FILE: $RETRY_ERROR"
                   failed=1
                   ;;
               esac

@@ -136,7 +136,18 @@ check(
 check(
     "the approver token reaches only the merge step",
     "secrets.approver-token" in str(steps_by_name.get("Merge the release date", {}).get("env"))
-    and sum("secrets." in str(step) for step in steps) == 1,
+    and sum("secrets." in str(step) for step in steps if step.get("name") != "Check the approver token") == 1
+    and steps_by_name.get("Check the approver token", {}).get("env")
+    == {"HAS_APPROVER_TOKEN": "${{ secrets.approver-token != '' }}"},
+)
+check(
+    "a CI hold fails the run last, after the versions being finished",
+    steps[-1].get("name") == "Fail when CI held the release back"
+    and str(steps[-1].get("if", "")).startswith("always() &&"),
+)
+check(
+    "the approver token is checked only when the caller asks",
+    steps_by_name.get("Check the approver token", {}).get("if") == "inputs.require-approver-token",
 )
 check(
     "nothing pushes to the development branch",

@@ -96,6 +96,14 @@ if [ "$1" = "api" ]; then
         500) echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1 ;;
         *) echo "${2##*/}"; exit 0 ;;
       esac ;;
+    repos/*/contents/*)
+      status="${CONTENTS_STATUS:-200}"
+      case "$2" in *"ref=${DEFAULT_BRANCH:-6.x-dev}") status="${DEFAULT_CONTENTS_STATUS:-200}" ;; esac
+      case "$status" in
+        404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+        500) echo "gh: Internal Server Error (HTTP 500)" >&2; exit 1 ;;
+        *) echo 0123abcd; exit 0 ;;
+      esac ;;
     repos/*)
       n=$(cat "$STUB_STATE/attempts" 2>/dev/null || echo 0)
       n=$((n + 1)); echo "$n" > "$STUB_STATE/attempts"
@@ -183,6 +191,20 @@ WANT_ABSENT='Attempt 1 of 3 failed' \
 # The case that matters: an API failure must never read as "nothing to do".
 run_case "an API failure on the branch check goes red" 1 '' '::error::Could not check whether 5.x-dev exists' \
   BRANCH_STATUS=500
+
+# A branch that has not adopted the workflow yet stays green, but a failure to tell does not.
+WANT_ABSENT='Attempt 1 of 3 failed' \
+  run_case "a branch without the workflow file is skipped without retrying" 0 '' \
+  '::notice::Skipping 5.x-dev: it has no .github/workflows/matomo-tests.yml.' CONTENTS_STATUS=404
+WANT_ABSENT='::warning::No non-default maintained branch was dispatched' \
+  run_case "a branch without the workflow file explains an empty run" 0 '' '::notice::Skipping 5.x-dev' \
+  CONTENTS_STATUS=404
+run_case "an API failure on the workflow file check goes red" 1 '' \
+  '::error::Could not check whether 5.x-dev has matomo-tests.yml' CONTENTS_STATUS=500
+run_case "a workflow-file the default branch lacks goes red" 1 '' \
+  '::error::Could not find .github/workflows/matomo-tests.yml on 6.x-dev' DEFAULT_CONTENTS_STATUS=404
+run_case "an API failure on the default branch's workflow file check goes red" 1 '' \
+  '::error::Could not check whether 6.x-dev has matomo-tests.yml' DEFAULT_CONTENTS_STATUS=500
 
 run_case "a transient default-branch lookup failure is retried" 0 '5.x-dev' 'Attempt 2 of 3 failed' \
   DEFAULT_FAILS_N=2
