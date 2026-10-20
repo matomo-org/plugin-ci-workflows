@@ -44,6 +44,20 @@ case "$*" in
         jq -n --arg d "${FAKE_REVIEW_DECISION:-}" '{state: "OPEN", reviewDecision: $d}' | filter
         ;;
     *'/issues/'*'/labels'*) ;;
+    # FAKE_COMMENT is the body of the one comment already on the pull request.
+    *'/issues/'*'/comments'*)
+        if [[ -n "${FAKE_COMMENTS_ERROR:-}" ]]; then
+            echo "$FAKE_COMMENTS_ERROR" >&2
+            exit 1
+        fi
+        jq -n --arg b "${FAKE_COMMENT:-}" '[if $b == "" then empty else {id: 1, body: $b} end]' | filter
+        ;;
+    'pr comment '*)
+        if [[ -n "${FAKE_COMMENT_ERROR:-}" ]]; then
+            echo "$FAKE_COMMENT_ERROR" >&2
+            exit 1
+        fi
+        ;;
     *'--method POST '*'/requested_reviewers'*)
         if [[ -n "${FAKE_REQUEST_ERROR:-}" ]]; then
             echo "$FAKE_REQUEST_ERROR" >&2
@@ -118,7 +132,8 @@ reset() {
     rm -f "$FAKE_GH_LOG.listed" "$FAKE_GH_LOG.approved"
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_COMMITS="$BOT_EMAIL:$BOT_EMAIL" FAKE_RUNS='' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
     unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR \
-        FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR
+        FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR \
+        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR
 }
 
 run() {
@@ -137,6 +152,10 @@ labelled() {
     grep -Fq 'workflow-token api --method POST repos/matomo-org/plugin-TestPlugin/issues/35/labels -f labels[]=Needs Review' "$FAKE_GH_LOG"
 }
 
+mentioned() {
+    grep -Fq "workflow-token pr comment 35 --body @$1 please review and merge." "$FAKE_GH_LOG"
+}
+
 requested() {
     grep -Fq "approver-token api --method POST repos/matomo-org/plugin-TestPlugin/pulls/35/requested_reviewers -f team_reviewers[]=$1" "$FAKE_GH_LOG"
 }
@@ -153,7 +172,7 @@ grep -q "^workflow-token pr merge 35 --merge --match-head-commit $TAGGED --auto$
 if grep -Fq '/check-runs' "$FAKE_GH_LOG"; then fail "the merge does not wait on checks the branch protection does not require"; fi
 grep -Fq 'pr list --head automated/release-date-6.0.3 --base 6.x-dev' "$FAKE_GH_LOG" || fail "the version's branch into the base is looked up"
 if grep -Fq 'pr review' "$FAKE_GH_LOG"; then fail "without an approver nothing approves the pull request"; fi
-if labelled || grep -Fq 'requested_reviewers' "$FAKE_GH_LOG"; then fail "a release that merges itself asks nobody to review it"; fi
+if labelled || grep -Eq 'requested_reviewers| pr comment ' "$FAKE_GH_LOG"; then fail "a release that merges itself asks nobody to review it"; fi
 
 reset late-runs
 export FAKE_RUNS='101:action_required' FAKE_LATE_RUNS='104:action_required'
@@ -265,8 +284,61 @@ export FAKE_REVIEW_DECISION=REVIEW_REQUIRED
 run || fail "auto-merge waiting on a review is not a failure"
 says 'is set to merge, but waits on a review (REVIEW_REQUIRED)' || fail "auto-merge waiting on a review warns"
 labelled || fail "a pull request waiting on a review is labelled"
-says 'No approver token, so no review was requested on #35' || fail "without an approver, the missing review request is warned about"
-if grep -Fq 'requested_reviewers' "$FAKE_GH_LOG"; then fail "the workflow's token, which cannot, does not request a team review"; fi
+mentioned matomo-org/plugin-reviewers || fail "without an approver, a comment mentions matomo-org's plugin reviewers"
+if grep -Fq -- '--method POST repos/matomo-org/plugin-TestPlugin/pulls/35/requested_reviewers' "$FAKE_GH_LOG"; then
+    fail "the workflow's token, which cannot, does not request a team review"
+fi
+says 'No approver token, so matomo-org/plugin-reviewers was mentioned on #35' || fail "a mention in place of a review request warns"
+
+reset mention-left-open
+export FAKE_AUTO_MERGE_ERROR='base branch policy prohibits the merge'
+run || fail "a pull request left open without an approver is not a failure"
+mentioned matomo-org/plugin-reviewers || fail "a pull request left open without an approver mentions the team"
+
+reset mention-premium
+export FAKE_REVIEW_DECISION=REVIEW_REQUIRED
+GITHUB_REPOSITORY=innocraft/plugin-TestPlugin run || fail "mentioning in innocraft is not a failure"
+mentioned innocraft/premium-plugins-reviewers || fail "innocraft's premium plugin reviewers are mentioned"
+
+reset mention-team
+export FAKE_REVIEW_DECISION=REVIEW_REQUIRED RELEASE_REVIEWER_TEAM=core-team
+run || fail "mentioning a chosen team is not a failure"
+mentioned matomo-org/core-team || fail "reviewer-team picks the team mentioned"
+
+reset mention-again
+export FAKE_REVIEW_DECISION=REVIEW_REQUIRED FAKE_COMMENT='@matomo-org/plugin-reviewers please review and merge.'
+run || fail "a pull request already mentioning the team is not a failure"
+grep -Fq 'workflow-token api --paginate repos/matomo-org/plugin-TestPlugin/issues/35/comments' "$FAKE_GH_LOG" \
+    || fail "the comments are read before mentioning the team"
+if grep -Fq ' pr comment ' "$FAKE_GH_LOG"; then fail "a rerun does not mention the team again"; fi
+says 'No approver token, so matomo-org/plugin-reviewers was mentioned on #35' || fail "a rerun still warns that the team was only mentioned"
+
+reset mention-reviewed
+export FAKE_REVIEW_DECISION=CHANGES_REQUESTED FAKE_REVIEWS=1
+run || fail "a reviewed pull request without an approver is not a failure"
+if grep -Fq ' pr comment ' "$FAKE_GH_LOG"; then fail "nobody is mentioned once someone has reviewed"; fi
+
+reset mention-requested
+export FAKE_REVIEW_DECISION=REVIEW_REQUIRED FAKE_REQUESTED=1
+run || fail "a pull request with a reviewer requested is not a failure without an approver"
+if grep -Fq ' pr comment ' "$FAKE_GH_LOG"; then fail "nobody is mentioned while a reviewer is requested"; fi
+
+reset mention-unreadable
+export FAKE_REVIEW_DECISION=REVIEW_REQUIRED FAKE_COMMENTS_ERROR='HTTP 502: Bad Gateway'
+run || fail "unreadable comments are not a failure"
+says 'Could not read the comments on #35: HTTP 502' || fail "unreadable comments warn"
+if grep -Fq ' pr comment ' "$FAKE_GH_LOG"; then fail "nobody is mentioned when an earlier mention cannot be ruled out"; fi
+
+reset mention-unknown-owner
+export FAKE_REVIEW_DECISION=REVIEW_REQUIRED
+GITHUB_REPOSITORY=someone/plugin-TestPlugin run || fail "an organisation with no known team is not a failure without an approver"
+says 'No reviewer team is known for someone' || fail "an organisation with no known team warns without an approver"
+if grep -Fq ' pr comment ' "$FAKE_GH_LOG"; then fail "no team is guessed to mention"; fi
+
+reset mention-refused
+export FAKE_REVIEW_DECISION=REVIEW_REQUIRED FAKE_COMMENT_ERROR='Resource not accessible by integration'
+run || fail "a refused comment is not a failure"
+says 'Could not mention matomo-org/plugin-reviewers on #35: Resource not accessible' || fail "a refused comment is passed on"
 
 reset review-required-approved
 export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_DECISION=REVIEW_REQUIRED
@@ -297,6 +369,7 @@ export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1
 run || fail "requesting review on a pull request left open is not a failure"
 labelled || fail "a pull request left open is labelled"
 requested plugin-reviewers || fail "the approver requests review from matomo-org's plugin reviewers"
+if grep -Fq ' pr comment ' "$FAKE_GH_LOG"; then fail "with an approver, the team is requested, not mentioned"; fi
 
 reset review-premium
 export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1
