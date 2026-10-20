@@ -140,6 +140,10 @@ grep -Eq '^release create 5\.0\.0 .*--verify-tag .*--latest=true$' "$WORK/not-fo
     echo 'A new release must be made only from the existing tag, and as the latest when it is the highest version' >&2
     exit 1
 }
+grep -Fq -- '--title 5.0.0 --notes-file' "$WORK/not-found.log" || {
+    echo 'A new release must be titled with the bare version, like its tag' >&2
+    exit 1
+}
 CHANGELOG_LINK='See [CHANGELOG.md](https://github.com/matomo-org/TestPlugin/blob/5.0.0/CHANGELOG.md) for the full changelog.'
 [[ "$(cat "$WORK/notes-not-found")" == "$(printf 'Released on 2026-09-21.\n\n- Fixed a report\n- Added a setting\n\n%s' "$CHANGELOG_LINK")" ]] || {
     echo "A new release must list the changes in its tag's changelog entry" >&2

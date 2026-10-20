@@ -150,10 +150,11 @@ elif grep -Eq '^HTTP/[0-9.]+[[:space:]]+404([[:space:]]|$)' "$release_response";
     else
         make_latest=$(latest_flag)
         write_release_notes
+        # Titled with the bare version, like the tag and the releases plugins published by hand.
         gh release create "$VERSION" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "$PLUGIN_NAME $VERSION" \
+            --title "$VERSION" \
             --notes-file "$release_notes" \
             "--latest=$make_latest"
     fi
