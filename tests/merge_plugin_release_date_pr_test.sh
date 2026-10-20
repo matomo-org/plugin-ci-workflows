@@ -36,6 +36,28 @@ case "$*" in
     'pr create '*) echo 35 > "$FAKE_GH_LOG.pr" ;;
     'pr view '*'--json headRefOid'*) jq -n --arg h "$FAKE_HEAD" '{headRefOid: $h}' | filter ;;
     'pr view '*'--json files'*) jq -n '{files: ($ARGS.positional | map({path: .}))}' --args $FAKE_FILES | filter ;;
+    'pr view '*'--json state,reviewDecision'*)
+        if [[ -n "${FAKE_DECISION_ERROR:-}" ]]; then
+            echo "$FAKE_DECISION_ERROR" >&2
+            exit 1
+        fi
+        jq -n --arg d "${FAKE_REVIEW_DECISION:-}" '{state: "OPEN", reviewDecision: $d}' | filter
+        ;;
+    *'/issues/'*'/labels'*) ;;
+    *'--method POST '*'/requested_reviewers'*)
+        if [[ -n "${FAKE_REQUEST_ERROR:-}" ]]; then
+            echo "$FAKE_REQUEST_ERROR" >&2
+            exit 1
+        fi
+        ;;
+    # FAKE_REQUESTED and FAKE_REVIEWS count who is requested and who, besides the approver, has reviewed.
+    *'/requested_reviewers'*) jq -n --argjson n "${FAKE_REQUESTED:-0}" '{users: [range($n) | {}], teams: []}' | filter ;;
+    *'/reviews'*)
+        approvals=0
+        if [[ -f "$FAKE_GH_LOG.approved" ]]; then approvals=1; fi
+        jq -n --argjson n "${FAKE_REVIEWS:-0}" --argjson a "$approvals" \
+            '[range($n) | {body: "Looks right"}] + [range($a) | {body: "Dates the 6.0.3 release; approved by the release workflow."}]' | filter
+        ;;
     *'/compare/'*'--jq .ahead_by')
         if [[ -z "$FAKE_AHEAD" ]]; then exit 1; fi
         jq -n --argjson n "$FAKE_AHEAD" '{ahead_by: $n}' | filter
@@ -54,7 +76,10 @@ case "$*" in
             --args $runs | filter
         ;;
     *'/approve') ;;
-    'pr review '*) exit "${FAKE_REVIEW_STATUS:-0}" ;;
+    'pr review '*)
+        if [[ "${FAKE_REVIEW_STATUS:-0}" != 0 ]]; then exit "$FAKE_REVIEW_STATUS"; fi
+        touch "$FAKE_GH_LOG.approved"
+        ;;
     'pr merge '*' --auto')
         if [[ -n "${FAKE_AUTO_MERGE_ERROR:-}" ]]; then
             echo "$FAKE_AUTO_MERGE_ERROR" >&2
@@ -90,9 +115,10 @@ fail() {
 reset() {
     export FAKE_GH_LOG="$WORK/$1.log" OUT="$WORK/$1.out"
     : > "$FAKE_GH_LOG"
-    rm -f "$FAKE_GH_LOG.listed"
+    rm -f "$FAKE_GH_LOG.listed" "$FAKE_GH_LOG.approved"
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_COMMITS="$BOT_EMAIL:$BOT_EMAIL" FAKE_RUNS='' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
-    unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR
+    unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR \
+        FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR
 }
 
 run() {
@@ -107,6 +133,14 @@ merged() {
     grep -Eq " pr merge 35 --merge --match-head-commit $TAGGED( --auto)?$" "$FAKE_GH_LOG"
 }
 
+labelled() {
+    grep -Fq 'workflow-token api --method POST repos/matomo-org/plugin-TestPlugin/issues/35/labels -f labels[]=Needs Review' "$FAKE_GH_LOG"
+}
+
+requested() {
+    grep -Fq "approver-token api --method POST repos/matomo-org/plugin-TestPlugin/pulls/35/requested_reviewers -f team_reviewers[]=$1" "$FAKE_GH_LOG"
+}
+
 reset merge
 export FAKE_RUNS='101:action_required 102:action_required 103:success'
 run || fail "merging succeeds"
@@ -119,6 +153,7 @@ grep -q "^workflow-token pr merge 35 --merge --match-head-commit $TAGGED --auto$
 if grep -Fq '/check-runs' "$FAKE_GH_LOG"; then fail "the merge does not wait on checks the branch protection does not require"; fi
 grep -Fq 'pr list --head automated/release-date-6.0.3 --base 6.x-dev' "$FAKE_GH_LOG" || fail "the version's branch into the base is looked up"
 if grep -Fq 'pr review' "$FAKE_GH_LOG"; then fail "without an approver nothing approves the pull request"; fi
+if labelled || grep -Fq 'requested_reviewers' "$FAKE_GH_LOG"; then fail "a release that merges itself asks nobody to review it"; fi
 
 reset late-runs
 export FAKE_RUNS='101:action_required' FAKE_LATE_RUNS='104:action_required'
@@ -224,5 +259,79 @@ reset refused
 export FAKE_AUTO_MERGE_ERROR='base branch policy prohibits the merge'
 run || fail "a refused merge leaves the pull request open, not failed"
 says 'left open for a person to merge: base branch policy prohibits the merge' || fail "the refusal is passed on"
+
+reset review-required
+export FAKE_REVIEW_DECISION=REVIEW_REQUIRED
+run || fail "auto-merge waiting on a review is not a failure"
+says 'is set to merge, but waits on a review (REVIEW_REQUIRED)' || fail "auto-merge waiting on a review warns"
+labelled || fail "a pull request waiting on a review is labelled"
+says 'No approver token, so no review was requested on #35' || fail "without an approver, the missing review request is warned about"
+if grep -Fq 'requested_reviewers' "$FAKE_GH_LOG"; then fail "the workflow's token, which cannot, does not request a team review"; fi
+
+reset review-required-approved
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_DECISION=REVIEW_REQUIRED
+run || fail "an approved pull request still waiting on a review is not a failure"
+grep -q '^approver-token pr review 35 --approve' "$FAKE_GH_LOG" || fail "the approver approved before the review is requested"
+requested plugin-reviewers || fail "the approver's own approval does not stop the team review being requested"
+
+reset review-required-approved-merge-refused
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR='base branch policy prohibits the merge'
+run || fail "an approved pull request refused the merge is not a failure"
+requested plugin-reviewers || fail "an approved pull request left open requests the team review"
+
+reset changes-requested
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_DECISION=CHANGES_REQUESTED FAKE_REVIEWS=1
+run || fail "auto-merge waiting on requested changes is not a failure"
+says 'is set to merge, but waits on a review (CHANGES_REQUESTED)' || fail "auto-merge waiting on requested changes warns"
+labelled || fail "a pull request with changes requested is labelled"
+if requested plugin-reviewers; then fail "the team is not asked again once someone has reviewed"; fi
+
+reset decision-error
+export FAKE_DECISION_ERROR='HTTP 502: Bad Gateway (50% of the time)'
+run || fail "a failed review decision lookup is not a failure"
+says 'Could not read whether #35 waits on an approving review: HTTP 502: Bad Gateway (50%25 of the time)' \
+    || fail "a failed review decision lookup warns, with % escaped"
+
+reset review-requested
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1
+run || fail "requesting review on a pull request left open is not a failure"
+labelled || fail "a pull request left open is labelled"
+requested plugin-reviewers || fail "the approver requests review from matomo-org's plugin reviewers"
+
+reset review-premium
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1
+GITHUB_REPOSITORY=innocraft/plugin-TestPlugin run || fail "requesting review in innocraft is not a failure"
+grep -Fq 'approver-token api --method POST repos/innocraft/plugin-TestPlugin/pulls/35/requested_reviewers -f team_reviewers[]=premium-plugins-reviewers' "$FAKE_GH_LOG" \
+    || fail "innocraft's premium plugin reviewers are requested"
+
+reset review-unknown-owner
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1
+GITHUB_REPOSITORY=someone/plugin-TestPlugin run || fail "an organisation with no known team is not a failure"
+says 'No reviewer team is known for someone' || fail "an organisation with no known team warns"
+if grep -Fq -- '--method POST repos/someone/plugin-TestPlugin/pulls' "$FAKE_GH_LOG"; then fail "no team is guessed"; fi
+
+reset review-team
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1 RELEASE_REVIEWER_TEAM=core-team
+run || fail "requesting a chosen team is not a failure"
+requested core-team || fail "reviewer-team picks the team"
+
+reset review-already-requested
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1 FAKE_REQUESTED=1
+run || fail "a pull request with a reviewer requested is not a failure"
+if grep -Fq -- '--method POST repos/matomo-org/plugin-TestPlugin/pulls/35/requested_reviewers' "$FAKE_GH_LOG"; then
+    fail "nobody is notified again while a reviewer is requested"
+fi
+
+reset review-already-reviewed
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1 FAKE_REVIEWS=1
+run || fail "a reviewed pull request is not a failure"
+if grep -Fq -- '--method POST repos/matomo-org/plugin-TestPlugin/pulls/35/requested_reviewers' "$FAKE_GH_LOG"; then
+    fail "nobody is notified again once someone has reviewed"
+fi
+
+reset review-refused
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1 FAKE_REQUEST_ERROR='Resource not accessible by integration'
+run || fail "a refused review request leaves the pull request open, not failed"
+says 'Could not request review from matomo-org/plugin-reviewers on #35: Resource not accessible' || fail "a refused review request is passed on"
 
 echo 'All release date merge tests passed.'

@@ -550,17 +550,18 @@ The branch list is deliberately explicit rather than every `*.x-dev` branch a re
 
 A version the workflow tagged is finished by later runs until its release is published and its date is on the branch, even after `plugin.json` has moved on: each run publishes the release and opens or merges the pull request from the tagged commit.
 
-The pull request merges through auto-merge, so turn on the repository setting "Allow auto-merge"; without it, a pull request waiting on required checks is left open. When the branch protection does not let it merge, the pull request is left open for a person with a warning. The release is out either way. It only merges the commit it tagged, with a merge commit so that commit stays on the branch, and never a pull request that changes more than `CHANGELOG.md`.
+The pull request merges through auto-merge, so turn on the repository setting "Allow auto-merge"; without it, a pull request waiting on required checks is left open. When the branch protection does not let it merge, the pull request is left open for a person with a warning, labelled `Needs Review`, and, with `approver-token`, sent for review to `reviewer-team`; a rerun does not request it again while someone is requested or anyone other than the approver has reviewed. A pull request that merges by itself is neither labelled nor sent for review. The release is out either way. It only merges the commit it tagged, with a merge commit so that commit stays on the branch, and never a pull request that changes more than `CHANGELOG.md`.
 
 `GITHUB_TOKEN` opens the pull request, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests". Its checks are then held for approval, which the workflow gives.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `workflows-ref` | no | `main` | Ref of this repository for the release scripts. When `uses:` is pinned to a commit, pin this to the same commit, or the scripts still run from `main` |
+| `reviewer-team` | no | `plugin-reviewers` in matomo-org, `premium-plugins-reviewers` in innocraft | Slug of the team in the repository's organisation that a release date pull request left waiting on a person requests review from. In any other organisation nothing is requested unless this is set |
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. Scope it to the one plugin repository: a fine-grained token, or a GitHub App, with contents and pull requests read and write. Not yet exercised end to end |
+| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. Scope it to the one plugin repository: a fine-grained token, or a GitHub App, with contents and pull requests read and write. It also requests the team review, for which a GitHub App needs organisation Members read access. Not yet exercised end to end |
 
 ```yaml
 name: Weekly release
@@ -621,10 +622,11 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 | `scripts-ref` | no | `main` | Ref of `matomo-org/github-action-tests` for the alias resolver |
 | `bump-version` | no | `true` | Record the update in `plugin.json` and `CHANGELOG.md`, as described below |
 | `changelog-entry` | no | `Updated dependencies` | The changelog line `bump-version` adds |
+| `reviewer-team` | no | `''` | Team in the repository's organisation whose review the pull request requests while nobody is requested and nobody has reviewed. Empty picks `plugin-reviewers` in matomo-org and `premium-plugins-reviewers` in innocraft |
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests", off by default, and the plugin's CI does not start by itself. After each refresh, close and reopen the pull request to run Plugins CI, and run `matomo-tests.yml` on the update branch from the Actions tab, since the `matomo-tests.yml` that `generate:test-action` writes does not subscribe to `reopened`. Pushing to the branch starts both, but stops the scheduled update refreshing it |
+| `DEPS_PR_TOKEN` | no | Pushes the branch and opens the pull request. Without it, `GITHUB_TOKEN` opens it, which needs the repository or organisation setting "Allow GitHub Actions to create and approve pull requests", off by default, and the plugin's CI does not start by itself. After each refresh, close and reopen the pull request to run Plugins CI, and run `matomo-tests.yml` on the update branch from the Actions tab, since the `matomo-tests.yml` that `generate:test-action` writes does not subscribe to `reopened`. Pushing to the branch starts both, but stops the scheduled update refreshing it. It also requests the team review, so a token that cannot request one fails the run; a GitHub App needs organisation Members read access for that. Without the token no review is requested |
 
 ```yaml
 name: Vendored dependencies update
@@ -656,7 +658,7 @@ jobs:
       DEPS_PR_TOKEN: ${{ secrets.DEPS_PR_TOKEN }}
 ```
 
-Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for a changelog entry and version bump when `bump-version` is off or the bump was skipped, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. Composer otherwise resolves against the runner's PHP, so the example passes each branch's minimum as `platform-php`. A plugin whose `composer.json` pins `config.platform.php` can leave it out.
+Each branch gets its own pull request, from `automated/vendored-dependencies-<branch>`. A later run force-pushes that branch with a fresh rebuild. While the pull request is open, a run skips the branch once anyone other than the workflow has committed to it, such as for a changelog entry and version bump when `bump-version` is off or the bump was skipped, so that work is never overwritten. Once the pull request is merged or closed, the next run rebuilds the branch from scratch. Every run that opens or refreshes the pull request labels it `Needs Review`, and requests review from the `reviewer-team` while nobody is requested and nobody has reviewed, so a refused request is retried on the next refresh without notifying a team that is already reviewing. Composer otherwise resolves against the runner's PHP, so the example passes each branch's minimum as `platform-php`. A plugin whose `composer.json` pins `config.platform.php` can leave it out.
 
 Without that pin the lock records no platform, so working on the tree locally needs the minimum passed by hand. On a PHP newer than the minimum, `composer install` refuses any locked package whose own PHP constraint stops short of the PHP running it, so install with `composer install --ignore-platform-req='php*'`. To update, resolve against the minimum and then take it back out, as the workflow does: `cp composer.json composer.json.orig && composer config platform.php 8.1.0 && composer update`, then `mv composer.json.orig composer.json && composer update --lock --no-install --ignore-platform-req='php*' --no-scripts`. Restore the copy rather than running `composer config --unset`, which leaves an empty `platform` object that the lock's hash still counts. A plain `composer update` resolves against the local PHP, and the next scheduled run reverts it.
 

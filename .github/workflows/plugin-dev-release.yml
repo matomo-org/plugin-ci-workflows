@@ -19,9 +19,14 @@ on:
         required: false
         type: string
         default: 'main'
+      reviewer-team:
+        description: "Slug of the team in the repository's organisation that a release date pull request left waiting on a person requests review from. Empty picks plugin-reviewers in matomo-org and premium-plugins-reviewers in innocraft."
+        required: false
+        type: string
+        default: ''
     secrets:
       approver-token:
-        description: "Optional token for a user other than github-actions, which approves and merges the release date pull request where the branch protection needs a review or restricts who can push."
+        description: "Optional token for a user other than github-actions, which approves and merges the release date pull request where the branch protection needs a review or restricts who can push, and requests the team review on one left waiting on a person. A GitHub App needs organisation Members read access for that."
         required: false
 
 permissions: {}
@@ -135,6 +140,7 @@ jobs:
         env:
           FINISH: ${{ steps.prepare.outputs.finish }}
           RELEASE_APPROVER_TOKEN: ${{ secrets.approver-token }}
+          RELEASE_REVIEWER_TEAM: ${{ inputs.reviewer-team }}
         shell: bash
         run: |
           set -uo pipefail
