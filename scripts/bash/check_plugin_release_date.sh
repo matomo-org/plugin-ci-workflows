@@ -1,7 +1,8 @@
 #!/bin/bash
 # Fails when plugin.json's unreleased version has a dated CHANGELOG.md entry, or one the release
-# could not date, in a plugin released by plugin-dev-release.yml. That workflow dates the entry the
-# day it releases it, so a date written by hand is a guess it would overwrite.
+# could not date, or follows an undated entry whose version was never tagged, in a plugin released
+# by plugin-dev-release.yml. That workflow dates the entry the day it releases it, so a date written
+# by hand is a guess it would overwrite.
 # Passes for any other plugin or branch, a prerelease version, or a version already tagged, which
 # includes the release date pull request the workflow opens after tagging.
 # Run from a checkout of the plugin.
@@ -106,6 +107,22 @@ fi
 if changelog_date=$(python3 "$SCRIPT_DIR/../python/update_changelog_date.py" \
     --read-date --plugin-name "$PLUGIN_NAME" CHANGELOG.md "$VERSION" 2>/dev/null); then
     error CHANGELOG.md "The $VERSION entry is dated $changelog_date. Leave it undated or write Unreleased: the weekly release dates it on the day it releases."
+fi
+
+# The release only ever takes plugin.json's version, so one bumped past would never be tagged.
+if ! earlier=$(python3 "$SCRIPT_DIR/../python/update_changelog_date.py" \
+    --read-next-undated --plugin-name "$PLUGIN_NAME" CHANGELOG.md "$VERSION" 2> "$scratch"); then
+    error CHANGELOG.md "Could not read the entry below $VERSION: $(tr '\n' ' ' < "$scratch")"
+fi
+if [[ -n "$earlier" && "${earlier%%.*}" == "$expected_major" ]]; then
+    tag_status=0
+    git ls-remote --exit-code --tags origin "refs/tags/$earlier" "refs/tags/v$earlier" > /dev/null || tag_status=$?
+    if (( tag_status == 2 )); then
+        error CHANGELOG.md "The $earlier entry is undated and $earlier has not been released, so the weekly release would skip it. Keep one unreleased entry: merge the $earlier entry into $VERSION's, or put the change in $earlier and set plugin.json back to it."
+    elif (( tag_status != 0 )); then
+        echo "::error::Could not list the tags on origin." >&2
+        exit 1
+    fi
 fi
 
 echo "$VERSION is undated, so the weekly release will date it."
