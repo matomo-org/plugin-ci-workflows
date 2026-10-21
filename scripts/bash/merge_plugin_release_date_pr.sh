@@ -154,9 +154,18 @@ while :; do
     sleep "$RUNS_POLL_SECONDS"
 done
 
+# Assigned on its own line so a failed lookup stops the run rather than reading as a moved head.
+current_head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
+if [[ "$current_head" != "$head_sha" ]]; then
+    leave_open "its head moved on from the commit tagged $VERSION during the wait."
+fi
+
 if [[ -n "${RELEASE_APPROVER_TOKEN:-}" ]]; then
-    if ! approve_output=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh pr review "$pr" --approve \
-        --body "$APPROVAL_BODY" 2>&1); then
+    # gh pr review approves whatever the head is by then; with commit_id, GitHub refuses (422) once the head
+    # has moved on from the tagged commit.
+    if ! approve_output=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh api --method POST \
+        "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" -f event=APPROVE -f "commit_id=$head_sha" \
+        -f "body=$APPROVAL_BODY" 2>&1 >/dev/null); then
         leave_open "the approver token could not approve it: $approve_output"
     fi
     echo "Approved #$pr."
