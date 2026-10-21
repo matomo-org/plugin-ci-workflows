@@ -46,6 +46,14 @@ elif (( tag_status != 2 )); then
     error "Could not list the tags on origin."
 fi
 
+# Plugins CI fails a dated entry on a pull request, so a date on the branch was pushed by hand and
+# is about to be replaced. HEAD is not read, since a rerun in the same checkout sits on our own date.
+if hand_date=$(git show "refs/remotes/origin/$TARGET_BRANCH:CHANGELOG.md" 2> /dev/null \
+        | python3 "$SCRIPT_DIR/../python/update_changelog_date.py" --read-date --plugin-name "$PLUGIN_NAME" \
+            /dev/stdin "$VERSION" 2> /dev/null) \
+    && [[ "$hand_date" != "$RELEASE_DATE" ]]; then
+    echo "::warning file=CHANGELOG.md::$TARGET_BRANCH dates $VERSION as $hand_date, which the release replaces with $RELEASE_DATE."
+fi
 python3 "$SCRIPT_DIR/../python/update_changelog_date.py" --plugin-name "$PLUGIN_NAME" \
     CHANGELOG.md "$VERSION" "$RELEASE_DATE"
 if git diff --quiet -- CHANGELOG.md; then

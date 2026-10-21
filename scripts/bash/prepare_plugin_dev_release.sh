@@ -1,8 +1,11 @@
 #!/bin/bash
 # Decides whether the development branch has an unreleased version to release: plugin.json's version
 # is stable, belongs to the branch's major, has no tag yet, and has a CHANGELOG.md entry the release
-# can date. Writes release_needed, publish_needed, version, plugin_name, today and finish to
-# GITHUB_OUTPUT.
+# can date, and no push CI run on the branch's head has failed or is still running once
+# RELEASE_CI_WAIT_MINUTES have passed. Writes
+# release_needed, publish_needed, version, plugin_name, today, finish and ci_held to GITHUB_OUTPUT.
+# ci_held says why CI held plugin.json's version back; the workflow fails on it once the versions in
+# finish are done, so a release that did not happen is seen.
 # A version this workflow tagged is resumed until its release is published and its date is on the
 # branch, including one plugin.json has since moved on from. finish lists each version to publish
 # and merge, as <version>:<release date>, earliest first; release_needed covers only plugin.json's.
@@ -15,6 +18,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Tests pin the day; the workflow always uses the real one.
 TODAY="${PLUGIN_RELEASE_TODAY:-$(date -u +%F)}"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
+CI_WAIT_MINUTES="${RELEASE_CI_WAIT_MINUTES:-45}"
+CI_POLL_SECONDS="${RELEASE_CI_POLL_SECONDS:-60}"
+(( CI_POLL_SECONDS > 0 )) || CI_POLL_SECONDS=1
+# The job's timeout-minutes is 90, and the release after the wait needs the rest of it.
+# Bounded by its digits first, since bash arithmetic wraps a long enough number to anything.
+if [[ ! "$CI_WAIT_MINUTES" =~ ^0*[0-9]{1,2}$ ]] || (( 10#$CI_WAIT_MINUTES > 45 )); then
+    echo "::error::ci-wait-minutes must be a whole number of minutes from 0 to 45, not $CI_WAIT_MINUTES." >&2
+    exit 1
+fi
+CI_WAIT_MINUTES=$(( 10#$CI_WAIT_MINUTES ))
 
 # A tag named like the branch has the same ref_name, so only the full ref says a branch is running.
 if [[ ! "$REF" =~ ^refs/heads/(([0-9]+)\.x-dev)$ ]]; then
@@ -84,6 +97,31 @@ tagged_date() {
         --read-date --plugin-name "$PLUGIN_NAME" /dev/stdin "$1"
 }
 
+# Sets ci_runs to the newest push run of each workflow on head_sha, as tab-separated workflow, id,
+# status, conclusion and name. stderr is kept apart, so a notice gh writes on success is not a run.
+# On a failed read, sets ci_read_error and returns 1.
+read_ci_runs() {
+    local errors runs
+    errors=$(mktemp)
+    if ! runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head_sha&branch=$BRANCH&event=push&per_page=100" \
+            --jq '.workflow_runs[] | [.workflow_id, .id, .status, .conclusion, .name] | @tsv' 2> "$errors"); then
+        # One line, since it ends up in a GITHUB_OUTPUT value; partial pages of runs are dropped.
+        ci_read_error=$(tr -s '\n' ' ' < "$errors")
+        echo "::error::Could not read the CI runs on ${head_sha:0:12}: $ci_read_error" >&2
+        rm -f "$errors"
+        return 1
+    fi
+    rm -f "$errors"
+    ci_runs=$(sort -t $'\t' -k1,1n -k2,2nr <<< "$runs" | awk -F '\t' '$0 != "" && !seen[$1]++')
+}
+
+# Names the runs in ci_runs that match the awk condition, with their conclusion or status.
+list_ci_runs() {
+    awk -F '\t' '$0 != "" && ('"$1"') {
+        out = out (out == "" ? "" : ", ") $5 " (" ($3 == "completed" ? $4 : $3) ")"
+    } END { print out }' <<< "$ci_runs"
+}
+
 finish=()
 # The date branches name every version this workflow has released.
 earlier_versions=$(sed -nE "s#^.*\trefs/heads/automated/release-date-(${expected_major}\.[0-9]+\.[0-9]+)\$#\1#p" \
@@ -96,6 +134,7 @@ for earlier in $earlier_versions; do
 done
 
 release_needed=false
+ci_held=""
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "$VERSION is not a stable version, so nothing is released."
 elif [[ "${VERSION%%.*}" != "$expected_major" ]]; then
@@ -121,9 +160,52 @@ else
         echo "::error file=CHANGELOG.md::plugin.json is at $VERSION, but its changelog entry cannot be dated: $dating_error" >&2
         exit 1
     fi
-    echo "Releasing $VERSION, dated $TODAY."
-    release_needed=true
-    finish+=("$VERSION:$TODAY")
+    # Only push runs are read, so neither this run nor another scheduled or dispatched one counts.
+    # The newest run of each workflow decides, and a rerun keeps its run's id, so a passing rerun
+    # clears a failure. A commit with no push runs, such as a merge by GITHUB_TOKEN, is released.
+    head_sha=$(git rev-parse HEAD)
+    ci_failed=""
+    if [[ "${RELEASE_SKIP_CI_CHECK:-false}" == true ]]; then
+        echo "::warning::skip-ci-check is set, so $VERSION is released from ${head_sha:0:12} whatever its CI says."
+    else
+        # Polls are counted, as for the held runs in merge_plugin_release_date_pr.sh, and the
+        # deadline also ends the wait, so slow API reads cannot stretch it past the job's timeout.
+        ci_polls=$(( (CI_WAIT_MINUTES * 60 + CI_POLL_SECONDS - 1) / CI_POLL_SECONDS ))
+        ci_deadline=$(( SECONDS + CI_WAIT_MINUTES * 60 ))
+        ci_running=""
+        ci_read_failed=false
+        while :; do
+            # Read as nothing to release, an outage would leave the run green and the release a
+            # week late; exiting would also hold back the earlier versions in finish.
+            if ! read_ci_runs; then
+                ci_failed="its CI runs could not be read (${ci_read_error:-no error was given})"
+                ci_read_failed=true
+                break
+            fi
+            # shellcheck disable=SC2016 # awk conditions: $3 and $4 are fields, not shell expansions.
+            ci_failed=$(list_ci_runs '$3 == "completed" && $4 !~ /^(success|skipped|neutral)$/')
+            # shellcheck disable=SC2016 # awk condition, as above.
+            ci_running=$(list_ci_runs '$3 != "completed"')
+            # A failure is final until someone reruns it, so only running CI is waited on.
+            if [[ -n "$ci_failed" || -z "$ci_running" ]] || (( ci_polls-- <= 0 || SECONDS >= ci_deadline )); then
+                break
+            fi
+            echo "Waiting for CI on ${head_sha:0:12}: $ci_running."
+            sleep "$CI_POLL_SECONDS"
+        done
+        if [[ "$ci_read_failed" == false ]]; then
+            ci_failed="$ci_failed${ci_failed:+${ci_running:+, }}$ci_running"
+            [[ -z "$ci_failed" ]] || ci_failed="CI has not passed on it: $ci_failed"
+        fi
+    fi
+    if [[ -n "$ci_failed" ]]; then
+        ci_held="$VERSION is not released from ${head_sha:0:12}, because $ci_failed. Rerun the CI and then this workflow, or run it by hand with skip-ci-check if the failure is not the release's concern."
+        echo "$ci_held"
+    else
+        echo "Releasing $VERSION, dated $TODAY."
+        release_needed=true
+        finish+=("$VERSION:$TODAY")
+    fi
 fi
 
 emit "release_needed=$release_needed"
@@ -136,3 +218,4 @@ emit "version=$VERSION"
 emit "plugin_name=$PLUGIN_NAME"
 emit "today=$TODAY"
 emit "finish=${finish[*]}"
+emit "ci_held=$ci_held"

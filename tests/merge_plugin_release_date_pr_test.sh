@@ -34,7 +34,19 @@ case "$*" in
         filter <<< "$prs"
         ;;
     'pr create '*) echo 35 > "$FAKE_GH_LOG.pr" ;;
-    'pr view '*'--json headRefOid'*) jq -n --arg h "$FAKE_HEAD" '{headRefOid: $h}' | filter ;;
+    # FAKE_LATE_HEAD is the head from the second look on.
+    'pr view '*'--json headRefOid'*)
+        head="$FAKE_HEAD"
+        if [[ -f "$FAKE_GH_LOG.head" ]]; then
+            if [[ -n "${FAKE_LATE_HEAD_ERROR:-}" ]]; then
+                echo "$FAKE_LATE_HEAD_ERROR" >&2
+                exit 1
+            fi
+            head="${FAKE_LATE_HEAD:-$FAKE_HEAD}"
+        fi
+        touch "$FAKE_GH_LOG.head"
+        jq -n --arg h "$head" '{headRefOid: $h}' | filter
+        ;;
     'pr view '*'--json files'*) jq -n '{files: ($ARGS.positional | map({path: .}))}' --args $FAKE_FILES | filter ;;
     'pr view '*'--json state,reviewDecision'*)
         if [[ -n "${FAKE_DECISION_ERROR:-}" ]]; then
@@ -49,6 +61,10 @@ case "$*" in
             echo "$FAKE_REQUEST_ERROR" >&2
             exit 1
         fi
+        ;;
+    *'--method POST '*'/pulls/'*'/reviews '*)
+        if [[ "${FAKE_REVIEW_STATUS:-0}" != 0 ]]; then exit "$FAKE_REVIEW_STATUS"; fi
+        touch "$FAKE_GH_LOG.approved"
         ;;
     # FAKE_REQUESTED and FAKE_REVIEWS count who is requested and who, besides the approver, has reviewed.
     *'/requested_reviewers'*) jq -n --argjson n "${FAKE_REQUESTED:-0}" '{users: [range($n) | {}], teams: []}' | filter ;;
@@ -76,10 +92,6 @@ case "$*" in
             --args $runs | filter
         ;;
     *'/approve') ;;
-    'pr review '*)
-        if [[ "${FAKE_REVIEW_STATUS:-0}" != 0 ]]; then exit "$FAKE_REVIEW_STATUS"; fi
-        touch "$FAKE_GH_LOG.approved"
-        ;;
     'pr merge '*' --auto')
         if [[ -n "${FAKE_AUTO_MERGE_ERROR:-}" ]]; then
             echo "$FAKE_AUTO_MERGE_ERROR" >&2
@@ -115,10 +127,10 @@ fail() {
 reset() {
     export FAKE_GH_LOG="$WORK/$1.log" OUT="$WORK/$1.out"
     : > "$FAKE_GH_LOG"
-    rm -f "$FAKE_GH_LOG.listed" "$FAKE_GH_LOG.approved"
+    rm -f "$FAKE_GH_LOG.listed" "$FAKE_GH_LOG.approved" "$FAKE_GH_LOG.head"
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_COMMITS="$BOT_EMAIL:$BOT_EMAIL" FAKE_RUNS='' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
     unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR \
-        FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR
+        FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR FAKE_LATE_HEAD FAKE_LATE_HEAD_ERROR
 }
 
 run() {
@@ -152,7 +164,7 @@ grep -q "^workflow-token pr merge 35 --merge --match-head-commit $TAGGED --auto$
     || fail "without an approver, the workflow's token sets it to merge once the required checks pass"
 if grep -Fq '/check-runs' "$FAKE_GH_LOG"; then fail "the merge does not wait on checks the branch protection does not require"; fi
 grep -Fq 'pr list --head automated/release-date-6.0.3 --base 6.x-dev' "$FAKE_GH_LOG" || fail "the version's branch into the base is looked up"
-if grep -Fq 'pr review' "$FAKE_GH_LOG"; then fail "without an approver nothing approves the pull request"; fi
+if grep -Eq 'event=APPROVE| pr review ' "$FAKE_GH_LOG"; then fail "without an approver nothing approves the pull request"; fi
 if labelled || grep -Fq 'requested_reviewers' "$FAKE_GH_LOG"; then fail "a release that merges itself asks nobody to review it"; fi
 
 reset late-runs
@@ -165,8 +177,22 @@ grep -Fq '/actions/runs/104/approve' "$FAKE_GH_LOG" || fail "a held run that app
 reset approver
 export RELEASE_APPROVER_TOKEN=approver-token
 run || fail "merging with the approver succeeds"
-grep -q '^approver-token pr review 35 --approve' "$FAKE_GH_LOG" || fail "the approver approves"
+grep -Fq "approver-token api --method POST repos/matomo-org/plugin-TestPlugin/pulls/35/reviews -f event=APPROVE -f commit_id=$TAGGED" "$FAKE_GH_LOG" \
+    || fail "the approver approves the tagged commit"
 grep -q "^approver-token pr merge 35 --merge --match-head-commit $TAGGED --auto$" "$FAKE_GH_LOG" || fail "the approver merges"
+
+reset head-moved-while-waiting
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_LATE_HEAD=0000000000000000000000000000000000000000
+run || fail "a head that moves during the wait leaves the pull request open, not failed"
+says 'its head moved on from the commit tagged 6.0.3 during the wait' || fail "a head that moved during the wait warns"
+if grep -Eq 'event=APPROVE| pr review ' "$FAKE_GH_LOG"; then fail "a head that moved during the wait is not approved"; fi
+if merged; then fail "nothing is merged once the head has moved"; fi
+
+reset head-lookup-failed
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_LATE_HEAD_ERROR='HTTP 502: Bad Gateway'
+if run; then fail "a failed head lookup after the wait fails the run"; fi
+if says 'moved on'; then fail "a failed head lookup is not reported as a moved head"; fi
+if grep -Eq 'event=APPROVE| pr review ' "$FAKE_GH_LOG" || labelled; then fail "a failed head lookup approves and labels nothing"; fi
 
 reset approver-refused
 export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1
@@ -271,7 +297,7 @@ if grep -Fq 'requested_reviewers' "$FAKE_GH_LOG"; then fail "the workflow's toke
 reset review-required-approved
 export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_DECISION=REVIEW_REQUIRED
 run || fail "an approved pull request still waiting on a review is not a failure"
-grep -q '^approver-token pr review 35 --approve' "$FAKE_GH_LOG" || fail "the approver approved before the review is requested"
+grep -Fq 'approver-token api --method POST repos/matomo-org/plugin-TestPlugin/pulls/35/reviews -f event=APPROVE' "$FAKE_GH_LOG" || fail "the approver approved before the review is requested"
 requested plugin-reviewers || fail "the approver's own approval does not stop the team review being requested"
 
 reset review-required-approved-merge-refused
@@ -308,7 +334,7 @@ reset review-unknown-owner
 export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1
 GITHUB_REPOSITORY=someone/plugin-TestPlugin run || fail "an organisation with no known team is not a failure"
 says 'No reviewer team is known for someone' || fail "an organisation with no known team warns"
-if grep -Fq -- '--method POST repos/someone/plugin-TestPlugin/pulls' "$FAKE_GH_LOG"; then fail "no team is guessed"; fi
+if grep -Fq -- '--method POST repos/someone/plugin-TestPlugin/pulls/35/requested_reviewers' "$FAKE_GH_LOG"; then fail "no team is guessed"; fi
 
 reset review-team
 export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1 RELEASE_REVIEWER_TEAM=core-team

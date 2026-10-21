@@ -24,6 +24,21 @@ on:
         required: false
         type: string
         default: ''
+      skip-ci-check:
+        description: "Release even when a push CI run on the branch's head failed or is still running. For a run by hand when that failure is not the release's concern; leave it false on the schedule."
+        required: false
+        type: boolean
+        default: false
+      ci-wait-minutes:
+        description: "How long to wait, from 0 to 45 minutes, for push CI still running on the branch's head before failing without a release."
+        required: false
+        type: number
+        default: 45
+      require-approver-token:
+        description: "Fail before releasing when approver-token is empty, so a secret that was renamed, removed or not passed under secrets: is noticed rather than the release date pull request being left for a person."
+        required: false
+        type: boolean
+        default: false
     secrets:
       approver-token:
         description: "Optional token for a user other than github-actions, which approves and merges the release date pull request where the branch protection needs a review or restricts who can push, and requests the team review on one left waiting on a person. A GitHub App needs organisation Members read access for that."
@@ -45,13 +60,26 @@ jobs:
       actions: write # approve the held checks on the release date pull request
       contents: write # push the release date branch and the tag, publish the release
       pull-requests: write # open and merge the release date pull request
-    timeout-minutes: 20
+    # ci-wait-minutes, at most 45, plus the release and any earlier versions it finishes.
+    timeout-minutes: 90
     env:
       GITHUB_TOKEN: ${{ github.token }}
       GH_TOKEN: ${{ github.token }}
       # Unique so it cannot collide with a directory the caller tracks.
       WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      - name: Check the approver token
+        if: inputs.require-approver-token
+        env:
+          # Whether it is set, never the token, which only the merge step is given.
+          HAS_APPROVER_TOKEN: ${{ secrets.approver-token != '' }}
+        shell: bash
+        run: |
+          if [[ "$HAS_APPROVER_TOKEN" != true ]]; then
+            echo "::error::require-approver-token is set but approver-token is empty, so nothing was released. Check that the caller passes it under secrets: and that the secret exists."
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -101,6 +129,9 @@ jobs:
 
       - name: Prepare release
         id: prepare
+        env:
+          RELEASE_SKIP_CI_CHECK: ${{ inputs.skip-ci-check }}
+          RELEASE_CI_WAIT_MINUTES: ${{ inputs.ci-wait-minutes }}
         shell: bash
         run: bash "$RELEASE_SCRIPTS/bash/prepare_plugin_dev_release.sh" "$GITHUB_REF"
 
@@ -150,3 +181,13 @@ jobs:
             bash "$RELEASE_SCRIPTS/bash/merge_plugin_release_date_pr.sh" "$GITHUB_REF_NAME" "${release%%:*}" || status=1
           done
           exit "$status"
+
+      # Last, so the versions being finished are not held back with the new one.
+      - name: Fail when CI held the release back
+        if: always() && steps.prepare.outputs.ci_held != ''
+        env:
+          CI_HELD: ${{ steps.prepare.outputs.ci_held }}
+        shell: bash
+        run: |
+          echo "::error::$CI_HELD"
+          exit 1
