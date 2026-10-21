@@ -2068,6 +2068,27 @@ BUMP_NOTE='6.0.3 is released, so the version is bumped to 6.0.4' \
 dir=$(make_plugin body-bump-off)
 expect_body "without a bump the body still asks for a changelog entry and version bump" "$dir" \
   'needs the usual changelog entry and version bump' yes
+
+# The checklist is answered, so the gate passes without anyone editing the description.
+template_plugin() {
+  dir=$(make_plugin "$1")
+  printf '%s\n' '## Checklist' '- [✔/✖] Tested locally or on demo2/demo3?' '- [✔/✖/NA] Version bumped?' \
+    '- [✔/✖/NA] I have understood, reviewed, and tested all AI outputs before use' > "$dir/pull_request_template.md"
+}
+template_plugin body-checklist-na
+expect_body "the checklist says nobody tested the rebuild locally" "$dir" '- [✖] Tested locally or on demo2/demo3?' yes
+template_plugin body-checklist-ai
+expect_body "the checklist answers the AI items NA" "$dir" '- [NA] I have understood, reviewed, and tested all AI outputs' yes
+template_plugin body-checklist-placeholder
+expect_body "the checklist leaves no placeholder" "$dir" '[✔/✖' no
+template_plugin body-checklist-unbumped
+expect_body "without a bump the checklist says the version was not bumped" "$dir" '- [✖] Version bumped?' yes
+template_plugin body-checklist-not-bumped
+BUMP_NOTE='The version was not bumped, because the changelog-entry input is empty.' \
+  expect_body "a bump that did not happen is answered as not bumped" "$dir" '- [✖] Version bumped?' yes
+template_plugin body-checklist-bumped
+BUMP_NOTE='6.0.3 is released, so the version is bumped to 6.0.4' \
+  expect_body "a bump is answered as bumped" "$dir" '- [✔] Version bumped?' yes
 expect_true "the bump runs before any dependency code" python3 - "$WORKFLOW" <<'PY'
 import sys
 import yaml

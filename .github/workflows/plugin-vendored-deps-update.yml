@@ -661,11 +661,18 @@ jobs:
             fi
             echo
             echo "Opened by the [vendored dependencies update](https://github.com/matomo-org/plugin-ci-workflows#vendored-dependencies-update) workflow, run [$GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)."
-            # The repository's own template, so the checklist gate finds its items. They are left for
-            # whoever takes the pull request over to answer.
+            # The repository's own template, so the checklist gate finds its items. A rebuild has no
+            # AI output, new text or tests of its own, so every item is NA except the version bump and
+            # local testing, which nobody did.
+            # Whoever adds to the pull request answers again for what they add.
             if [ -f "$PLUGIN_DIR/pull_request_template.md" ]; then
+              case "$BUMP_NOTE" in
+                '' | 'The version was not bumped'*) bumped='✖' ;;
+                *) bumped='✔' ;;
+              esac
               echo
-              cat "$PLUGIN_DIR/pull_request_template.md"
+              sed -E -e "/[Vv]ersion bumped/ s#\[✔/✖(/NA)?\]#[$bumped]#" -e '/[Tt]ested locally/ s#\[✔/✖(/NA)?\]#[✖]#' -e 's#\[✔/✖(/NA)?\]#[NA]#' \
+                "$PLUGIN_DIR/pull_request_template.md"
             fi
           } > "$body"
 

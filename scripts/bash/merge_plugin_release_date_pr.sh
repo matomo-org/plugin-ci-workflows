@@ -8,7 +8,8 @@
 # Refuses a pull request that changes anything but CHANGELOG.md or carries a commit from anyone
 # other than the workflow, since that is all the approver is trusted to approve.
 # A pull request left waiting on a person is labelled Needs Review and, with the approver token,
-# sent for review to RELEASE_REVIEWER_TEAM or the organisation's plugin reviewers.
+# sent for review to RELEASE_REVIEWER_TEAM or the organisation's plugin reviewers. Without it, a
+# comment mentions that team instead.
 # Usage: merge_plugin_release_date_pr.sh <base-branch> <version>
 
 set -euo pipefail
@@ -37,34 +38,44 @@ annotation() {
 # Requests review the way plugin-vendored-deps-update.yml's step does, which cannot share this:
 # that job holds a write token, so it runs nothing from workflows-ref.
 ask_for_review() {
-    local out team="${RELEASE_REVIEWER_TEAM:-}" owner="${GITHUB_REPOSITORY%%/*}"
+    local out mention team="${RELEASE_REVIEWER_TEAM:-}" owner="${GITHUB_REPOSITORY%%/*}"
     local api="repos/$GITHUB_REPOSITORY/pulls/$pr"
     out=$(gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$pr/labels" -f 'labels[]=Needs Review' 2>&1 >/dev/null) \
         || echo "::warning::Could not label #$pr Needs Review: $(annotation "$out")"
-    if [[ -z "${RELEASE_APPROVER_TOKEN:-}" ]]; then
-        echo "::warning::No approver token, so no review was requested on #$pr. Request one by hand."
-        return 0
-    fi
     if [[ -z "$team" ]]; then
         case "$owner" in
             matomo-org) team=plugin-reviewers ;;
             innocraft) team=premium-plugins-reviewers ;;
             *)
-                echo "::warning::No reviewer team is known for $owner, so none was requested on #$pr. Pass reviewer-team to request one."
+                echo "::warning::No reviewer team is known for $owner, so none was asked to review #$pr. Pass reviewer-team to name one."
                 return 0
                 ;;
         esac
     fi
-    # GITHUB_TOKEN cannot request a team review; the approver token can. A rerun must not notify the
-    # team again, and a reviewer leaves requested_reviewers once they review, so both are read. The
-    # approver's own approval is not someone reviewing it.
-    out=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh api "$api/requested_reviewers" --jq '(.users | length) + (.teams | length)' 2>&1) \
+    # A rerun must not notify the team again, and a reviewer leaves requested_reviewers once they
+    # review, so both are read. The approver's own approval is not someone reviewing it.
+    out=$(GH_TOKEN="${RELEASE_APPROVER_TOKEN:-$GH_TOKEN}" gh api "$api/requested_reviewers" --jq '(.users | length) + (.teams | length)' 2>&1) \
         || { echo "::warning::Could not read the requested reviewers on #$pr: $(annotation "$out")"; return 0; }
     [[ "$out" == 0 ]] || return 0
-    out=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh api "$api/reviews" \
+    out=$(GH_TOKEN="${RELEASE_APPROVER_TOKEN:-$GH_TOKEN}" gh api "$api/reviews" \
         --jq "[.[] | select(.body != \"$APPROVAL_BODY\")] | length" 2>&1) \
         || { echo "::warning::Could not read the reviews on #$pr: $(annotation "$out")"; return 0; }
     [[ "$out" == 0 ]] || return 0
+    if [[ -z "${RELEASE_APPROVER_TOKEN:-}" ]]; then
+        # GITHUB_TOKEN cannot request a team review, but it can mention the team, once. Whether a
+        # bot's team mention notifies anyone is unconfirmed, so the run still warns.
+        mention="@$owner/$team please review and merge."
+        out=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$pr/comments" \
+            --jq ".[] | select(.body == \"$mention\") | .id" 2>&1) \
+            || { echo "::warning::Could not read the comments on #$pr: $(annotation "$out")"; return 0; }
+        if [[ -n "$out" ]] || out=$(gh pr comment "$pr" --body "$mention" 2>&1); then
+            echo "::warning::No approver token, so $owner/$team was mentioned on #$pr rather than asked to review."
+        else
+            echo "::warning::Could not mention $owner/$team on #$pr: $(annotation "$out")"
+        fi
+        return 0
+    fi
+    # GITHUB_TOKEN cannot request a team review; the approver token can.
     out=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh api --method POST "$api/requested_reviewers" -f "team_reviewers[]=$team" 2>&1) \
         || echo "::warning::Could not request review from $owner/$team on #$pr: $(annotation "$out")"
 }

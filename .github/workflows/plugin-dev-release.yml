@@ -20,7 +20,7 @@ on:
         type: string
         default: 'main'
       reviewer-team:
-        description: "Slug of the team in the repository's organisation that a release date pull request left waiting on a person requests review from. Empty picks plugin-reviewers in matomo-org and premium-plugins-reviewers in innocraft."
+        description: "Slug of the team in the repository's organisation that a release date pull request left waiting on a person requests review from, or mentions without approver-token. Empty picks plugin-reviewers in matomo-org and premium-plugins-reviewers in innocraft."
         required: false
         type: string
         default: ''
