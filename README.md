@@ -566,7 +566,7 @@ The pull request merges through auto-merge, so turn on the repository setting "A
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. Scope it to the one plugin repository: a fine-grained token, or a GitHub App, with contents and pull requests read and write. It also requests the team review, for which a GitHub App needs organisation Members read access. Not yet exercised end to end |
+| `approver-token` | no | A token for a user other than `github-actions`, which approves and merges the release date pull request, and requests the team review on one left waiting on a person. `GITHUB_TOKEN` cannot approve a pull request it opened, and a classic push restriction cannot list `github-actions`. The token's user or App needs write access to the plugin repository and must be allowed by any push restriction. A token scoped to the one plugin repository is the least-privilege choice: a fine-grained token, or a GitHub App, with contents and pull requests read and write; a GitHub App also needs organisation Members read access to request the team review. |
 
 ```yaml
 name: Weekly release
