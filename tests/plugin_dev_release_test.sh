@@ -10,6 +10,7 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 export PLUGIN_RELEASE_TODAY=2026-10-12
+export RELEASE_CI_WAIT_MINUTES=0
 export GITHUB_REPOSITORY=matomo-org/plugin-TestPlugin
 # On a runner prepare would write its outputs there, where the assertions below cannot see them.
 unset GITHUB_OUTPUT
@@ -36,6 +37,19 @@ if [[ "$1 $2" == "pr list" && " $* " != *" --base "* ]]; then
     jq -r "${*: -1}" <<< "$prs"
 elif [[ "$1 $2" == "pr list" && -n "${FAKE_GH_OPEN_PR:-}" ]]; then
     echo "$FAKE_GH_OPEN_PR"
+elif [[ "$*" == *'/actions/runs?'* ]]; then
+    # FAKE_GH_RUNS is workflow:id:status:conclusion:name entries, FAKE_GH_RUNS_ERROR a failed read.
+    if [[ -n "${FAKE_GH_RUNS_ERROR:-}" ]]; then
+        echo "$FAKE_GH_RUNS_ERROR" >&2
+        exit 1
+    fi
+    # FAKE_GH_RUNS_LATER replaces FAKE_GH_RUNS from the second listing on.
+    runs="${FAKE_GH_RUNS:-}"
+    if [[ -f "$FAKE_GH_LOG.listed" ]]; then runs="${FAKE_GH_RUNS_LATER:-$runs}"; fi
+    : > "$FAKE_GH_LOG.listed"
+    jq -nc '{workflow_runs: ($ARGS.positional | map(split(":")) | map({workflow_id: (.[0] | tonumber),
+        id: (.[1] | tonumber), status: .[2], conclusion: (if .[3] == "" then null else .[3] end), name: .[4]}))}' \
+        --args $runs | jq -r "${*: -1}"
 elif [[ "$*" == *'/releases/tags/'* ]]; then
     # FAKE_GH_RELEASES is tag:prerelease pairs; a tag not listed has no release, which the API reports as a 404.
     args="$*"
@@ -47,7 +61,12 @@ elif [[ "$*" == *'/releases/tags/'* ]]; then
 fi
 exit 0
 SH
-chmod +x "$FAKE_BIN/gh"
+# Records the CI wait instead of sleeping through it.
+cat > "$FAKE_BIN/sleep" <<'SH'
+#!/bin/bash
+printf 'sleep %s\n' "$*" >> "$FAKE_GH_LOG"
+SH
+chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/sleep"
 export PATH="$FAKE_BIN:$PATH"
 
 fail() {
@@ -196,6 +215,22 @@ if ! { says prepare-earlier 'release_needed=true' && says prepare-earlier 'versi
     fail "an earlier unfinished version is finished first, then plugin.json's is released"
 fi
 ! says prepare-earlier 'tag carries this workflow' || fail "the workflow's own date commit is not warned about"
+rm -f "$FAKE_GH_LOG.listed"
+held_finishes_earlier() {
+    if ! { says prepare-earlier 'finish=6.0.3:2026-10-05' && ! says prepare-earlier 'finish=6.0.3:2026-10-05 6.0.4' \
+        && says prepare-earlier 'ci_held=6.0.4 is not released from'; }; then
+        fail "$1 still finishes the earlier version"
+    fi
+}
+FAKE_GH_RUNS='11:500:completed:failure:Plugins-CI' run prepare-earlier prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+    || fail "a CI hold with an earlier version to finish is not failed"
+held_finishes_earlier "a CI hold"
+FAKE_GH_RUNS_ERROR=$'error connecting to api.github.com\ncheck your internet connection' \
+    run prepare-earlier prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+    || fail "unreadable CI runs with an earlier version to finish are not failed"
+held_finishes_earlier "unreadable CI runs"
+grep -q '^ci_held=.*(error connecting to api.github.com check your internet connection )' "$WORK/prepare-earlier/out" \
+    || fail "a gh error over several lines is held on one output line"
 
 mkdir "$WORK/prepare-earlier/bin"
 cat > "$WORK/prepare-earlier/bin/git" <<SH
@@ -248,6 +283,62 @@ new_repo prepare-missing '* 6.0.1 - 2026-09-28 - One'
 if run prepare-missing prepare_plugin_dev_release.sh refs/heads/6.x-dev; then fail "a version with no changelog entry fails"; fi
 says prepare-missing 'cannot be dated' || fail "a missing entry says why"
 
+new_repo prepare-ci '* 6.0.3 Three'
+head_sha=$(git -C "$WORK/prepare-ci/clone" rev-parse HEAD)
+export FAKE_GH_RUNS='11:500:completed:failure:Plugins-CI 12:501:completed:success:Other'
+run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a version whose CI failed is skipped, not failed"
+grep -Fq "actions/runs?head_sha=$head_sha&branch=6.x-dev&event=push" "$FAKE_GH_LOG" || fail "the branch's push runs on its head are read"
+says prepare-ci 'release_needed=false' || fail "a version whose CI failed is not released"
+says prepare-ci 'publish_needed=false' || fail "a version whose CI failed is not published"
+says prepare-ci "ci_held=6.0.3 is not released from ${head_sha:0:12}, because CI has not passed on it: Plugins-CI (failure)." \
+    || fail "a failed CI run is named"
+if says prepare-ci 'Other ('; then fail "a passing workflow is not named"; fi
+export FAKE_GH_RUNS='11:500:completed:failure:Plugins-CI 11:502:completed:success:Plugins-CI 12:501:completed:skipped:Other'
+run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a version whose CI passed on a later run is prepared"
+says prepare-ci 'release_needed=true' || fail "the newest run of each workflow decides"
+if ! grep -qx 'ci_held=' "$WORK/prepare-ci/out"; then fail "a release CI passed is not held"; fi
+export FAKE_GH_RUNS='11:500:in_progress::Plugins-CI'
+run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a version whose CI is running is skipped, not failed"
+says prepare-ci 'release_needed=false' || fail "a version whose CI is still running is not released"
+says prepare-ci 'ci_held=6.0.3 is not released from' || fail "a running CI run holds the release"
+says prepare-ci 'Plugins-CI (in_progress)' || fail "a running CI run is named"
+rm -f "$FAKE_GH_LOG.listed"
+: > "$FAKE_GH_LOG"
+RELEASE_CI_WAIT_MINUTES=2 RELEASE_CI_POLL_SECONDS=60 FAKE_GH_RUNS_LATER='11:500:completed:success:Plugins-CI' \
+    run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "CI that passes while waiting is prepared"
+says prepare-ci 'Waiting for CI on' || fail "the wait for running CI is reported"
+says prepare-ci 'release_needed=true' || fail "CI that passes while waiting releases"
+[[ "$(grep -c '^sleep 60$' "$FAKE_GH_LOG")" == 1 ]] || fail "the wait ends once CI has finished"
+rm -f "$FAKE_GH_LOG.listed"
+: > "$FAKE_GH_LOG"
+RELEASE_CI_WAIT_MINUTES=2 RELEASE_CI_POLL_SECONDS=60 run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+    || fail "CI still running after the wait is skipped, not failed"
+says prepare-ci 'ci_held=6.0.3 is not released from' || fail "CI still running after the wait holds the release"
+[[ "$(grep -c '^sleep 60$' "$FAKE_GH_LOG")" == 2 ]] || fail "the wait is capped by ci-wait-minutes"
+rm -f "$FAKE_GH_LOG.listed"
+: > "$FAKE_GH_LOG"
+export FAKE_GH_RUNS='11:500:completed:failure:Plugins-CI 12:501:in_progress::Other'
+RELEASE_CI_WAIT_MINUTES=2 run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a failure with CI still running is skipped, not failed"
+if grep -q '^sleep' "$FAKE_GH_LOG"; then fail "a failed run is not waited on"; fi
+says prepare-ci 'Plugins-CI (failure), Other (in_progress)' || fail "both the failed and the running CI are named"
+for wait in 2.5 -1 46 18446744073709551616; do
+    if RELEASE_CI_WAIT_MINUTES=$wait run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev; then
+        fail "a ci-wait-minutes of $wait fails"
+    fi
+    says prepare-ci "::error::ci-wait-minutes must be a whole number of minutes from 0 to 45, not $wait." \
+        || fail "a ci-wait-minutes of $wait is explained"
+done
+unset FAKE_GH_RUNS
+FAKE_GH_RUNS_ERROR='HTTP 502: Bad Gateway' run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+    || fail "unreadable CI runs hold the release rather than stop the run"
+says prepare-ci 'ci_held=6.0.3 is not released from' || fail "unreadable CI runs hold the release rather than read as nothing to release"
+says prepare-ci '::error::Could not read the CI runs on' || fail "unreadable CI runs say why"
+says prepare-ci 'HTTP 502' || fail "unreadable CI runs give the error"
+FAKE_GH_RUNS='11:500:completed:failure:Plugins-CI' RELEASE_SKIP_CI_CHECK=true run prepare-ci prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+    || fail "skip-ci-check prepares a version whose CI failed"
+says prepare-ci 'release_needed=true' || fail "skip-ci-check releases whatever the CI says"
+says prepare-ci '::warning::skip-ci-check is set' || fail "skip-ci-check warns"
+
 # --- push_plugin_release_date.sh ---
 
 new_repo open '* 6.0.3 Unreleased - Three'
@@ -267,6 +358,15 @@ run open-refresh push_plugin_release_date.sh 6.x-dev 2026-10-13 || fail "refresh
 unset FAKE_GH_OPEN_PR
 [[ "$(date_branch_line open-refresh)" == '* 6.0.3 - 2026-10-13 - Three' ]] || fail "an explicit date is written"
 says open-refresh 'dates 6.0.3 as 2026-10-13' || fail "the refreshed date is reported"
+if says open-refresh '::warning'; then fail "an undated entry is dated without a warning"; fi
+
+new_repo open-hand-dated '* 6.0.3 - 2026-10-01 - Three'
+run open-hand-dated push_plugin_release_date.sh 6.x-dev 2026-10-12 || fail "an entry dated by hand is re-dated, not failed"
+[[ "$(date_branch_line open-hand-dated)" == '* 6.0.3 - 2026-10-12 - Three' ]] || fail "a date set by hand is replaced"
+says open-hand-dated '::warning file=CHANGELOG.md::6.x-dev dates 6.0.3 as 2026-10-01, which the release replaces with 2026-10-12.' \
+    || fail "replacing a date set by hand warns"
+run open-hand-dated push_plugin_release_date.sh 6.x-dev 2026-10-01 || fail "an entry dated by hand for today is kept"
+if says open-hand-dated '::warning'; then fail "a date set by hand that matches the release does not warn"; fi
 
 new_repo open-released '* 6.0.3 - 2026-10-05 - Three'
 git -C "$WORK/open-released/origin.git" tag 6.0.3 6.x-dev

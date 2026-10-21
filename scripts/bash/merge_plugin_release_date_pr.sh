@@ -20,6 +20,7 @@ BRANCH="automated/release-date-$VERSION"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 RUNS_WAIT_SECONDS="${RUNS_WAIT_SECONDS:-120}"
 RUNS_POLL_SECONDS="${RUNS_POLL_SECONDS:-10}"
+(( RUNS_POLL_SECONDS > 0 )) || RUNS_POLL_SECONDS=1
 APPROVAL_BODY="Dates the $VERSION release; approved by the release workflow."
 
 if [[ -z "$BASE_BRANCH" || -z "$VERSION" ]]; then
@@ -140,8 +141,9 @@ if [[ -n "$identities" ]] && grep -qvxF "$BOT_EMAIL" <<< "$identities"; then
 fi
 
 # The pull_request runs appear a little after the pull request does, not necessarily together, so
-# every held run seen before the deadline is approved.
-deadline=$((SECONDS + RUNS_WAIT_SECONDS))
+# every held run seen while waiting is approved. Polls are counted rather than timed against
+# SECONDS, whose whole-second ticks can end a short wait before the second look.
+polls=$(( (RUNS_WAIT_SECONDS + RUNS_POLL_SECONDS - 1) / RUNS_POLL_SECONDS ))
 approved=" "
 while :; do
     runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$head_sha&event=pull_request" \
@@ -157,15 +159,24 @@ while :; do
             echo "::warning::Could not approve held run $run_id: $approve_run_output"
         fi
     done <<< "$runs"
-    if (( SECONDS >= deadline )); then
+    if (( polls-- <= 0 )); then
         break
     fi
     sleep "$RUNS_POLL_SECONDS"
 done
 
+# Assigned on its own line so a failed lookup stops the run rather than reading as a moved head.
+current_head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
+if [[ "$current_head" != "$head_sha" ]]; then
+    leave_open "its head moved on from the commit tagged $VERSION during the wait."
+fi
+
 if [[ -n "${RELEASE_APPROVER_TOKEN:-}" ]]; then
-    if ! approve_output=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh pr review "$pr" --approve \
-        --body "$APPROVAL_BODY" 2>&1); then
+    # gh pr review approves whatever the head is by then; with commit_id, GitHub refuses (422) once the head
+    # has moved on from the tagged commit.
+    if ! approve_output=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh api --method POST \
+        "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" -f event=APPROVE -f "commit_id=$head_sha" \
+        -f "body=$APPROVAL_BODY" 2>&1 >/dev/null); then
         leave_open "the approver token could not approve it: $approve_output"
     fi
     echo "Approved #$pr."
