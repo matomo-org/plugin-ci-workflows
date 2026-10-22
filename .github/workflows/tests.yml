@@ -94,6 +94,9 @@ jobs:
       - name: Check the branch sweep
         run: bash tests/branch_sweep_test.sh
 
+      - name: Check the branch sweep's inactivity check
+        run: bash tests/inactivity_check_test.sh
+
       - name: Check the minimum PHP lint
         run: bash tests/min_php_lint_test.sh
 
