@@ -1,4 +1,5 @@
-# Releases plugin.json's version from the N.x-dev branch the caller runs on, when it has no tag yet.
+# Releases plugin.json's version from the N.x-dev branch the caller runs on, or the caller's
+# release-branch, when it has no tag yet.
 #
 # Its CHANGELOG.md entry is merged undated or Unreleased (Plugins CI's release date check fails one
 # dated by hand). This dates it on automated/release-date-<version>, tags and publishes that commit,
@@ -34,6 +35,11 @@ on:
         required: false
         type: number
         default: 45
+      release-branch:
+        description: "Release from this one branch instead of N.x-dev, with no check that plugin.json's major matches it. For a plugin that keeps a single branch and versions apart from Matomo, such as a bundle. Empty releases only from N.x-dev."
+        required: false
+        type: string
+        default: ''
       require-approver-token:
         description: "Fail before releasing when approver-token is empty, so a secret that was renamed, removed or not passed under secrets: is noticed rather than the release date pull request being left for a person."
         required: false
@@ -132,6 +138,7 @@ jobs:
         env:
           RELEASE_SKIP_CI_CHECK: ${{ inputs.skip-ci-check }}
           RELEASE_CI_WAIT_MINUTES: ${{ inputs.ci-wait-minutes }}
+          RELEASE_BRANCH: ${{ inputs.release-branch }}
         shell: bash
         run: bash "$RELEASE_SCRIPTS/bash/prepare_plugin_dev_release.sh" "$GITHUB_REF"
 

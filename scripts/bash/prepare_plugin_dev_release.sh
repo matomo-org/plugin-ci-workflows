@@ -1,15 +1,15 @@
 #!/bin/bash
 # Decides whether the development branch has an unreleased version to release: plugin.json's version
-# is stable, belongs to the branch's major, has no tag yet, and has a CHANGELOG.md entry the release
-# can date, and no push CI run on the branch's head has failed or is still running once
-# RELEASE_CI_WAIT_MINUTES have passed. Writes
-# release_needed, publish_needed, version, plugin_name, today, finish and ci_held to GITHUB_OUTPUT.
+# is stable, belongs to the branch's major (unless RELEASE_BRANCH names the branch instead), has no
+# tag yet, and has a CHANGELOG.md entry the release can date, and no push CI run on the branch's head
+# has failed or is still running once RELEASE_CI_WAIT_MINUTES have passed. Writes release_needed,
+# publish_needed, version, plugin_name, today, finish and ci_held to GITHUB_OUTPUT.
 # ci_held says why CI held plugin.json's version back; the workflow fails on it once the versions in
 # finish are done, so a release that did not happen is seen.
 # A version this workflow tagged is resumed until its release is published and its date is on the
 # branch, including one plugin.json has since moved on from. finish lists each version to publish
 # and merge, as <version>:<release date>, earliest first; release_needed covers only plugin.json's.
-# Usage: prepare_plugin_dev_release.sh <development-branch ref, refs/heads/N.x-dev>
+# Usage: prepare_plugin_dev_release.sh <development-branch ref, refs/heads/N.x-dev or refs/heads/$RELEASE_BRANCH>
 
 set -euo pipefail
 
@@ -30,12 +30,21 @@ fi
 CI_WAIT_MINUTES=$(( 10#$CI_WAIT_MINUTES ))
 
 # A tag named like the branch has the same ref_name, so only the full ref says a branch is running.
-if [[ ! "$REF" =~ ^refs/heads/(([0-9]+)\.x-dev)$ ]]; then
+if [[ -n "${RELEASE_BRANCH:-}" ]]; then
+    if [[ "$REF" != "refs/heads/$RELEASE_BRANCH" ]]; then
+        echo "::error::Unsupported release ref: $REF. release-branch only releases refs/heads/$RELEASE_BRANCH." >&2
+        exit 1
+    fi
+    BRANCH="$RELEASE_BRANCH"
+    # Empty: a release branch's versions are not tied to a Matomo major.
+    expected_major=""
+elif [[ "$REF" =~ ^refs/heads/(([0-9]+)\.x-dev)$ ]]; then
+    BRANCH="${BASH_REMATCH[1]}"
+    expected_major="${BASH_REMATCH[2]}"
+else
     echo "::error::Unsupported release ref: $REF" >&2
     exit 1
 fi
-BRANCH="${BASH_REMATCH[1]}"
-expected_major="${BASH_REMATCH[2]}"
 
 emit() {
     if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
@@ -124,8 +133,14 @@ list_ci_runs() {
 
 finish=()
 # The date branches name every version this workflow has released.
-earlier_versions=$(sed -nE "s#^.*\trefs/heads/automated/release-date-(${expected_major}\.[0-9]+\.[0-9]+)\$#\1#p" \
-    <<< "$remote_refs" | sort -V)
+# A release branch takes plugin.json's major, so date branches a plugin left on an N.x-dev line before
+# moving to it are never merged into it.
+scan_major="${expected_major:-${VERSION%%.*}}"
+earlier_versions=""
+if [[ "$scan_major" =~ ^[0-9]+$ ]]; then
+    earlier_versions=$(sed -nE "s#^.*\trefs/heads/automated/release-date-(${scan_major}\.[0-9]+\.[0-9]+)\$#\1#p" \
+        <<< "$remote_refs" | sort -V)
+fi
 for earlier in $earlier_versions; do
     if [[ "$earlier" != "$VERSION" ]] && tagged "$earlier" && ! finished "$earlier" && ours "$earlier"; then
         echo "$earlier is tagged but not yet published or not yet merged into $BRANCH; resuming it."
@@ -137,7 +152,7 @@ release_needed=false
 ci_held=""
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "$VERSION is not a stable version, so nothing is released."
-elif [[ "${VERSION%%.*}" != "$expected_major" ]]; then
+elif [[ -n "$expected_major" && "${VERSION%%.*}" != "$expected_major" ]]; then
     echo "::error file=plugin.json::Version $VERSION does not belong on $BRANCH." >&2
     exit 1
 elif tagged "$VERSION"; then
@@ -196,6 +211,10 @@ else
         if [[ "$ci_read_failed" == false ]]; then
             ci_failed="$ci_failed${ci_failed:+${ci_running:+, }}$ci_running"
             [[ -z "$ci_failed" ]] || ci_failed="CI has not passed on it: $ci_failed"
+            # Plugins CI's documented push trigger is N.x-dev only, so a release branch may have none.
+            if [[ -n "${RELEASE_BRANCH:-}" && -z "$ci_runs" ]]; then
+                echo "::warning::No push CI ran on ${head_sha:0:12}, so $VERSION is released unchecked. Either $BRANCH is not in the push trigger of the CI it should wait for, or the commit was pushed with GITHUB_TOKEN."
+            fi
         fi
     fi
     if [[ -n "$ci_failed" ]]; then
