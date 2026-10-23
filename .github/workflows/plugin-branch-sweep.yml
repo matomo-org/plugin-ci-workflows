@@ -17,7 +17,9 @@
 # chain, never elevated, so a caller that does not grant it leaves the dispatch unauthorised.
 #
 # One bound on the guarantee: GitHub disables scheduled workflows in a public repository after
-# 60 days without repository activity, which a branch in pure maintenance can reach.
+# 60 days without repository activity, which a branch in pure maintenance can reach. The
+# `activity` job fails ahead of that so a person can act; it deliberately does not keep the
+# schedule alive itself (see the job).
 
 name: Branch sweep
 
@@ -220,3 +222,87 @@ jobs:
           fi
 
           exit "$failed"
+
+  # Fails, rather than annotating, because a warning on a green scheduled run reaches nobody: a
+  # failure notifies the user who last modified the caller's cron. A separate job so that it
+  # neither blocks the dispatch nor is skipped when the dispatch fails.
+  #
+  # Keeping the schedule alive automatically, by commits or by re-enabling the workflow through
+  # the API, is ruled out: GitHub disabled gautamkrishnar/keepalive-workflow for circumventing
+  # the 60-day policy, so the remedy here is left to a person.
+  activity:
+    name: Fail before the schedule is disabled for inactivity
+    permissions:
+      contents: read # read the repository and its default branch's last commit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check repository activity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Two weekly runs of notice before day 60, with a missed run to spare.
+          fail_after_days=45
+
+          # Runs a command up to three times, leaving the successful attempt's output in OUT, or
+          # the last failure's message and body. stderr is kept apart on success for the same
+          # reason as in the sweep job: a gh warning would arrive spliced onto the answer.
+          retry() {
+            local attempt errors
+            errors=$(mktemp)
+            for attempt in 1 2 3; do
+              if OUT=$("$@" 2>"$errors"); then
+                rm -f "$errors"
+                return 0
+              fi
+              OUT="$(cat "$errors")$OUT"
+              if [ "$attempt" -lt 3 ]; then
+                sleep $(( attempt * 5 ))
+              fi
+            done
+            rm -f "$errors"
+            return 1
+          }
+
+          if ! retry gh api "repos/$GITHUB_REPOSITORY" --jq '"\(.private) \(.default_branch)"'; then
+            echo "::error::Could not read the repository, so its activity was not checked: $OUT"
+            exit 1
+          fi
+          read -r private default <<<"$OUT"
+
+          if [ "$private" = true ]; then
+            echo "Private repository: GitHub only disables a public repository's schedules for inactivity."
+            exit 0
+          fi
+          case "${default:-}" in
+            ''|null|*[!A-Za-z0-9._/+-]*)
+              echo "::error::Could not read the default branch, so its activity was not checked."
+              exit 1
+              ;;
+          esac
+
+          # The sweep dispatches the caller on the other maintained branches too, and each of
+          # those runs would otherwise repeat the same failure.
+          if [ "$GITHUB_REF_NAME" != "$default" ]; then
+            echo "Running on $GITHUB_REF_NAME; the run on $default checks activity."
+            exit 0
+          fi
+
+          # GitHub does not document what counts as activity. A commit on the default branch is
+          # the one reported to reset the count, so it is the conservative measure.
+          if ! retry gh api "repos/$GITHUB_REPOSITORY/commits/$default" --jq .commit.committer.date; then
+            echo "::error::Could not read the last commit on $default, so its activity was not checked: $OUT"
+            exit 1
+          fi
+          if ! last=$(date -d "$OUT" +%s 2>/dev/null); then
+            echo "::error::Could not read the date of the last commit on $default ('$OUT'), so its activity was not checked."
+            exit 1
+          fi
+          days=$(( ($(date +%s) - last) / 86400 ))
+
+          if [ "$days" -ge "$fail_after_days" ]; then
+            echo "::error::The last commit on $default was $days days ago. GitHub disables a public repository's scheduled workflows after 60 days without activity, which stops this workflow and the plugin's other schedules without saying so. Merge outstanding maintenance to $default, or re-enable the workflows in the Actions tab once GitHub has disabled them."
+            exit 1
+          fi
+          echo "The last commit on $default was $days days ago."
