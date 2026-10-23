@@ -619,4 +619,73 @@ run check-version-in-notes check_plugin_release_date.sh 6.x-dev || { cat "$WORK/
 new_repo check-other-branch '* 6.0.3 - 2026-10-12 - Three'
 run check-other-branch check_plugin_release_date.sh 6.x-prod || fail "a branch other than N.x-dev passes"
 
+# A plugin released from main (or the third argument) through release-branch, with a version of its own major.
+release_from_main() {
+    printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    with:\n      release-branch: %s\n' "${3:-main}" \
+        > "$WORK/$1/clone/.github/workflows/release.yml"
+    set_version "$1" 1.0.4
+    printf '## Changelog\n\n%s\n\n1.0.3 - 2026-10-05\n- Three\n' "$2" > "$WORK/$1/clone/CHANGELOG.md"
+}
+
+new_repo check-release-branch '* 6.0.3 Three'
+release_from_main check-release-branch $'1.0.4\n- Four'
+run check-release-branch check_plugin_release_date.sh main || { cat "$WORK/check-release-branch/out" >&2; fail "an undated entry on the release branch passes"; }
+says check-release-branch '1.0.4 is undated' || fail "the release branch's entry is checked, whatever its major"
+
+new_repo check-release-branch-dated '* 6.0.3 Three'
+release_from_main check-release-branch-dated $'1.0.4 - 2026-10-12\n- Four'
+if run check-release-branch-dated check_plugin_release_date.sh main; then fail "an entry dated by hand on the release branch fails"; fi
+says check-release-branch-dated 'The 1.0.4 entry is dated 2026-10-12' || fail "a dated entry on the release branch names its date"
+run check-release-branch-dated check_plugin_release_date.sh master || fail "a branch other than the release branch passes"
+run check-release-branch-dated check_plugin_release_date.sh 6.x-dev || fail "N.x-dev passes when the only release is from another branch"
+
+new_repo check-release-branch-xdev '* 6.0.3 Three'
+release_from_main check-release-branch-xdev $'1.0.4\n- Four' 6.x-dev
+run check-release-branch-xdev check_plugin_release_date.sh 6.x-dev || { cat "$WORK/check-release-branch-xdev/out" >&2; fail "an N.x-dev release branch is not held to its major"; }
+
+new_repo check-release-branch-expression '* 6.0.3 Three'
+release_from_main check-release-branch-expression $'1.0.4\n- Four' "'\${{ github.event.repository.default_branch }}'"
+if run check-release-branch-expression check_plugin_release_date.sh main; then fail "an expression release-branch fails"; fi
+says check-release-branch-expression 'release-branch must be a literal branch name' || fail "an expression release-branch is named"
+if run check-release-branch-expression check_plugin_release_date.sh feature-x; then fail "an expression release-branch fails on any branch, as where it points is unknown"; fi
+
+new_repo check-release-branch-number '* 6.0.3 Three'
+release_from_main check-release-branch-number $'1.0.4\n- Four' 1.10
+if run check-release-branch-number check_plugin_release_date.sh 1.10; then fail "an unquoted numeric release-branch fails"; fi
+says check-release-branch-number "quote release-branch, it is read as 1.1" || fail "an unquoted numeric release-branch is named"
+
+# One call releases N.x-dev and another main: each branch is held to its own rule.
+new_repo check-release-branch-mixed '* 6.0.3 Three'
+release_from_main check-release-branch-mixed $'1.0.4\n- Four'
+printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n' \
+    > "$WORK/check-release-branch-mixed/clone/.github/workflows/release-dev.yml"
+run check-release-branch-mixed check_plugin_release_date.sh main || { cat "$WORK/check-release-branch-mixed/out" >&2; fail "the release branch of a mixed plugin is checked without a major"; }
+if run check-release-branch-mixed check_plugin_release_date.sh 6.x-dev; then fail "N.x-dev of a mixed plugin is held to its major"; fi
+says check-release-branch-mixed 'Version 1.0.4 does not belong on 6.x-dev' || { cat "$WORK/check-release-branch-mixed/out" >&2; fail "N.x-dev of a mixed plugin names the major mismatch"; }
+
+new_repo check-release-branch-skipped '* 6.0.3 Three'
+release_from_main check-release-branch-skipped $'1.0.4\n- Four'
+printf '## Changelog\n\n1.0.4\n- Four\n\n1.0.3\n- Three\n' > "$WORK/check-release-branch-skipped/clone/CHANGELOG.md"
+if run check-release-branch-skipped check_plugin_release_date.sh main; then fail "a version bumped past an unreleased one on the release branch fails"; fi
+says check-release-branch-skipped 'The 1.0.3 entry is undated and 1.0.3 has not been released' || fail "a skipped version on the release branch is named"
+
+new_repo check-release-branch-skipped-major '* 6.0.3 Three'
+release_from_main check-release-branch-skipped-major $'2.0.0\n- Two'
+set_version check-release-branch-skipped-major 2.0.0
+printf '## Changelog\n\n2.0.0\n- Two\n\n1.0.4\n- Four\n' > "$WORK/check-release-branch-skipped-major/clone/CHANGELOG.md"
+if run check-release-branch-skipped-major check_plugin_release_date.sh main; then fail "a release branch's unreleased entry of an earlier major fails"; fi
+says check-release-branch-skipped-major 'The 1.0.4 entry is undated and 1.0.4 has not been released' || fail "a release branch's skipped entry of an earlier major is named"
+
+new_repo check-release-branch-empty '* 6.0.3 - 2026-10-12 - Three'
+release_from_main check-release-branch-empty '* 6.0.3 - 2026-10-12 - Three' "''"
+set_version check-release-branch-empty 6.0.3
+printf '## Changelog\n\n* 6.0.3 - 2026-10-12 - Three\n' > "$WORK/check-release-branch-empty/clone/CHANGELOG.md"
+if run check-release-branch-empty check_plugin_release_date.sh 6.x-dev; then fail "an empty release-branch is checked on N.x-dev"; fi
+says check-release-branch-empty 'The 6.0.3 entry is dated 2026-10-12' || fail "an empty release-branch is checked on N.x-dev, by its date"
+
+new_repo check-unreadable-other-branch '* 6.0.3 Three'
+printf 'on: 2026-13-45\n' > "$WORK/check-unreadable-other-branch/clone/.github/workflows/broken.yml"
+if run check-unreadable-other-branch check_plugin_release_date.sh feature-x; then fail "an unreadable workflow fails on any branch"; fi
+says check-unreadable-other-branch 'broken.yml' || fail "an unreadable workflow is named in the error"
+
 echo 'All development release tests passed.'

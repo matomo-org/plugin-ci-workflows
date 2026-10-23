@@ -3,6 +3,9 @@
 # could not date, or follows an undated entry whose version was never tagged, in a plugin released
 # by plugin-dev-release.yml. That workflow dates the entry the day it releases it, so a date written
 # by hand is a guess it would overwrite.
+# Checks N.x-dev and the release-branch a plugin passes to that workflow, and fails on every branch
+# when that release-branch is not a literal branch name, since the branch it names is unknown here,
+# or when a workflow cannot be read.
 # Passes for any other plugin or branch, a prerelease version, or a version already tagged, which
 # includes the release date pull request the workflow opens after tagging.
 # Run from a checkout of the plugin.
@@ -26,12 +29,6 @@ error() {
     exit 1
 }
 
-if [[ ! "$BRANCH" =~ ^([0-9]+)\.x-dev$ ]]; then
-    echo "$BRANCH is not released by the weekly release, so the changelog date is not checked."
-    exit 0
-fi
-expected_major="${BASH_REMATCH[1]}"
-
 shopt -s nullglob
 workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
 # -P keeps the plugin checkout, the working directory, off the import path, so its yaml.py cannot stand in for the real module.
@@ -40,33 +37,64 @@ if ! python3 -P -c 'import yaml' 2>/dev/null; then
     exit 1
 fi
 # Parsed, not grepped, so a commented-out call does not count. Exits 3 when no job calls it, so an
-# unreadable workflow cannot pass as a plugin that does not.
+# unreadable workflow cannot pass as a plugin that does not. That holds on every branch, as the
+# branch to check comes from the workflows. Prints each call's release-branch, or the error.
 calls_status=0
-calls_error=$(python3 -P - "$RELEASE_WORKFLOW" "${workflow_files[@]}" 2>&1 <<'PY'
+calls_output=$(python3 -P - "$RELEASE_WORKFLOW" "${workflow_files[@]}" <<'PY'
 import sys, yaml
 target = sys.argv[1]
+found = False
+release_branches = []
+
+def fail(message):
+    # On stdout, the only stream the caller captures for its error.
+    print(message)
+    sys.exit(1)
+
 for path in sys.argv[2:]:
     try:
         with open(path, encoding='utf-8') as handle:
             doc = yaml.safe_load(handle)
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as error:
-        sys.exit(f'{path}: {error}')
+    except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as error:
+        fail(f'{path}: {error}')
     jobs = doc.get('jobs') if isinstance(doc, dict) else None
     if not isinstance(jobs, dict):
         continue
     for job in jobs.values():
         uses = job.get('uses') if isinstance(job, dict) else None
         if isinstance(uses, str) and '@' in uses and (uses.split('@', 1)[0] + '@').endswith(target):
-            sys.exit(0)
-sys.exit(3)
+            found = True
+            inputs = job.get('with')
+            branch = inputs.get('release-branch') if isinstance(inputs, dict) else None
+            if isinstance(branch, str) and '${{' in branch:
+                fail(f'{path}: release-branch must be a literal branch name for the date check, not {branch}')
+            if branch is not None and not isinstance(branch, str):
+                # YAML reads 1.10 as the number 1.1, so the branch name is already lost.
+                fail(f'{path}: quote release-branch, it is read as {branch!r}')
+            # '*' cannot be a branch name, so it marks a call that releases from N.x-dev.
+            release_branches.append(branch if isinstance(branch, str) and branch else '*')
+if not found:
+    sys.exit(3)
+print('\n'.join(release_branches))
 PY
 ) || calls_status=$?
 if (( calls_status == 3 )); then
     echo "This plugin does not call plugin-dev-release.yml, so its changelog dates are its own."
     exit 0
 elif (( calls_status != 0 )); then
-    echo "::error::Could not read the plugin's workflows: $calls_error" >&2
+    echo "::error::Could not read the plugin's workflows: $calls_output" >&2
     exit 1
+fi
+
+# A listed release branch wins over the N.x-dev pattern, as it does in the release itself.
+if grep -qxF -- "$BRANCH" <<< "$calls_output"; then
+    # Empty: a release branch's versions are not tied to a Matomo major.
+    expected_major=""
+elif [[ "$BRANCH" =~ ^([0-9]+)\.x-dev$ ]] && grep -qxF '*' <<< "$calls_output"; then
+    expected_major="${BASH_REMATCH[1]}"
+else
+    echo "$BRANCH is not released by the weekly release, so the changelog date is not checked."
+    exit 0
 fi
 
 # -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
@@ -81,7 +109,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "$VERSION is not a stable version, so it is not released and its date is not checked."
     exit 0
 fi
-if [[ "${VERSION%%.*}" != "$expected_major" ]]; then
+if [[ -n "$expected_major" && "${VERSION%%.*}" != "$expected_major" ]]; then
     error plugin.json "Version $VERSION does not belong on $BRANCH."
 fi
 
@@ -114,7 +142,7 @@ if ! earlier=$(python3 "$SCRIPT_DIR/../python/update_changelog_date.py" \
     --read-next-undated --plugin-name "$PLUGIN_NAME" CHANGELOG.md "$VERSION" 2> "$scratch"); then
     error CHANGELOG.md "Could not read the entry below $VERSION: $(tr '\n' ' ' < "$scratch")"
 fi
-if [[ -n "$earlier" && "${earlier%%.*}" == "$expected_major" ]]; then
+if [[ -n "$earlier" && ( -z "$expected_major" || "${earlier%%.*}" == "$expected_major" ) ]]; then
     tag_status=0
     git ls-remote --exit-code --tags origin "refs/tags/$earlier" "refs/tags/v$earlier" > /dev/null || tag_status=$?
     if (( tag_status == 2 )); then

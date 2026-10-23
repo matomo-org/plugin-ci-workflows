@@ -36,7 +36,7 @@ on:
         type: number
         default: 45
       release-branch:
-        description: "Release from this one branch instead of N.x-dev, with no check that plugin.json's major matches it. For a plugin that keeps a single branch and versions apart from Matomo, such as a bundle. Empty releases only from N.x-dev."
+        description: "Release from this one branch instead of N.x-dev, with no check that plugin.json's major matches it. For a plugin that keeps a single branch and versions apart from Matomo, such as a bundle. Empty releases only from N.x-dev. Give a literal, quoted branch name: Plugins CI's release-date job fails on an expression."
         required: false
         type: string
         default: ''
