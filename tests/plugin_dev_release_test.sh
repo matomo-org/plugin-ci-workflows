@@ -278,6 +278,56 @@ new_repo prepare-branch '* 6.0.3 - Three'
 if run prepare-branch prepare_plugin_dev_release.sh refs/heads/6.x-prod; then fail "a branch other than N.x-dev fails"; fi
 if run prepare-branch prepare_plugin_dev_release.sh refs/tags/6.x-dev; then fail "a tag named like the branch fails"; fi
 says prepare-branch 'Unsupported release ref: refs/tags/6.x-dev' || fail "a tag ref says why"
+if run prepare-branch prepare_plugin_dev_release.sh refs/heads/main; then fail "main fails without release-branch"; fi
+says prepare-branch 'Unsupported release ref: refs/heads/main' || fail "main without release-branch says why"
+
+# A bundle releases from main, versioned apart from Matomo. 1.0.3 was dated and tagged by a run that
+# then failed, and plugin.json has moved on to 1.0.4.
+new_repo prepare-release-branch '* 1.0.3 - Three'
+release_clone="$WORK/prepare-release-branch/clone"
+set_version prepare-release-branch 1.0.3
+git -C "$release_clone" commit -q -am 'Release 1.0.3'
+git -C "$release_clone" push -q origin HEAD:main
+git -C "$release_clone" checkout -q -B main origin/main
+run prepare-release-branch push_plugin_release_date.sh main 2026-10-05 || fail "dating 1.0.3 on main succeeds"
+git -C "$release_clone" tag 1.0.3
+git -C "$release_clone" push -q origin refs/tags/1.0.3
+git -C "$release_clone" checkout -q -B main origin/main
+sed -i 's/^\* 1.0.3 - Three$/* 1.0.4 - Four\n&/' "$release_clone/CHANGELOG.md"
+set_version prepare-release-branch 1.0.4
+RELEASE_BRANCH=main run prepare-release-branch prepare_plugin_dev_release.sh refs/heads/main \
+    || { cat "$WORK/prepare-release-branch/out" >&2; fail "a release-branch version is prepared"; }
+says prepare-release-branch 'release_needed=true' || fail "a release-branch version of any major is released"
+says prepare-release-branch 'version=1.0.4' || fail "a release-branch release reports its version"
+grep -Fq 'branch=main&event=push' "$FAKE_GH_LOG" || fail "the release branch's push runs are read"
+says prepare-release-branch '::warning::No push CI ran on' || fail "a release branch with no push CI warns"
+FAKE_GH_RUNS='11:500:completed:success:Plugins-CI' RELEASE_BRANCH=main \
+    run prepare-release-branch prepare_plugin_dev_release.sh refs/heads/main || fail "a release branch with push CI is prepared"
+if says prepare-release-branch 'No push CI ran'; then fail "a release branch whose CI ran does not warn"; fi
+says prepare-release-branch 'finish=1.0.3:2026-10-05 1.0.4:2026-10-12' \
+    || fail "an unfinished earlier version on the release branch is resumed"
+# A plugin that released 5.0.3 through the workflow before moving to main and 1.x leaves that date
+# branch and tag behind, and main's restarted changelog never dates 5.0.3.
+new_repo prepare-release-branch-moved '* 5.0.3 - Three'
+moved_clone="$WORK/prepare-release-branch-moved/clone"
+set_version prepare-release-branch-moved 5.0.3
+git -C "$moved_clone" commit -q -am 'Release 5.0.3'
+git -C "$moved_clone" push -q origin HEAD:main
+git -C "$moved_clone" checkout -q -B main origin/main
+run prepare-release-branch-moved push_plugin_release_date.sh main 2026-09-28 || fail "dating 5.0.3 succeeds"
+git -C "$moved_clone" tag 5.0.3
+git -C "$moved_clone" push -q origin refs/tags/5.0.3
+git -C "$moved_clone" checkout -q -B main origin/main
+printf '## Changelog\n\n* 1.0.0 - One\n' > "$moved_clone/CHANGELOG.md"
+set_version prepare-release-branch-moved 1.0.0
+RELEASE_BRANCH=main run prepare-release-branch-moved prepare_plugin_dev_release.sh refs/heads/main \
+    || { cat "$WORK/prepare-release-branch-moved/out" >&2; fail "a release branch after a major move is prepared"; }
+says prepare-release-branch-moved 'finish=1.0.0:2026-10-12' || fail "another major's date branch is not resumed on the release branch"
+
+if RELEASE_BRANCH=main run prepare-release-branch prepare_plugin_dev_release.sh refs/heads/6.x-dev; then
+    fail "release-branch refuses any other branch, N.x-dev included"
+fi
+says prepare-release-branch 'release-branch only releases refs/heads/main' || fail "a ref other than release-branch says why"
 
 new_repo prepare-missing '* 6.0.1 - 2026-09-28 - One'
 if run prepare-missing prepare_plugin_dev_release.sh refs/heads/6.x-dev; then fail "a version with no changelog entry fails"; fi
