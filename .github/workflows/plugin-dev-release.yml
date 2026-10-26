@@ -169,7 +169,7 @@ jobs:
           # One version failing must not hold back the versions after it.
           status=0
           for release in $FINISH; do
-            bash "$RELEASE_SCRIPTS/bash/publish_plugin_release.sh" "$PLUGIN_NAME" "${release%%:*}" "${release#*:}" || status=1
+            bash "$RELEASE_SCRIPTS/bash/publish_plugin_release.sh" "$PLUGIN_NAME" "${release%%:*}" || status=1
           done
           exit "$status"
 
