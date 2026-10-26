@@ -96,7 +96,7 @@ run_publisher() {
         FAKE_GH_NOTES="$WORK/notes-$mode" \
         GH_TOKEN=test-token \
         GITHUB_REPOSITORY=matomo-org/TestPlugin \
-        bash "$SCRIPT" TestPlugin 5.0.0 2026-09-21
+        bash "$SCRIPT" TestPlugin 5.0.0
 }
 
 run_publisher existing "$WORK/existing.log" > /dev/null 2> "$WORK/existing.err"
@@ -145,7 +145,7 @@ grep -Fq -- '--title 5.0.0 --notes-file' "$WORK/not-found.log" || {
     exit 1
 }
 CHANGELOG_LINK='See [CHANGELOG.md](https://github.com/matomo-org/TestPlugin/blob/5.0.0/CHANGELOG.md) for the full changelog.'
-[[ "$(cat "$WORK/notes-not-found")" == "$(printf 'Released on 2026-09-21.\n\n- Fixed a report\n- Added a setting\n\n%s' "$CHANGELOG_LINK")" ]] || {
+[[ "$(cat "$WORK/notes-not-found")" == "$(printf -- '- Fixed a report\n- Added a setting\n\n%s' "$CHANGELOG_LINK")" ]] || {
     echo "A new release must list the changes in its tag's changelog entry" >&2
     exit 1
 }
@@ -155,7 +155,7 @@ grep -Eq '^::warning::No changes were read .*\(.+\), so its release notes only l
     echo 'A release whose notes fall back to the link must warn with the reason' >&2
     exit 1
 }
-[[ "$(cat "$WORK/notes-not-found")" == "$(printf 'Released on 2026-09-21.\n\n%s' "$CHANGELOG_LINK")" ]] || {
+[[ "$(cat "$WORK/notes-not-found")" == "$CHANGELOG_LINK" ]] || {
     echo 'Without a changelog entry to read, the release notes must link to the changelog' >&2
     exit 1
 }

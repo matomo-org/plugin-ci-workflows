@@ -2,19 +2,18 @@
 # Creates the GitHub Release for an already-created plugin tag, or publishes a draft or prerelease
 # of it that this workflow made. Anyone else's is left for them, since it may carry their own notes
 # and files.
-# Usage: publish_plugin_release.sh <plugin-name> <version> <release-date>
+# Usage: publish_plugin_release.sh <plugin-name> <version>
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_NAME="${1:-}"
 VERSION="${2:-}"
-RELEASE_DATE="${3:-}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}"
 WORKFLOW_LOGIN="github-actions[bot]"
 
-if [[ -z "$PLUGIN_NAME" || -z "$VERSION" || -z "$RELEASE_DATE" || -z "$GITHUB_REPOSITORY" ]]; then
-    echo "Usage: $0 <plugin-name> <version> <release-date>" >&2
+if [[ -z "$PLUGIN_NAME" || -z "$VERSION" || -z "$GITHUB_REPOSITORY" ]]; then
+    echo "Usage: $0 <plugin-name> <version>" >&2
     exit 1
 fi
 
@@ -31,7 +30,6 @@ write_release_notes() {
         | python3 "$SCRIPT_DIR/../python/update_changelog_date.py" \
             --read-notes --plugin-name "$PLUGIN_NAME" /dev/stdin "$VERSION"; } 2> "$notes_error") || changes=""
     {
-        printf 'Released on %s.\n\n' "$RELEASE_DATE"
         if [[ -n "$changes" ]]; then
             printf '%s\n\n' "$changes"
         else
