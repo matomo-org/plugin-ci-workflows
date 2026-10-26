@@ -21,7 +21,7 @@ BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 CI_WAIT_MINUTES="${RELEASE_CI_WAIT_MINUTES:-45}"
 CI_POLL_SECONDS="${RELEASE_CI_POLL_SECONDS:-60}"
 (( CI_POLL_SECONDS > 0 )) || CI_POLL_SECONDS=1
-# The job's timeout-minutes is 90, and the release after the wait needs the rest of it.
+# The job's timeout-minutes is 120, and the release after the wait needs the rest of it.
 # Bounded by its digits first, since bash arithmetic wraps a long enough number to anything.
 if [[ ! "$CI_WAIT_MINUTES" =~ ^0*[0-9]{1,2}$ ]] || (( 10#$CI_WAIT_MINUTES > 45 )); then
     echo "::error::ci-wait-minutes must be a whole number of minutes from 0 to 45, not $CI_WAIT_MINUTES." >&2

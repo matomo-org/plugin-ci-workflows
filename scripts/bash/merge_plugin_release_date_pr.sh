@@ -1,10 +1,11 @@
 #!/bin/bash
 # Opens the automated/release-date-<version> pull request into the base branch, after the version is
 # tagged so the release date check passes on it, and sets it to merge once the branch protection's
-# required checks pass, or leaves it open for a person. The workflow's token opened it, so its
-# pull_request runs are held for approval, and this approves them. With RELEASE_APPROVER_TOKEN, a
-# token for another user, that user approves and merges; GITHUB_TOKEN can do neither to a pull
-# request it opened.
+# required checks pass, or leaves it open for a person. Where the repository does not allow
+# auto-merge, the approver token waits on the required checks and merges once they have all passed.
+# The workflow's token opened it, so its pull_request runs are held for approval, and this approves
+# them. With RELEASE_APPROVER_TOKEN, a token for another user, that user approves and merges;
+# GITHUB_TOKEN can do neither to a pull request it opened.
 # Refuses a pull request that changes anything but CHANGELOG.md or carries a commit from anyone
 # other than the workflow, since that is all the approver is trusted to approve.
 # A pull request left waiting on a person is labelled Needs Review and, with the approver token,
@@ -21,6 +22,7 @@ BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 RUNS_WAIT_SECONDS="${RUNS_WAIT_SECONDS:-120}"
 RUNS_POLL_SECONDS="${RUNS_POLL_SECONDS:-10}"
 (( RUNS_POLL_SECONDS > 0 )) || RUNS_POLL_SECONDS=1
+CHECKS_WAIT_SECONDS="${CHECKS_WAIT_SECONDS:-1800}"
 APPROVAL_BODY="Dates the $VERSION release; approved by the release workflow."
 
 if [[ -z "$BASE_BRANCH" || -z "$VERSION" ]]; then
@@ -193,6 +195,65 @@ if ! merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" --auto 2>&1); then
     # GitHub refuses it if, by then, it can.
     case "$merge_output" in
         *"clean status"* | *"unstable status"*)
+            merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" 2>&1) || leave_open "$merge_output"
+            ;;
+        # Only with the approver token: the job's token is not granted checks: read, and without an
+        # approval the branch protection would usually refuse the merge after the wait anyway. That
+        # token may also bypass the branch protection, so nothing is merged until GitHub says the
+        # pull request can merge.
+        *"Auto merge is not allowed"*)
+            [[ -n "${RELEASE_APPROVER_TOKEN:-}" ]] || leave_open "$merge_output"
+            # Earlier versions in the same run can use up the shared wait; timeout 0 would never time out.
+            (( CHECKS_WAIT_SECONDS > 0 )) \
+                || leave_open "auto-merge is not allowed, and the wait on required checks was used up by earlier versions."
+            echo "Auto-merge is not allowed, so waiting up to ${CHECKS_WAIT_SECONDS}s on the required checks of #$pr."
+            checks_deadline=$(( $(date +%s) + CHECKS_WAIT_SECONDS ))
+            merge_state=UNKNOWN
+            # gh only watches checks that have reported, and a job gated by needs: reports only once it
+            # starts, so GitHub's merge state decides whether every required check has passed. A
+            # BLOCKED pull request is watched again until the wait runs out.
+            while :; do
+                remaining=$(( checks_deadline - $(date +%s) ))
+                (( remaining > 0 )) \
+                    || leave_open "auto-merge is not allowed, and it was still $(annotation "$merge_state") after ${CHECKS_WAIT_SECONDS}s."
+                checks_status=0
+                checks_output=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" timeout "$remaining" \
+                    gh pr checks "$pr" --required --watch --fail-fast 2>&1) || checks_status=$?
+                if [[ "$checks_status" != 0 && "$checks_output" == *"no "*"checks reported"* ]]; then
+                    checks_status=0
+                fi
+                case "$checks_status" in
+                    0) ;;
+                    124) leave_open "auto-merge is not allowed, and its required checks had not finished after ${CHECKS_WAIT_SECONDS}s." ;;
+                    *)
+                        # Without a terminal, gh prints a tab-separated row per check, again on each refresh.
+                        failed=$(awk -F'\t' '($2 == "fail" || $2 == "cancel") && !seen[$1]++ { printf "%s%s", sep, $1; sep = ", " }' <<< "$checks_output")
+                        [[ -n "$failed" ]] \
+                            || leave_open "auto-merge is not allowed, and its required checks could not be read: $(annotation "$(tail -n 1 <<< "$checks_output")")"
+                        leave_open "auto-merge is not allowed, and its required checks did not pass: $(annotation "$failed")"
+                        ;;
+                esac
+                # GitHub works the state out after the read that asks for it.
+                for look in 1 2 3; do
+                    review=
+                    if merge_state=$(GH_TOKEN="$RELEASE_APPROVER_TOKEN" gh pr view "$pr" --json mergeStateStatus,reviewDecision \
+                        --jq '.mergeStateStatus + " " + .reviewDecision' 2>&1); then
+                        review=${merge_state#* }
+                        merge_state=${merge_state%% *}
+                    else
+                        merge_state="unreadable: $merge_state"
+                    fi
+                    [[ "$merge_state" == UNKNOWN && "$look" != 3 ]] || break
+                    sleep "$RUNS_POLL_SECONDS"
+                done
+                case "$merge_state $review" in
+                    "BLOCKED REVIEW_REQUIRED" | "BLOCKED CHANGES_REQUESTED")
+                        leave_open "auto-merge is not allowed, and its required checks have passed but it waits on a review ($review)." ;;
+                    CLEAN* | UNSTABLE* | HAS_HOOKS*) break ;;
+                    "BLOCKED "*) sleep "$RUNS_POLL_SECONDS" ;;
+                    *) leave_open "auto-merge is not allowed, and its required checks have passed but it is $(annotation "$merge_state")." ;;
+                esac
+            done
             merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" 2>&1) || leave_open "$merge_output"
             ;;
         *) leave_open "$merge_output" ;;

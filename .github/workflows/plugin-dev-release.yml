@@ -66,8 +66,9 @@ jobs:
       actions: write # approve the held checks on the release date pull request
       contents: write # push the release date branch and the tag, publish the release
       pull-requests: write # open and merge the release date pull request
-    # ci-wait-minutes, at most 45, plus the release and any earlier versions it finishes.
-    timeout-minutes: 90
+    # ci-wait-minutes, at most 45, plus the release and any earlier versions it finishes, and up to
+    # 30 minutes on the release date pull requests' required checks where auto-merge is not allowed.
+    timeout-minutes: 120
     env:
       GITHUB_TOKEN: ${{ github.token }}
       GH_TOKEN: ${{ github.token }}
@@ -184,8 +185,11 @@ jobs:
           set -uo pipefail
           # One version failing must not hold back the versions after it.
           status=0
+          # The versions share one wait on required checks, so the job's timeout covers them all.
+          checks_deadline=$(( $(date +%s) + 1800 ))
           for release in $FINISH; do
-            bash "$RELEASE_SCRIPTS/bash/merge_plugin_release_date_pr.sh" "$GITHUB_REF_NAME" "${release%%:*}" || status=1
+            CHECKS_WAIT_SECONDS=$(( checks_deadline - $(date +%s) )) \
+              bash "$RELEASE_SCRIPTS/bash/merge_plugin_release_date_pr.sh" "$GITHUB_REF_NAME" "${release%%:*}" || status=1
           done
           exit "$status"
 

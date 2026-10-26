@@ -48,6 +48,13 @@ case "$*" in
         jq -n --arg h "$head" '{headRefOid: $h}' | filter
         ;;
     'pr view '*'--json files'*) jq -n '{files: ($ARGS.positional | map({path: .}))}' --args $FAKE_FILES | filter ;;
+    # FAKE_EARLY_MERGE_STATE is the merge state at the first look only.
+    'pr view '*'--json mergeStateStatus'*)
+        state="${FAKE_MERGE_STATE:-CLEAN}"
+        if [[ ! -f "$FAKE_GH_LOG.state" ]]; then state="${FAKE_EARLY_MERGE_STATE:-$state}"; fi
+        touch "$FAKE_GH_LOG.state"
+        jq -n --arg s "$state" --arg d "${FAKE_REVIEW_DECISION:-}" '{mergeStateStatus: $s, reviewDecision: $d}' | filter
+        ;;
     'pr view '*'--json state,reviewDecision'*)
         if [[ -n "${FAKE_DECISION_ERROR:-}" ]]; then
             echo "$FAKE_DECISION_ERROR" >&2
@@ -106,6 +113,13 @@ case "$*" in
             --args $runs | filter
         ;;
     *'/approve') ;;
+    # FAKE_CHECKS_STATUS is how the wait on the required checks ends, printing FAKE_CHECKS_OUTPUT;
+    # FAKE_CHECKS_SLEEP outlasts a timeout.
+    'pr checks '*)
+        sleep "${FAKE_CHECKS_SLEEP:-0}"
+        printf '%b' "${FAKE_CHECKS_OUTPUT:-}"
+        exit "${FAKE_CHECKS_STATUS:-0}"
+        ;;
     'pr merge '*' --auto')
         if [[ -n "${FAKE_AUTO_MERGE_ERROR:-}" ]]; then
             echo "$FAKE_AUTO_MERGE_ERROR" >&2
@@ -141,11 +155,11 @@ fail() {
 reset() {
     export FAKE_GH_LOG="$WORK/$1.log" OUT="$WORK/$1.out"
     : > "$FAKE_GH_LOG"
-    rm -f "$FAKE_GH_LOG.listed" "$FAKE_GH_LOG.approved" "$FAKE_GH_LOG.head"
+    rm -f "$FAKE_GH_LOG.listed" "$FAKE_GH_LOG.approved" "$FAKE_GH_LOG.head" "$FAKE_GH_LOG.state"
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_COMMITS="$BOT_EMAIL:$BOT_EMAIL" FAKE_RUNS='' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
     unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR \
         FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR FAKE_LATE_HEAD FAKE_LATE_HEAD_ERROR \
-        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR
+        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE
 }
 
 run() {
@@ -225,13 +239,115 @@ run || fail "a pull request GitHub can already merge is merged, not failed"
 grep -q "^workflow-token pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG" \
     || fail "a pull request refused auto-merge for being mergeable now is merged directly"
 
+AUTO_DISABLED='GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)'
+
 reset auto-disabled
-export FAKE_AUTO_MERGE_ERROR='GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)'
-run || fail "a repository without auto-merge leaves the pull request open, not failed"
-says 'left open for a person to merge: GraphQL: Auto merge is not allowed' || fail "the auto-merge refusal is passed on"
-if grep -q " pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG"; then
-    fail "a refused auto-merge is not turned into a merge that skips the required checks"
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED"
+run || fail "a repository without auto-merge merges once the required checks pass"
+grep -Fq 'approver-token pr checks 35 --required --watch --fail-fast' "$FAKE_GH_LOG" \
+    || fail "without auto-merge, the approver token, which can read checks, waits on the required ones"
+[[ "$(grep -n ' pr checks 35 ' "$FAKE_GH_LOG" | cut -d: -f1)" -lt "$(grep -n "^approver-token pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG" | cut -d: -f1)" ]] \
+    || fail "without auto-merge, the approver merges the tagged commit directly, after the required checks"
+if says 'left open'; then fail "a pull request merged without auto-merge is not reported as left open"; fi
+
+reset auto-disabled-no-approver
+export FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED"
+run || fail "a repository without auto-merge or an approver leaves the pull request open, not failed"
+says 'left open for a person to merge: GraphQL: Auto merge is not allowed' || fail "without an approver, the auto-merge refusal is passed on"
+if grep -Eq ' pr checks |'" pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG"; then
+    fail "without an approver, nothing waits on the checks or merges directly"
 fi
+
+NO_REQUIRED_CHECKS="no required checks reported on the 'automated/release-date-6.0.3' branch\n"
+
+reset auto-disabled-no-required-checks
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_CHECKS_STATUS=1 \
+    FAKE_CHECKS_OUTPUT="$NO_REQUIRED_CHECKS" FAKE_MERGE_STATE=CLEAN
+run || fail "a pull request with no required checks is merged without auto-merge"
+grep -q "^approver-token pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG" \
+    || fail "a pull request with no required checks that GitHub can merge is merged directly"
+
+reset auto-disabled-no-checks
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_CHECKS_STATUS=1 \
+    FAKE_CHECKS_OUTPUT="no checks reported on the 'automated/release-date-6.0.3' branch\n"
+run || fail "a pull request with no checks at all is merged without auto-merge"
+grep -q "^approver-token pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG" \
+    || fail "a pull request with no checks at all that GitHub can merge is merged directly"
+
+reset auto-disabled-required-checks-not-reported
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_CHECKS_STATUS=1 \
+    FAKE_CHECKS_OUTPUT="$NO_REQUIRED_CHECKS" FAKE_MERGE_STATE=BLOCKED CHECKS_WAIT_SECONDS=2 RUNS_POLL_SECONDS=1
+run || fail "required checks that never report leave the pull request open, not failed"
+unset RUNS_POLL_SECONDS
+says 'it was still BLOCKED after 2s' || fail "required checks that never report warn once the wait runs out"
+[[ "$(grep -c ' pr checks 35 ' "$FAKE_GH_LOG")" -ge 2 ]] || fail "a BLOCKED pull request is watched again while the wait lasts"
+if grep -q " pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG"; then
+    fail "nothing is merged before the required checks have reported"
+fi
+
+reset auto-disabled-late-required-check
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_EARLY_MERGE_STATE=BLOCKED RUNS_POLL_SECONDS=1
+run || fail "a required check that reports late is merged once it passes"
+unset RUNS_POLL_SECONDS
+[[ "$(grep -c ' pr checks 35 ' "$FAKE_GH_LOG")" == 2 ]] || fail "a pull request BLOCKED on a late required check is watched again"
+grep -q "^approver-token pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG" \
+    || fail "a pull request that turns CLEAN after the second watch is merged"
+
+reset auto-disabled-review-required
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_MERGE_STATE=BLOCKED \
+    FAKE_REVIEW_DECISION=REVIEW_REQUIRED CHECKS_WAIT_SECONDS=60
+run || fail "a pull request waiting on a review without auto-merge is left open, not failed"
+says 'its required checks have passed but it waits on a review (REVIEW_REQUIRED)' \
+    || fail "a pull request blocked by a review is left open without waiting out the checks"
+[[ "$(grep -c ' pr checks 35 ' "$FAKE_GH_LOG")" == 1 ]] || fail "a pull request blocked by a review is not watched again"
+! grep -q "pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG" || fail "a pull request waiting on a review is not merged"
+
+reset auto-disabled-checks-unreadable
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_CHECKS_STATUS=1 \
+    FAKE_CHECKS_OUTPUT='GraphQL: Resource not accessible by personal access token (repository.pullRequest.statusCheckRollup)\n'
+run || fail "checks that cannot be read leave the pull request open, not failed"
+says 'its required checks could not be read: GraphQL: Resource not accessible' || fail "unreadable checks are not reported as failed ones"
+
+reset auto-disabled-state-unknown
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_EARLY_MERGE_STATE=UNKNOWN RUNS_POLL_SECONDS=1
+run || fail "a merge state GitHub has yet to work out is read again"
+unset RUNS_POLL_SECONDS
+[[ "$(grep -c ' pr view 35 --json mergeStateStatus,reviewDecision ' "$FAKE_GH_LOG")" == 2 ]] || fail "an UNKNOWN merge state is read again"
+grep -q "^approver-token pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG" \
+    || fail "a pull request that turns CLEAN is merged"
+
+reset auto-disabled-checks-failed
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_CHECKS_STATUS=1 \
+    FAKE_CHECKS_OUTPUT='PHPCS\tpending\t0\thttps://example.test/1\t\nTests\tpass\t5m\thttps://example.test/2\t\nLint\tpending\t0\thttps://example.test/3\t\nPHPCS\tfail\t1m\thttps://example.test/1\t\nTests\tpass\t5m\thttps://example.test/2\t\nLint\tcancel\t0\thttps://example.test/3\t\n'
+run || fail "a failed required check without auto-merge leaves the pull request open, not failed"
+says 'auto-merge is not allowed, and its required checks did not pass: PHPCS, Lint' \
+    || fail "failed and cancelled required checks are named"
+if says 'PHPCS, PHPCS' || says 'Tests'; then fail "only failed checks are named, once each"; fi
+if grep -q " pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG"; then
+    fail "a refused auto-merge is not turned into a merge past a failed required check"
+fi
+labelled || fail "a pull request left open after a failed required check is labelled"
+
+reset auto-disabled-checks-slow
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_CHECKS_SLEEP=5 CHECKS_WAIT_SECONDS=1
+run || fail "required checks that outlast the wait leave the pull request open, not failed"
+says 'its required checks had not finished after 1s' || fail "required checks that outlast the wait warn"
+if grep -q " pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG"; then
+    fail "nothing is merged while required checks are still running"
+fi
+
+reset auto-disabled-wait-used-up
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" CHECKS_WAIT_SECONDS=-5
+run || fail "a wait used up by earlier versions leaves the pull request open, not failed"
+says 'the wait on required checks was used up by earlier versions' || fail "a used-up wait says so"
+if grep -Eq ' pr checks |'" pr merge 35 --merge --match-head-commit $TAGGED$" "$FAKE_GH_LOG"; then
+    fail "a used-up wait neither waits nor merges"
+fi
+
+reset auto-disabled-merge-refused
+export RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED" FAKE_MERGE_ERROR='GraphQL: Head branch was modified'
+run || fail "a refused merge without auto-merge leaves the pull request open, not failed"
+says 'left open for a person to merge: GraphQL: Head branch was modified' || fail "a refused merge without auto-merge is passed on"
 
 reset fork
 export FAKE_FORK_PR=36
