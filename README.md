@@ -573,8 +573,9 @@ The pull request merges through auto-merge where the repository setting "Allow a
 name: Weekly release
 on:
   schedule:
-    # Mondays 02:15 UTC, the NZ afternoon, so the release is dated that Monday.
-    - cron: '15 2 * * 1'
+    # Mondays 02:17 UTC, the NZ afternoon, so the release is dated that Monday. Every plugin uses
+    # this slot, so the week's releases start together.
+    - cron: '17 2 * * 1'
   workflow_dispatch:
     inputs:
       all-branches:
@@ -612,7 +613,7 @@ jobs:
       workflow-file: weekly-release.yml
 ```
 
-Save it as `.github/workflows/weekly-release.yml` on every maintained branch, since `workflow-file` names it. The schedule only runs on the default branch, so the [branch sweep](#branch-sweep) dispatches the same file on the other maintained branch, which releases itself from its own copy. Run by hand, it releases the branch it is run on, and `all-branches` dispatches the others too. As with Plugins CI, the caller grants the permissions above and declares no `concurrency` of its own, which the release job checks. GitHub disables a public repository's schedule after 60 days without activity.
+Save it as `.github/workflows/weekly-release.yml` on every maintained branch, since `workflow-file` names it. Keep the example's cron rather than taking one from `matomo-tests.yml` as the branch sweep does: every plugin releases in the same slot. The schedule only runs on the default branch, so the [branch sweep](#branch-sweep) dispatches the same file on the other maintained branch, which releases itself from its own copy. Run by hand, it releases the branch it is run on, and `all-branches` dispatches the others too. As with Plugins CI, the caller grants the permissions above and declares no `concurrency` of its own, which the release job checks. GitHub disables a public repository's schedule after 60 days without activity.
 
 A plugin with a single branch, such as a bundle releasing `1.0.x` from `main`, passes `release-branch: main` and leaves out the `other-branches` job, which would run the weekly release on any `N.x-dev` branch that still has `weekly-release.yml`, from that branch's own copy. The CI check reads push runs on the release branch, so add it to the push trigger of any CI the release should wait for, such as `branches: ['**.x-dev', main]` in Plugins CI above; with no push runs the version is released, with a warning. A plugin without Plugins CI can still guard its changelog by calling `plugin-release-date-check.yml` on pull requests into the release branch. Two safeguards of the `N.x-dev` path do not cover a release branch. Only date branches of `plugin.json`'s current major are resumed, so a version left tagged but unfinished when the major is bumped has to be finished by hand. And a plugin that moves to a release branch from a higher `N.x-dev` line keeps that line's release as GitHub's latest, since a release is only marked latest when its version is higher.
 
@@ -646,7 +647,9 @@ Keep Dependabot alerts on for these repositories, since they still report adviso
 name: Vendored dependencies update
 on:
   schedule:
-    - cron: '20 4 * * 1'
+    # Sunday 19:17 UTC is Monday morning in NZ, so the update pull request can be merged before
+    # that afternoon's weekly release.
+    - cron: '17 19 * * 0'
   workflow_dispatch:
 
 permissions: {}
