@@ -63,7 +63,7 @@ jobs:
     name: Release
     runs-on: ubuntu-24.04
     permissions:
-      actions: write # approve the held checks on the release date pull request
+      actions: write # approve the held checks on the release date pull request, re-run open pull requests' release date checks
       contents: write # push the release date branch and the tag, publish the release
       pull-requests: write # open and merge the release date pull request
     # ci-wait-minutes, at most 45, plus the release and any earlier versions it finishes, and up to
@@ -157,6 +157,12 @@ jobs:
           VERSION: ${{ steps.prepare.outputs.version }}
         shell: bash
         run: bash "$RELEASE_SCRIPTS/bash/tag_plugin_dev_release.sh" "$VERSION" "$TODAY"
+
+      # A pull request that adds to the version just tagged passed its check before the tag existed.
+      - name: Re-run the release date check on open pull requests
+        if: steps.prepare.outputs.publish_needed == 'true'
+        shell: bash
+        run: bash "$RELEASE_SCRIPTS/bash/rerun_release_date_checks.sh" "$GITHUB_REF_NAME"
 
       - name: Create GitHub release
         if: steps.prepare.outputs.publish_needed == 'true'

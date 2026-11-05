@@ -3,6 +3,8 @@ name: Release date check
 # Fails when the unreleased version's CHANGELOG.md entry carries a date, in a plugin whose weekly
 # release (plugin-dev-release.yml) dates it on the day it releases. Passes for every other plugin,
 # so Plugins CI can run it everywhere and a plugin opts in by adopting the release workflow.
+# On a pull request in any plugin, also fails a change to the changelog entry of a version already
+# tagged, unless the pull request changes nothing but CHANGELOG.md.
 
 on:
   workflow_call:
@@ -30,6 +32,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # The released entry check finds where the pull request branched from. Blobless keeps a
+          # full history cheap; the few blobs it reads are fetched on demand.
+          fetch-depth: 0
+          filter: blob:none
 
       - name: Check out plugin-ci-workflows repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,3 +63,26 @@ jobs:
           export GIT_CONFIG_KEY_0=credential.https://github.com.helper
           export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
           bash "$WORKFLOWS_DIR/scripts/bash/check_plugin_release_date.sh" "$BRANCH"
+
+      # In every plugin, not only those on the weekly release: a tag is all "released" needs. On a
+      # push it is a backstop for a pull request merged on a result from before its version's release.
+      - name: Check no released changelog entry is changed
+        if: ${{ !cancelled() && (github.event.pull_request.head.sha || github.event_name == 'push') }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # As above, and also for the blobs the blobless checkout fetches on demand.
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=credential.https://github.com.helper
+          export GIT_CONFIG_VALUE_0="!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
+          if [[ -n "$HEAD_SHA" ]]; then
+            bash "$WORKFLOWS_DIR/scripts/bash/check_released_changelog_entries.sh" "$BRANCH" "$HEAD_SHA"
+          else
+            bash "$WORKFLOWS_DIR/scripts/bash/check_released_changelog_entries.sh" --push "$BEFORE" "$AFTER"
+          fi

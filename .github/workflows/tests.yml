@@ -41,6 +41,10 @@ jobs:
         run: bash tests/update_changelog_date_test.sh
       - name: Check release preparation, dating, tagging and the release date check
         run: bash tests/plugin_dev_release_test.sh
+      - name: Check the released changelog entry check
+        run: bash tests/released_changelog_entries_test.sh
+      - name: Check re-running the release date check after a release
+        run: bash tests/rerun_release_date_checks_test.sh
       - name: Check merging the release date pull request
         run: bash tests/merge_plugin_release_date_pr_test.sh
       - name: Check GitHub release publishing
