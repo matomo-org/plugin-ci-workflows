@@ -52,7 +52,7 @@ on:
         type: boolean
         default: false
       skip-release-date:
-        description: "Do not run the release date check, which only fails a plugin that calls plugin-dev-release.yml"
+        description: "Do not run the release date check, which fails a hand-written date in a plugin that calls plugin-dev-release.yml, and a change to a released version's changelog entry in any plugin"
         required: false
         type: boolean
         default: false
@@ -338,8 +338,9 @@ jobs:
       workflows-ref: ${{ inputs.workflows-ref }}
       timezone-regression-exempt: ${{ inputs.timezone-regression-exempt }}
 
-  # Passes in a plugin that does not call plugin-dev-release.yml, so a plugin opts in by adopting
-  # the weekly release and the check needs no input of its own.
+  # The date check passes in a plugin that does not call plugin-dev-release.yml, so a plugin opts in
+  # by adopting the weekly release and the check needs no input of its own. The released entry check
+  # runs in every plugin.
   release-date:
     if: ${{ !inputs.skip-release-date }}
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-release-date-check.yml@main
