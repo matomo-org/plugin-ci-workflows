@@ -6,8 +6,9 @@
 # The base is the branch's current tip and the tags are listed when the check runs, so re-running it
 # catches a version released after the pull request was opened.
 # With --push it checks a push instead, after the fact, for a pull request merged on a result from
-# before its version was released. A push holding a merge commit is not checked, as merging another
-# branch back brings that branch's released entries with it.
+# before its version was released. A force push is not checked, and nor is a push holding a merge
+# commit, as merging another branch back brings that branch's released entries with it. A re-run after
+# the push's own version is released does not fail for that version's entry.
 # Run from a checkout of the plugin with the history of the base branch and the pull request's head.
 # Usage: check_released_changelog_entries.sh <base branch> <pull request head sha>
 #        check_released_changelog_entries.sh --push <before sha> <after sha>
@@ -15,9 +16,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
 usage="Usage: $0 <base branch> <pull request head sha> | --push <before sha> <after sha>"
 
+PUSH=""
 if [[ "${1:-}" == --push ]]; then
+    PUSH=1
     BEFORE="${2:-}"
     HEAD_SHA="${3:-}"
     if [[ -z "$BEFORE" || -z "$HEAD_SHA" ]]; then
@@ -29,15 +34,23 @@ if [[ "${1:-}" == --push ]]; then
         echo "The push creates the branch, so there is nothing to compare."
         exit 0
     fi
-    # A force push leaves the commit it replaced out of the fetched history.
+    # A force push's replaced commit may be gone, or, as the blobless checkout fetches a missing commit
+    # on demand, still present but no longer an ancestor.
+    force_pushed="$BEFORE is not in the branch's history, as after a force push, so there is nothing to compare."
     if ! git cat-file -e "$BEFORE^{commit}" 2> /dev/null; then
-        echo "$BEFORE is not in the branch's history, as after a force push, so there is nothing to compare."
+        echo "$force_pushed"
         exit 0
     fi
-    if ! merge_base=$(git merge-base "$BEFORE" "$HEAD_SHA" 2>&1); then
-        echo "::error::Could not compare the push with $BEFORE: $merge_base" >&2
+    status=0
+    git merge-base --is-ancestor "$BEFORE" "$HEAD_SHA" 2> "$scratch/ancestor-error" || status=$?
+    if (( status == 1 )); then
+        echo "$force_pushed"
+        exit 0
+    elif (( status )); then
+        echo "::error::Could not compare the push with $BEFORE: $(tr '\n' ' ' < "$scratch/ancestor-error")" >&2
         exit 1
     fi
+    merge_base="$BEFORE"
     if [[ -n "$(git rev-list --merges "$merge_base..$HEAD_SHA")" ]]; then
         echo "The push holds a merge commit, so its changelog entries are not checked."
         exit 0
@@ -68,9 +81,6 @@ if (( ${#changed_files[@]} == 1 )); then
     echo "Only CHANGELOG.md is changed, so a released entry may be corrected."
     exit 0
 fi
-
-scratch=$(mktemp -d)
-trap 'rm -rf "$scratch"' EXIT
 
 # Writes <rev>:<path> to <file>, leaving no file when the path is not in that commit. Read through the
 # tree, so a blob that cannot be fetched fails rather than passing as a missing file.
@@ -116,17 +126,36 @@ if [[ -z "$changed" ]]; then
     exit 0
 fi
 
-# Listed from origin when the job runs, not from the checkout, so a re-run sees a later release.
-if ! tags=$(git ls-remote --tags --refs origin 2>&1); then
+# Listed from origin when the job runs, not from the checkout, so a re-run sees a later release. An
+# annotated tag is also listed peeled, as <ref>^{}, which names its commit.
+if ! tags=$(git ls-remote --tags origin 2>&1); then
     echo "::error::Could not list the tags on origin: $tags" >&2
     exit 1
 fi
 released=()
 while IFS= read -r version; do
     [[ -n "$version" ]] || continue
-    if grep -qE "[[:space:]]refs/tags/v?${version//./\\.}$" <<< "$tags"; then
-        released+=("$version")
+    # Through ENVIRON, as awk -v would turn the escaped dots into any character.
+    tag_shas=$(TAG_PATTERN="^refs/tags/v?${version//./\\.}(\\^\\{\\})?$" awk '
+        $2 ~ ENVIRON["TAG_PATTERN"] { ref = $2; sub(/\^\{\}$/, "", ref); if ($2 != ref || !(ref in commit)) commit[ref] = $1 }
+        END { for (ref in commit) print commit[ref] }' <<< "$tags")
+    [[ -n "$tag_shas" ]] || continue
+    # A re-run of a push after the release: the push shipped in that version, so it did not change a
+    # released entry.
+    if [[ -n "$PUSH" ]]; then
+        shipped=""
+        for tag_sha in $tag_shas; do
+            if git merge-base --is-ancestor "$HEAD_SHA" "$tag_sha" 2> "$scratch/ancestor-error"; then
+                shipped=1
+                break
+            elif (( $? != 1 )); then
+                echo "::error::Could not check whether $tag_sha holds $HEAD_SHA: $(tr '\n' ' ' < "$scratch/ancestor-error")" >&2
+                exit 1
+            fi
+        done
+        [[ -z "$shipped" ]] || continue
     fi
+    released+=("$version")
 done <<< "$changed"
 
 if (( ${#released[@]} )); then

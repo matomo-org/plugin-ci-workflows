@@ -183,6 +183,32 @@ commit bad-plugin-json
 if run bad-plugin-json; then fail "an unreadable plugin.json fails rather than dropping the plugin name"; fi
 says bad-plugin-json 'Could not read the plugin name' || { cat "$WORK/bad-plugin-json/out" >&2; fail "an unreadable plugin.json says so"; }
 
+# An editor trimming trailing whitespace on save does not change the entry.
+new_repo trailing-space $'## Changelog\n\n### 6.0.3\n* Three\n\n### 6.0.2 - 2026-10-05\n* Two  \n* Two more\n'
+edit_changelog trailing-space '* Two  ' '* Two'
+touch_code trailing-space
+commit trailing-space
+run trailing-space || { cat "$WORK/trailing-space/out" >&2; fail "trimmed trailing whitespace in a released entry passes"; }
+
+# The date replacing an Unreleased or TBD marker, as the release writes it, is not a change.
+new_repo marker-heading $'## Changelog\n\n### 6.0.3\n* Three\n\n### 6.0.2 Unreleased\n* Two\n'
+edit_changelog marker-heading '### 6.0.2 Unreleased' '### 6.0.2 - 2026-10-05'
+touch_code marker-heading
+commit marker-heading
+run marker-heading || { cat "$WORK/marker-heading/out" >&2; fail "dating a released heading marked Unreleased passes"; }
+
+new_repo marker-remark $'## Changelog\n\n### 6.0.3\n* Three\n\n### 6.0.2 (Unreleased) (security release)\n* Two\n'
+edit_changelog marker-remark '### 6.0.2 (Unreleased) (security release)' '### 6.0.2 - 2026-10-05 (security release)'
+touch_code marker-remark
+commit marker-remark
+run marker-remark || { cat "$WORK/marker-remark/out" >&2; fail "dating a released heading marked (Unreleased) with a remark passes"; }
+
+new_repo marker-one-line $'## Changelog\n\n* 6.0.3 - Three\n* 6.0.2 - TBD - Two\n'
+edit_changelog marker-one-line '* 6.0.2 - TBD - Two' '* 6.0.2 - 2026-10-05 - Two'
+touch_code marker-one-line
+commit marker-one-line
+run marker-one-line || { cat "$WORK/marker-one-line/out" >&2; fail "dating a released one-line entry marked TBD passes"; }
+
 # --- after a push ---
 
 run_push() {
@@ -226,6 +252,74 @@ edit_changelog push-forced '* Two' $'* Two\n* Added later'
 touch_code push-forced
 commit push-forced
 run_push push-forced 1234567890123456789012345678901234567890 || { cat "$WORK/push-forced/out" >&2; fail "a force push whose before is gone passes"; }
+
+# A force push whose before is still present, as the blobless checkout fetches it on demand.
+new_repo push-forced-fetchable
+edit_changelog push-forced-fetchable '* Two' $'* Two\n* Added later'
+touch_code push-forced-fetchable
+commit push-forced-fetchable
+git -C "$WORK/push-forced-fetchable/clone" checkout -q -b replaced 6.x-dev
+touch_code push-forced-fetchable
+commit push-forced-fetchable
+replaced=$(git -C "$WORK/push-forced-fetchable/clone" rev-parse HEAD)
+git -C "$WORK/push-forced-fetchable/clone" checkout -q feature
+run_push push-forced-fetchable "$replaced" || { cat "$WORK/push-forced-fetchable/out" >&2; fail "a force push whose before is still present passes"; }
+says push-forced-fetchable 'as after a force push' || fail "it says the force push is not compared"
+
+# Re-running a push after its version is released: the push shipped in that version.
+new_repo push-rerun
+before=$(git -C "$WORK/push-rerun/clone" rev-parse 6.x-dev)
+edit_changelog push-rerun '* Three' $'* Three\n* Four'
+touch_code push-rerun
+commit push-rerun
+git -C "$WORK/push-rerun/clone" push -q origin feature:6.x-dev
+tag_origin push-rerun 6.0.3
+run_push push-rerun "$before" || { cat "$WORK/push-rerun/out" >&2; fail "re-running a push after the release holding it passes"; }
+
+new_repo push-rerun-annotated
+before=$(git -C "$WORK/push-rerun-annotated/clone" rev-parse 6.x-dev)
+edit_changelog push-rerun-annotated '* Three' $'* Three\n* Four'
+touch_code push-rerun-annotated
+commit push-rerun-annotated
+git -C "$WORK/push-rerun-annotated/clone" push -q origin feature:6.x-dev
+git -C "$WORK/push-rerun-annotated/origin.git" tag -a -m release 6.0.3 6.x-dev
+run_push push-rerun-annotated "$before" || { cat "$WORK/push-rerun-annotated/out" >&2; fail "re-running a push after an annotated release tag holding it passes"; }
+
+# A pushed commit that cannot be read fails rather than passing as a force push.
+new_repo push-unreadable-after
+before=$(git -C "$WORK/push-unreadable-after/clone" rev-parse 6.x-dev)
+if (cd "$WORK/push-unreadable-after/clone" && bash "$CHECK" --push "$before" 1234567890123456789012345678901234567890) > "$WORK/push-unreadable-after/out" 2>&1; then
+    fail "an unreadable pushed commit fails"
+fi
+says push-unreadable-after 'Could not compare the push' || { cat "$WORK/push-unreadable-after/out" >&2; fail "an unreadable pushed commit says so"; }
+
+# A re-run still fails for an older release's entry the same push changed.
+new_repo push-rerun-mixed
+before=$(git -C "$WORK/push-rerun-mixed/clone" rev-parse 6.x-dev)
+edit_changelog push-rerun-mixed '* Three' $'* Three\n* Four'
+edit_changelog push-rerun-mixed '* Two' $'* Two\n* Added later'
+touch_code push-rerun-mixed
+commit push-rerun-mixed
+git -C "$WORK/push-rerun-mixed/clone" push -q origin feature:6.x-dev
+tag_origin push-rerun-mixed 6.0.3
+if run_push push-rerun-mixed "$before"; then fail "a re-run still fails for an older release's entry"; fi
+says push-rerun-mixed 'entry of 6.0.2, already released' || { cat "$WORK/push-rerun-mixed/out" >&2; fail "the older release is named"; }
+if says push-rerun-mixed '6.0.3'; then fail "the release holding the push is not named"; fi
+
+# A tag whose commit cannot be read fails with the git error, not as a released entry.
+new_repo push-rerun-unreadable
+before=$(git -C "$WORK/push-rerun-unreadable/clone" rev-parse 6.x-dev)
+edit_changelog push-rerun-unreadable '* Three' $'* Three\n* Four'
+touch_code push-rerun-unreadable
+commit push-rerun-unreadable
+git -C "$WORK/push-rerun-unreadable/clone" push -q origin feature:elsewhere
+git -C "$WORK/push-rerun-unreadable/clone" commit -q --amend -m amended
+git -C "$WORK/push-rerun-unreadable/clone" update-ref -d refs/remotes/origin/elsewhere
+git -C "$WORK/push-rerun-unreadable/clone" reflog expire --expire=now --all
+git -C "$WORK/push-rerun-unreadable/clone" gc -q --prune=now
+git -C "$WORK/push-rerun-unreadable/origin.git" tag 6.0.3 elsewhere
+if run_push push-rerun-unreadable "$before"; then fail "a tag that cannot be read fails"; fi
+says push-rerun-unreadable 'Could not check whether' || { cat "$WORK/push-rerun-unreadable/out" >&2; fail "an unreadable tag says so"; }
 
 new_repo no-base
 touch_code no-base

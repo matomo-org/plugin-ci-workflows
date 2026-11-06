@@ -2,8 +2,9 @@
 
 Entries are found top down with the weekly release's own reading of where one ends, so a note inside
 an entry that starts with a version, such as "- 6.0.2 compatibility", is not taken for that version's
-entry. A date added to or changed on a version line is not a change, and nor is a whole new entry. An entry the release cannot
-read is compared as written.
+entry. A date or an Unreleased, Not yet released, TBD or TBA marker on a version line is ignored, as
+is trailing whitespace, and a whole new entry is not a change. An entry the release cannot read is
+compared as written.
 Usage: changed_changelog_entries.py [--plugin-name NAME] <old changelog> <new changelog>
 """
 import argparse
@@ -15,6 +16,7 @@ from update_changelog_date import (
     DATE_PATTERN,
     UNSUPPORTED_DATE_LEAD,
     UNSUPPORTED_DATE_PATTERN,
+    UNRELEASED_PATTERN,
     read_notes,
     version_line_pattern,
 )
@@ -51,15 +53,20 @@ def entries(changelog, plugin_name):
             except ValueError:
                 # Compared as written, so an edit inside an entry the release cannot read still counts.
                 notes = "\n".join([undated(lines[index], match, every=True)] + lines[index + 1:end])
+            # Trailing whitespace is not a change, so an editor trimming it on save does not fail a PR.
+            notes = "\n".join(line.rstrip() for line in notes.split("\n"))
             found[version] = found[version] + "\n" + notes if version in found else notes
             index = next((i for i in range(end, len(lines)) if pattern.match(lines[i])), None)
     return found
 
 
 def undated(line, match, every=False):
-    """The version line without a date the release cannot write, such as "October 5, 2026", which
-    read_notes would otherwise keep as part of the entry, or without any date when every is set."""
+    """The version line without an Unreleased, TBD or similar marker, which the release replaces with
+    the date, and without a date the release cannot write, such as "October 5, 2026", which read_notes would
+    otherwise keep as part of the entry, or without any date when every is set."""
     rest = match.group("rest")
+    if unreleased_match := UNRELEASED_PATTERN.match(rest):
+        return line[: len(line) - len(rest)] + unreleased_match.group("suffix")
     stripped = rest.lstrip(UNSUPPORTED_DATE_LEAD)
     date_match = UNSUPPORTED_DATE_PATTERN.match(stripped)
     if not date_match or (DATE_PATTERN.match(stripped) and not every):
