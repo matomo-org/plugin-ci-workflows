@@ -3,8 +3,9 @@
 When the version in plugin.json is already released, it is bumped to the next patch and given a new
 changelog entry in the style of the newest one. When it is not, the version stays and the entry is
 added to its changelog section. A changelog of one-line entries ("* 6.0.1 - 2026-09-14 - Fixed ...")
-gets a new line, but an existing line is not extended. Anything this cannot edit with confidence is
-left alone, so a person makes the change instead of the script guessing at a changelog format.
+gets a new line keeping the newest one's label, "v", emphasis and brackets, but an existing line is
+not extended. A one-line note about an older version above the headings is tolerated. Anything this
+cannot edit with confidence is left alone, so a person makes the change instead of the script guessing at a changelog format.
 
 Usage: bump_plugin_version.py <plugin-dir> <released|unreleased> <entry>
 Prints one sentence saying what it did. Exits 0 when it did it, or found nothing to do, and 3,
@@ -20,6 +21,13 @@ SKIPPED = 3
 
 STABLE_VERSION = re.compile(r"\d+\.\d+\.\d+")
 DATE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}")
+# A Markdown link definition such as "[6.0.3]: https://...", which would otherwise read as a heading.
+# The destination must look like a URL or path, so "[6.0.4]: Fixed a bug" stays an entry.
+LINK_TARGET = re.compile(
+    r":[ \t]+<?(?:[A-Za-z][A-Za-z0-9+.-]*:|[/#.])[^\s<>]*>?"
+    r"(?:[ \t]+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?[ \t]*"
+)
+LINK_DEFINITION = re.compile(r" {0,3}\[[^\]]+\]" + LINK_TARGET.pattern)
 BULLET = re.compile(r"(?P<indent>[ \t]*)(?P<marker>[-*+])[ \t]+(?P<text>\S.*)")
 # What may follow a version heading's version for entries to sit below it: nothing, a date, or an
 # Unreleased marker, with the separators changelogs put around them.
@@ -50,19 +58,40 @@ def one_line_pattern(plugin_name):
     # Unindented, so a nested item that starts with a version is not read as an entry.
     label = rf"(?:{re.escape(plugin_name)}[ \t]+)?" if plugin_name else ""
     return re.compile(
-        rf"(?P<lead>[-*+][ \t]+{label}v?)"
+        rf"(?P<lead>[-*+][ \t]+{label}(?P<emphasis>\*\*|__|\*|_)?(?P<bracket>\[)?v?)"
         r"(?P<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"
-        r"(?P<rest>(?:[ \t:–—-].*)?)"
+        r"(?P<rest>.*)"
     )
+
+
+def one_line_text(match):
+    """What follows the version and its closing emphasis or bracket, or None when that is not an entry's text."""
+    # Emphasis or a bracket that wraps more than the version would be copied into the new entry unclosed.
+    if closing(match) != ("]" if match.group("bracket") else "") + (match.group("emphasis") or ""):
+        return None
+    text = match.group("rest")[len(closing(match)):]
+    if match.group("bracket") and LINK_TARGET.fullmatch(text):
+        return None
+    return text if text == "" or text[0] in " \t:–—-" else None
 
 
 def one_line_entry(match, version, entry):
     # Undated, as the release dates it to "- <date> - <entry>".
-    return f"{match.group('lead')}{version} - {entry}"
+    return f"{match.group('lead')}{version}{closing(match)} - {entry}"
+
+
+def has_nested_items(lines, index):
+    following = next((line for line in lines[index + 1:] if line.strip()), "")
+    return following[:1] in (" ", "\t")
 
 
 def version_tuple(version):
     return tuple(int(part) for part in version.split("."))
+
+
+def is_older(version, than):
+    return bool(STABLE_VERSION.fullmatch(version) and STABLE_VERSION.fullmatch(than)
+                and version_tuple(version) < version_tuple(than))
 
 
 def closing(match):
@@ -99,7 +128,8 @@ def read_changelog(path):
 
 def sections(lines, pattern):
     """Each version heading as (line index, match, index of the line after its section)."""
-    headings = [(i, m) for i, line in enumerate(lines) if (m := pattern.fullmatch(line))]
+    headings = [(i, m) for i, line in enumerate(lines)
+                if not LINK_DEFINITION.fullmatch(line) and (m := pattern.fullmatch(line))]
     ends = [i for i, _ in headings[1:]] + [len(lines)]
     return [(i, m, end) for (i, m), end in zip(headings, ends)]
 
@@ -166,16 +196,29 @@ def bump(plugin_dir, released, entry):
     found = sections(lines, pattern)
     one_line = not found
     entry_line = one_line_pattern(name)
-    entries = [(i, m, i + 1) for i, line in enumerate(lines) if (m := entry_line.fullmatch(line))]
+    matched = [(i, m) for i, line in enumerate(lines) if (m := entry_line.fullmatch(line))]
+    entries = [(i, m, i + 1) for i, m in matched if one_line_text(m) is not None]
+    unreadable = [(i, m) for i, m in matched
+                  if one_line_text(m) is None and not LINK_DEFINITION.fullmatch(lines[i].lstrip("-*+ \t"))]
+    links = [(i, m) for i, m in matched if one_line_text(m) is None and (i, m) not in unreadable]
     if one_line:
         found = entries
         # A version bullet with nested items is a section in list form, not a one-line entry.
-        if any(i + 1 < len(lines) and lines[i + 1][:1] in " \t" and lines[i + 1].strip() for i, _, _ in found):
-            raise Skip("the version entries in CHANGELOG.md have items nested below them")
-    elif entries and entries[0][0] < found[0][0]:
+        if found and has_nested_items(lines, found[0][0]):
+            raise Skip(f"the {found[0][1].group('version')} entry in CHANGELOG.md has items nested below it")
+    elif any(i < found[0][0] and not is_older(m.group("version"), found[0][1].group("version"))
+             for i, m, _ in entries):
+        # Only an older version above the headings is taken for a note rather than a newer entry.
         raise Skip("CHANGELOG.md lists one-line entries above its version headings")
+    if not found and unreadable:
+        raise Skip(f"the {unreadable[0][1].group('version')} entry in CHANGELOG.md is not in a form this can read")
     if not found:
         raise Skip("no version heading or one-line entry was found in CHANGELOG.md")
+    # Above the newest entry, an entry this cannot read may be the real newest one.
+    newest = found[0][1].group("version")
+    for i, m in unreadable + [(i, m) for i, m in links if m.group("version") != newest]:
+        if i < found[0][0] and not is_older(m.group("version"), newest):
+            raise Skip(f"the {m.group('version')} entry in CHANGELOG.md is not in a form this can read")
     mine = next((s for s in found if s[1].group("version") == version), None)
     # Everything below takes the first heading to be the newest, which an oldest-first file breaks.
     first = found[0][1].group("version")
@@ -200,10 +243,11 @@ def bump(plugin_dir, released, entry):
             raise Skip(f"the newest entry in CHANGELOG.md, {found[0][1].group('version')}, is ahead of {version} in plugin.json")
         # Entries are dated at release, so a dated one has most likely shipped under a tag this
         # workflow does not know about.
-        if DATE.search(mine[1].group("rest")):
+        if (DATE.match(one_line_text(mine[1]).lstrip(" \t:–—-([*_")) if one_line
+                else DATE.search(mine[1].group("rest"))):
             raise Skip(f"{version} has no tag, but its changelog entry is dated, so it may already be released")
         if one_line:
-            if mine[1].group("rest").lstrip(" \t:–—-").strip().lower() == entry.lower():
+            if one_line_text(mine[1]).lstrip(" \t:–—-").strip().lower() == entry.lower():
                 return f"{version} is not released yet and its changelog entry already says \"{entry}\", so neither is changed."
             raise Skip(f"the {version} entry in CHANGELOG.md is a single line, which cannot take a second change")
         if not add_to_section(lines, mine, entry, version, lines):
