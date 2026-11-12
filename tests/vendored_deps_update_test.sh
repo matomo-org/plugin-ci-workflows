@@ -1891,7 +1891,119 @@ expect_bump "a changelog with CRLF line endings keeps them" "$dir" released 0 6.
 
 ONE_LINE='## Changelog\n\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
 dir=$(bump_plugin one-line 6.0.3 "$ONE_LINE")
-expect_bump "a one-line-per-version changelog is left alone" "$dir" released 3 6.0.3 "$ONE_LINE"
+expect_bump "a one-line changelog gets a new, undated line above the newest" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n* 6.0.4 - Updated dependencies\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
+
+dir=$(bump_plugin one-line-new 6.0.4 "$ONE_LINE")
+expect_bump "an unreleased version with no one-line entry yet gets one" "$dir" unreleased 0 6.0.4 \
+  '## Changelog\n\n* 6.0.4 - Updated dependencies\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
+expect_bump "an unreleased one-line entry that already says it is left as it is" "$dir" unreleased 0 6.0.4 \
+  '## Changelog\n\n* 6.0.4 - Updated dependencies\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
+
+LABELLED='## Changelog\n\n* Foo v6.0.3 - 2026-10-12 - Fixed a thing\n'
+dir=$(bump_plugin one-line-labelled 6.0.3 "$LABELLED")
+expect_bump "a one-line entry keeps the newest one's label and v" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n* Foo v6.0.4 - Updated dependencies\n* Foo v6.0.3 - 2026-10-12 - Fixed a thing\n'
+
+NESTED='## Changelog\n\n* 6.0.3 - 2026-10-12\n  * Fixed a thing\n'
+dir=$(bump_plugin one-line-nested 6.0.3 "$NESTED")
+expect_bump "version bullets with nested items are left alone" "$dir" released 3 6.0.3 "$NESTED"
+
+LOOSE_NESTED='## Changelog\n\n* 6.0.3 - 2026-10-12\n\n  * Fixed a thing\n'
+dir=$(bump_plugin one-line-loose-nested 6.0.3 "$LOOSE_NESTED")
+expect_bump "version bullets with nested items after a blank line are left alone" "$dir" released 3 6.0.3 "$LOOSE_NESTED"
+
+dir=$(bump_plugin one-line-old-nested 6.0.3 '## Changelog\n\n* 6.0.3 - 2026-10-12 - Fixed a thing\n* 6.0.2 - 2026-09-21\n  * Fixed another\n')
+expect_bump "an older entry with nested items does not stop the bump" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n* 6.0.4 - Updated dependencies\n* 6.0.3 - 2026-10-12 - Fixed a thing\n* 6.0.2 - 2026-09-21\n  * Fixed another\n'
+
+EMPHASIS='## Changelog\n\n* __6.0.3__ - 2026-10-12 - Fixed a thing\n'
+dir=$(bump_plugin one-line-emphasis 6.0.3 "$EMPHASIS")
+expect_bump "a one-line entry keeps the newest one's emphasis" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n* __6.0.4__ - Updated dependencies\n* __6.0.3__ - 2026-10-12 - Fixed a thing\n'
+
+dir=$(bump_plugin one-line-bracket 6.0.3 '## Changelog\n\n- [6.0.3] - 2026-10-12 - Fixed a thing\n\n[6.0.3]: https://example.com/compare/6.0.2...6.0.3\n')
+expect_bump "a one-line entry keeps the newest one's brackets, past link definitions" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n- [6.0.4] - Updated dependencies\n- [6.0.3] - 2026-10-12 - Fixed a thing\n\n[6.0.3]: https://example.com/compare/6.0.2...6.0.3\n'
+
+UNCLOSED='## Changelog\n\n* *6.0.3 - 2026-10-12 - Fixed a thing*\n'
+dir=$(bump_plugin one-line-unclosed 6.0.3 "$UNCLOSED")
+expect_bump "emphasis that wraps more than the version is left alone" "$dir" released 3 6.0.3 "$UNCLOSED"
+
+UNREADABLE_TOP='## Changelog\n\n* *6.0.4 - Fixed a thing*\n* 6.0.3 - 2026-10-12 - Fixed another\n'
+dir=$(bump_plugin unreadable-top 6.0.4 "$UNREADABLE_TOP")
+expect_bump "an unreadable entry above the newest readable one is left alone" "$dir" released 3 6.0.4 "$UNREADABLE_TOP"
+
+BRACKET_TEXT='## Changelog\n\n- [6.0.4]: Fixed a bug\n- 6.0.3 - 2026-10-12 - Fixed another\n'
+dir=$(bump_plugin bracket-colon 6.0.4 "$BRACKET_TEXT")
+expect_bump "an entry that reads like a link definition but is not one is still an entry" "$dir" unreleased 3 6.0.4 "$BRACKET_TEXT"
+
+dir=$(bump_plugin bracket-colon-only 6.0.3 '## Changelog\n\n- [6.0.3]: Fixed a thing\n')
+expect_bump "a changelog of bracketed versions followed by a colon is bumped" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n- [6.0.4] - Updated dependencies\n- [6.0.3]: Fixed a thing\n'
+
+NEWER_LINK='## Changelog\n\n- [6.0.4]: #123 (crash fix)\n- [6.0.3]: Fixed a thing\n'
+dir=$(bump_plugin newer-link 6.0.4 "$NEWER_LINK")
+expect_bump "a link-like line for a newer version above the newest entry is left alone" "$dir" released 3 6.0.4 "$NEWER_LINK"
+
+dir=$(bump_plugin link-bullets 6.0.3 '## Changelog\n\n- [6.0.3]: https://example.com/compare/6.0.2...6.0.3\n\n- 6.0.3 - 2026-10-12 - Fixed a thing\n')
+expect_bump "a link definition in a list is not read as a changelog entry" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n- [6.0.3]: https://example.com/compare/6.0.2...6.0.3\n\n- 6.0.4 - Updated dependencies\n- 6.0.3 - 2026-10-12 - Fixed a thing\n'
+
+dir=$(bump_plugin keep-a-changelog 6.0.3 '## Changelog\n\n## [6.0.3] - 2026-10-12\n- Fixed a thing\n\n[6.0.3]: https://example.com/compare/6.0.2...6.0.3\n')
+expect_bump "bracketed version headings with link definitions below are bumped" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n## [6.0.4]\n- Updated dependencies\n\n## [6.0.3] - 2026-10-12\n- Fixed a thing\n\n[6.0.3]: https://example.com/compare/6.0.2...6.0.3\n'
+
+dir=$(bump_plugin one-line-single-emphasis 6.0.3 '## Changelog\n\n* _6.0.3_ - 2026-10-12 - Fixed a thing\n')
+expect_bump "a one-line entry keeps single-character emphasis" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n* _6.0.4_ - Updated dependencies\n* _6.0.3_ - 2026-10-12 - Fixed a thing\n'
+
+EMPHASIS_DATED='## Changelog\n\n- 6.0.4 - *2026-01-02* - Fixed a bug\n- 6.0.3 - 2026-10-12 - Fixed another\n'
+dir=$(bump_plugin one-line-emphasis-dated 6.0.4 "$EMPHASIS_DATED")
+expect_bump "an unreleased one-line entry with an emphasised date is left alone" "$dir" unreleased 3 6.0.4 "$EMPHASIS_DATED"
+tests=$((tests + 1))
+if ! python3 -I "$BUMP" "$dir" unreleased 'Updated dependencies' | grep -q 'its changelog entry is dated'; then
+  echo "FAIL - an emphasised date after the version is read as a release date"
+  failures+=("an emphasised date after the version is read as a release date")
+fi
+
+PAREN_DATED='## Changelog\n\n- 6.0.4 (2026-01-02) Fixed a bug\n- 6.0.3 - 2026-10-12 - Fixed another\n'
+dir=$(bump_plugin one-line-paren-dated 6.0.4 "$PAREN_DATED")
+expect_bump "an unreleased one-line entry with a date in brackets is left alone" "$dir" unreleased 3 6.0.4 "$PAREN_DATED"
+tests=$((tests + 1))
+if ! python3 -I "$BUMP" "$dir" unreleased 'Updated dependencies' | grep -q 'its changelog entry is dated'; then
+  echo "FAIL - a date in brackets after the version is read as a release date"
+  failures+=("a date in brackets after the version is read as a release date")
+fi
+
+DATED_TEXT='## Changelog\n\n- 6.0.4 Fixed a bug seen on 2026-01-02\n- 6.0.3 - 2026-10-12 - Fixed another\n'
+dir=$(bump_plugin one-line-dated-text 6.0.4 "$DATED_TEXT")
+expect_bump "an unreleased one-line entry with a date in its text is left alone" "$dir" unreleased 3 6.0.4 "$DATED_TEXT"
+tests=$((tests + 1))
+if ! python3 -I "$BUMP" "$dir" unreleased 'Updated dependencies' | grep -q 'cannot take a second change'; then
+  echo "FAIL - a date in an unreleased entry's text is not read as its release date"
+  failures+=("a date in an unreleased entry's text is not read as its release date")
+fi
+
+MIXED='## Changelog\n\n* 6.0.3 - 2026-10-12 - Fixed a thing\n\n## 6.0.2 - 2026-09-21\n- Fixed another\n'
+dir=$(bump_plugin one-line-mixed 6.0.3 "$MIXED")
+expect_bump "one-line entries above version headings are left alone" "$dir" released 3 6.0.3 "$MIXED"
+
+SAME_ABOVE='## Changelog\n\n- 6.0.3 - Fixed a thing\n\n## 6.0.3 - 2026-10-12\n- Fixed a thing\n'
+dir=$(bump_plugin same-above 6.0.3 "$SAME_ABOVE")
+expect_bump "a one-line entry for the top heading's version above it is left alone" "$dir" released 3 6.0.3 "$SAME_ABOVE"
+
+PRERELEASE_ABOVE='## Changelog\n\n- 6.0.4-rc1 - Fixed a thing\n\n## 6.0.3 - 2026-10-12\n- Fixed another\n'
+dir=$(bump_plugin prerelease-above 6.0.3 "$PRERELEASE_ABOVE")
+expect_bump "a prerelease one-line entry above the headings is left alone" "$dir" released 3 6.0.3 "$PRERELEASE_ABOVE"
+
+dir=$(bump_plugin intro-note 6.0.3 '## Changelog\n\n- 5.0.0 requires Matomo 5\n\n## 6.0.3 - 2026-10-12\n- Fixed a thing\n')
+expect_bump "an older version in a note above the headings does not stop the bump" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n- 5.0.0 requires Matomo 5\n\n## 6.0.4\n- Updated dependencies\n\n## 6.0.3 - 2026-10-12\n- Fixed a thing\n'
+
+ONE_LINE_PENDING='## Changelog\n\n- 6.0.4 Fixed a thing\n- 6.0.3 - 2026-10-12 - Fixed another\n'
+dir=$(bump_plugin one-line-pending 6.0.4 "$ONE_LINE_PENDING")
+expect_bump "an unreleased one-line entry is not extended with a second change" "$dir" unreleased 3 6.0.4 "$ONE_LINE_PENDING"
 
 FREE_TEXT='## Changelog\n\n6.0.3 - 2026-10-12 - Compatibility with Matomo 6\n- Fixed a thing\n'
 dir=$(bump_plugin free-text 6.0.3 "$FREE_TEXT")
@@ -2000,8 +2112,8 @@ GH_TAGS=0 expect_bump_step "a repository with no tags at all leaves the version,
   "$NOT_FOUND" "$NOT_FOUND" 6.0.3 'could not be checked. The repository has no tags.'
 expect_bump_step "a tag lookup that fails leaves the version, and says it still needs a bump" \
   'fail:gh: Server Error (HTTP 500)' "$NOT_FOUND" 6.0.3 'needs the usual changelog entry and version bump'
-CHANGELOG="$ONE_LINE" expect_bump_step "a changelog the script leaves alone does not fail the step, and the output says why" \
-  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'not bumped, because no version heading'
+CHANGELOG="$FREE_TEXT" expect_bump_step "a changelog the script leaves alone does not fail the step, and the output says why" \
+  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'not bumped, because the 6.0.3 heading in CHANGELOG.md carries text'
 CHANGELOG='## Changelog\n\n6.0.3\n- Updated dependencies\n' \
   expect_bump_step "an entry that already has the line gives a note but no files to apply" \
   "$NOT_FOUND" "$NOT_FOUND" 6.0.3 'already says'

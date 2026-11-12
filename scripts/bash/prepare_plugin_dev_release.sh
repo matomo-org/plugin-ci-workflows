@@ -3,9 +3,12 @@
 # is stable, belongs to the branch's major (unless RELEASE_BRANCH names the branch instead), has no
 # tag yet, and has a CHANGELOG.md entry the release can date, and no push CI run on the branch's head
 # has failed or is still running once RELEASE_CI_WAIT_MINUTES have passed. Writes release_needed,
-# publish_needed, version, plugin_name, today, finish and ci_held to GITHUB_OUTPUT.
+# publish_needed, version, plugin_name, today, finish, ci_held and bump_entry to GITHUB_OUTPUT.
 # ci_held says why CI held plugin.json's version back; the workflow fails on it once the versions in
 # finish are done, so a release that did not happen is seen.
+# When plugin.json's version is already released and only translation updates have been merged since,
+# the next patch releases them: version is that patch, and bump_entry the changelog line that
+# push_plugin_release_date.sh adds for it while bumping plugin.json.
 # A version this workflow tagged is resumed until its release is published and its date is on the
 # branch, including one plugin.json has since moved on from. finish lists each version to publish
 # and merge, as <version>:<release date>, earliest first; release_needed covers only plugin.json's.
@@ -72,6 +75,20 @@ tagged() {
     grep -qxF "refs/tags/$1" <<< "$(cut -f2 <<< "$remote_refs")"
 }
 
+# Whether <commit> changes plugin.json against its first parent only to set the version, to <version> when given.
+version_only() {
+    local old new status=0
+    old=$(mktemp)
+    new=$(mktemp)
+    if git show "$1^:plugin.json" > "$old" 2> /dev/null && git show "$1:plugin.json" > "$new" 2> /dev/null; then
+        python3 "$SCRIPT_DIR/../python/version_only_change.py" "$old" "$new" ${2:+"$2"} || status=$?
+    else
+        status=1
+    fi
+    rm -f "$old" "$new"
+    return "$status"
+}
+
 # Only a tag this workflow made is resumed, so a version released another way is never published.
 # Called only inside conditions, where set -e is off, so a failed fetch must exit by itself.
 ours() {
@@ -82,12 +99,16 @@ ours() {
     local commit
     commit=$(git rev-parse "refs/tags/$1^{commit}") || return 1
     # Anyone who can push can forge the bot's identity, so the commit must also be what the workflow
-    # makes: one dated CHANGELOG.md on top of a commit already on the branch.
+    # makes: one dated CHANGELOG.md on top of a commit already on the branch, with plugin.json's
+    # version set to the release for a translation release.
     [[ "$(git log -1 --format='%ae%n%ce%n%s' "$commit")" \
         == "$(printf '%s\n%s\n%s' "$BOT_EMAIL" "$BOT_EMAIL" "Add release date for $1")" ]] || return 1
+    local files
+    files=$(git diff --name-only --no-renames "$commit^" "$commit")
     if [[ "$(git rev-list --no-walk --parents "$commit" | wc -w)" == 2 ]] \
         && git merge-base --is-ancestor "$commit^" "refs/remotes/origin/$BRANCH" \
-        && [[ "$(git diff --name-only "$commit^" "$commit")" == CHANGELOG.md ]]; then
+        && { [[ "$files" == CHANGELOG.md ]] \
+            || { [[ "$files" == $'CHANGELOG.md\nplugin.json' ]] && version_only "$commit" "$1"; }; }; then
         return 0
     fi
     echo "::warning::The $1 tag carries this workflow's identity but is not one dated CHANGELOG.md on $BRANCH, so it is not resumed." >&2
@@ -148,30 +169,68 @@ for earlier in $earlier_versions; do
     fi
 done
 
-release_needed=false
-ci_held=""
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "$VERSION is not a stable version, so nothing is released."
-elif [[ -n "$expected_major" && "${VERSION%%.*}" != "$expected_major" ]]; then
-    echo "::error file=plugin.json::Version $VERSION does not belong on $BRANCH." >&2
-    exit 1
-elif tagged "$VERSION"; then
-    if ours "$VERSION" && ! finished "$VERSION"; then
-        tagged_today=$(tagged_date "$VERSION")
-        echo "$VERSION is tagged but not yet published or not yet merged into $BRANCH; resuming it, dated $tagged_today."
-        finish+=("$VERSION:$tagged_today")
-    else
-        echo "$VERSION is already released; nothing new to release."
+TRANSLATION_ENTRY="Updated translations"
+
+# Sets translation_version to the patch after the released <version> when every commit on the branch
+# since its tag is a translation update, only records a version, or is marked [ignore_release], and at
+# least one is a translation update. Weblate's are the usual ones: a translation update changes nothing
+# but lang/*.json, and not lang/en.json, which holds the source strings code adds. Merges are read
+# against their first parent, so a merged pull request counts as one commit.
+translation_release() {
+    local tag="$1" next commit files blocker="" translations=0
+    translation_version=""
+    [[ "$tag" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
+    next="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((10#${BASH_REMATCH[3]} + 1))"
+    # Only until the release of $next is merged into the branch, which then moves plugin.json on.
+    if tagged "$next" || tagged "v$next"; then
+        return 1
     fi
-else
+    # Called only inside conditions, where set -e is off, so a failed fetch must exit by itself.
+    if ! git fetch --quiet --no-tags origin "+refs/tags/$tag:refs/tags/$tag"; then
+        echo "::error::Could not fetch the $tag tag from origin." >&2
+        exit 1
+    fi
+    for commit in $(git rev-list --first-parent "refs/tags/$tag..HEAD"); do
+        [[ "$(git log -1 --format=%B "$commit")" != *"[ignore_release]"* ]] || continue
+        if ! files=$(git diff --name-only --no-renames "$commit^" "$commit" 2>&1); then
+            echo "::error::Could not list the files $commit changes: $files" >&2
+            exit 1
+        fi
+        # The release date commit and its merge, and the date pull request of a translation release.
+        if [[ -z "$files" || "$files" == CHANGELOG.md ]] \
+            || { [[ "$files" == plugin.json || "$files" == $'CHANGELOG.md\nplugin.json' ]] && version_only "$commit"; }; then
+            continue
+        fi
+        if ! grep -qvE '^lang/[^/]+\.json$' <<< "$files" && ! grep -qxF lang/en.json <<< "$files"; then
+            translations=$((translations + 1))
+        else
+            blocker="$commit"
+        fi
+    done
+    (( translations > 0 )) || return 1
+    if [[ -n "$blocker" ]]; then
+        echo "Translations were merged after $tag, but they wait for a person to release them with $(git log -1 --format='%h (%s)' "$blocker")."
+        return 1
+    fi
+    translation_version="$next"
+}
+
+# Releases $VERSION from HEAD with the changelog given, unless its entry cannot be dated or CI on HEAD
+# has not passed. An entry that cannot be dated fails the run, or, given a second argument, is warned
+# about with it and returns 1, as for a translation release, which no person asked for.
+consider_release() {
+    local scratch dating_status dating_error
     # Dating a scratch copy proves the entry exists and can be dated, before anything is pushed.
     scratch=$(mktemp)
-    cp CHANGELOG.md "$scratch"
+    cp "$1" "$scratch"
     dating_status=0
     dating_error=$(python3 "$SCRIPT_DIR/../python/update_changelog_date.py" \
         --plugin-name "$PLUGIN_NAME" "$scratch" "$VERSION" "$TODAY" 2>&1) || dating_status=$?
     rm -f "$scratch"
-    if (( dating_status != 0 )); then
+    if (( dating_status != 0 )) && [[ -n "${2:-}" ]]; then
+        echo "::warning file=CHANGELOG.md::$2: $dating_error"
+        return 1
+    elif (( dating_status != 0 )); then
         echo "::error file=CHANGELOG.md::plugin.json is at $VERSION, but its changelog entry cannot be dated: $dating_error" >&2
         exit 1
     fi
@@ -225,6 +284,49 @@ else
         release_needed=true
         finish+=("$VERSION:$TODAY")
     fi
+}
+
+release_needed=false
+ci_held=""
+bump_entry=""
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "$VERSION is not a stable version, so nothing is released."
+elif [[ -n "$expected_major" && "${VERSION%%.*}" != "$expected_major" ]]; then
+    echo "::error file=plugin.json::Version $VERSION does not belong on $BRANCH." >&2
+    exit 1
+elif tagged "$VERSION"; then
+    if ours "$VERSION" && ! finished "$VERSION"; then
+        tagged_today=$(tagged_date "$VERSION")
+        echo "$VERSION is tagged but not yet published or not yet merged into $BRANCH; resuming it, dated $tagged_today."
+        finish+=("$VERSION:$tagged_today")
+    elif translation_release "$VERSION"; then
+        # Bumped on copies here; push_plugin_release_date.sh makes the same bump on the release commit.
+        bumped=$(mktemp -d)
+        cp plugin.json CHANGELOG.md "$bumped/"
+        bump_status=0
+        bump_note=$(python3 -I "$SCRIPT_DIR/../python/bump_plugin_version.py" "$bumped" released "$TRANSLATION_ENTRY") \
+            || bump_status=$?
+        bumped_version=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' \
+            "$bumped/plugin.json" 2> /dev/null) || bumped_version=""
+        if (( bump_status != 0 )) || [[ "$bumped_version" != "$translation_version" ]]; then
+            echo "::warning::Translations were merged into $BRANCH after $VERSION, but they are not released: ${bump_note:-the version could not be bumped.}"
+        else
+            echo "Translations were merged into $BRANCH after $VERSION, so $translation_version releases them."
+            released_version="$VERSION"
+            VERSION="$translation_version"
+            bump_entry="$TRANSLATION_ENTRY"
+            if ! consider_release "$bumped/CHANGELOG.md" \
+                "Translations were merged into $BRANCH after $released_version, but they are not released, as the $translation_version entry cannot be dated"; then
+                VERSION="$released_version"
+                bump_entry=""
+            fi
+        fi
+        rm -rf "$bumped"
+    else
+        echo "$VERSION is already released; nothing new to release."
+    fi
+else
+    consider_release CHANGELOG.md
 fi
 
 emit "release_needed=$release_needed"
@@ -238,3 +340,4 @@ emit "plugin_name=$PLUGIN_NAME"
 emit "today=$TODAY"
 emit "finish=${finish[*]}"
 emit "ci_held=$ci_held"
+emit "bump_entry=$bump_entry"

@@ -2,7 +2,8 @@
 # Fails a pull request that changes the CHANGELOG.md entry of a version already tagged, which is how a
 # change ends up listed under a release it did not ship in. A pull request that changes nothing but
 # CHANGELOG.md passes, so a released entry can still be corrected, and so does the weekly release's
-# own release date pull request.
+# own release date pull request; a translation release's also changes plugin.json, but only adds an
+# entry. It also fails a pull request that bumps plugin.json onto a tagged version.
 # The base is the branch's current tip and the tags are listed when the check runs, so re-running it
 # catches a version released after the pull request was opened.
 # With --push it checks a push instead, after the fact, for a pull request merged on a result from
@@ -65,6 +66,30 @@ else
     if ! merge_base=$(git merge-base "refs/remotes/origin/$BRANCH" "$HEAD_SHA" 2>&1); then
         echo "::error::Could not find where the pull request branched from $BRANCH: $merge_base" >&2
         exit 1
+    fi
+fi
+
+# A pull request that bumps plugin.json onto a version already tagged would never ship, as when a
+# translation release is tagged but its release date pull request, which moves plugin.json on, has
+# not merged yet. That pull request's head is the tagged commit, so it passes.
+plugin_version() {
+    git show "$1:plugin.json" 2> /dev/null \
+        | python3 -I -c 'import json, sys; print(json.load(sys.stdin).get("version") or "")' 2> /dev/null || true
+}
+if [[ -z "$PUSH" ]]; then
+    old_version=$(plugin_version "$merge_base")
+    new_version=$(plugin_version "$HEAD_SHA")
+    if [[ "$new_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$new_version" != "$old_version" \
+        && "$(printf '%s\n%s\n' "$old_version" "$new_version" | sort -V | tail -1)" == "$new_version" ]]; then
+        if ! version_tags=$(git ls-remote --tags origin "refs/tags/$new_version" "refs/tags/$new_version^{}" \
+            "refs/tags/v$new_version" "refs/tags/v$new_version^{}" 2>&1); then
+            echo "::error::Could not list the tags on origin: $version_tags" >&2
+            exit 1
+        fi
+        if [[ -n "$version_tags" ]] && ! cut -f1 <<< "$version_tags" | grep -qxF "$HEAD_SHA"; then
+            echo "::error file=plugin.json::This moves plugin.json to $new_version, which is already released, so the change would never ship. If $new_version's release date pull request is open, merge it first, then bump to the version after it." >&2
+            exit 1
+        fi
     fi
 fi
 
