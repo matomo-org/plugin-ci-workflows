@@ -147,6 +147,8 @@ jobs:
         if: steps.prepare.outputs.release_needed == 'true'
         env:
           TODAY: ${{ steps.prepare.outputs.today }}
+          # Set for a translation release, which bumps plugin.json in the same commit as the date.
+          RELEASE_BUMP_ENTRY: ${{ steps.prepare.outputs.bump_entry }}
         shell: bash
         run: bash "$RELEASE_SCRIPTS/bash/push_plugin_release_date.sh" "$GITHUB_REF_NAME" "$TODAY"
 
