@@ -2,8 +2,9 @@
 
 When the version in plugin.json is already released, it is bumped to the next patch and given a new
 changelog entry in the style of the newest one. When it is not, the version stays and the entry is
-added to its changelog section. Anything this cannot edit with confidence is left alone, so a
-person makes the change instead of the script guessing at a changelog format.
+added to its changelog section. A changelog of one-line entries ("* 6.0.1 - 2026-09-14 - Fixed ...")
+gets a new line, but an existing line is not extended. Anything this cannot edit with confidence is
+left alone, so a person makes the change instead of the script guessing at a changelog format.
 
 Usage: bump_plugin_version.py <plugin-dir> <released|unreleased> <entry>
 Prints one sentence saying what it did. Exits 0 when it did it, or found nothing to do, and 3,
@@ -35,15 +36,29 @@ class Skip(Exception):
 
 
 def version_line_pattern(plugin_name):
-    # A heading, never a list item, so a one-line changelog ("* 6.0.1 - 2026-09-14 Fixed ...") does
-    # not match and is left to a person. The plugin's own name is the only label allowed before the
-    # version, so prose that mentions a version is not read as a heading.
+    # A heading, never a list item, which one_line_pattern reads instead. The plugin's own name is the
+    # only label allowed before the version, so prose that mentions a version is not read as a heading.
     label = rf"(?:{re.escape(plugin_name)}[ \t]+)?" if plugin_name else ""
     return re.compile(
         rf"(?P<lead>(?:\#{{1,6}}[ \t]+)?{label}(?P<emphasis>\*\*|__)?(?P<bracket>\[)?v?)"
         r"(?P<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"
         r"(?P<rest>.*)"
     )
+
+
+def one_line_pattern(plugin_name):
+    # Unindented, so a nested item that starts with a version is not read as an entry.
+    label = rf"(?:{re.escape(plugin_name)}[ \t]+)?" if plugin_name else ""
+    return re.compile(
+        rf"(?P<lead>[-*+][ \t]+{label}v?)"
+        r"(?P<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)"
+        r"(?P<rest>(?:[ \t:–—-].*)?)"
+    )
+
+
+def one_line_entry(match, version, entry):
+    # Undated, as the release dates it to "- <date> - <entry>".
+    return f"{match.group('lead')}{version} - {entry}"
 
 
 def version_tuple(version):
@@ -149,8 +164,18 @@ def bump(plugin_dir, released, entry):
     lines, newline, trailing = read_changelog(changelog_path)
     pattern = version_line_pattern(name)
     found = sections(lines, pattern)
+    one_line = not found
+    entry_line = one_line_pattern(name)
+    entries = [(i, m, i + 1) for i, line in enumerate(lines) if (m := entry_line.fullmatch(line))]
+    if one_line:
+        found = entries
+        # A version bullet with nested items is a section in list form, not a one-line entry.
+        if any(i + 1 < len(lines) and lines[i + 1][:1] in " \t" and lines[i + 1].strip() for i, _, _ in found):
+            raise Skip("the version entries in CHANGELOG.md have items nested below them")
+    elif entries and entries[0][0] < found[0][0]:
+        raise Skip("CHANGELOG.md lists one-line entries above its version headings")
     if not found:
-        raise Skip("no version heading was found in CHANGELOG.md")
+        raise Skip("no version heading or one-line entry was found in CHANGELOG.md")
     mine = next((s for s in found if s[1].group("version") == version), None)
     # Everything below takes the first heading to be the newest, which an oldest-first file breaks.
     first = found[0][1].group("version")
@@ -165,7 +190,10 @@ def bump(plugin_dir, released, entry):
                 raise Skip(f"CHANGELOG.md has no {version} entry, and {version} is not a stable version to place one for")
             if not (STABLE_VERSION.fullmatch(top) and version_tuple(top) < version_tuple(version)):
                 raise Skip(f"CHANGELOG.md has no {version} entry, and its newest, {top}, is not older")
-            add_section(lines, found[0], entry, version)
+            if one_line:
+                lines.insert(found[0][0], one_line_entry(found[0][1], version, entry))
+            else:
+                add_section(lines, found[0], entry, version)
             write_lines(changelog_path, lines, newline, trailing)
             return f"{version} is not released yet, so the version is left as it is and a {version} changelog entry saying \"{entry}\" is added, undated."
         if mine is not found[0]:
@@ -174,6 +202,10 @@ def bump(plugin_dir, released, entry):
         # workflow does not know about.
         if DATE.search(mine[1].group("rest")):
             raise Skip(f"{version} has no tag, but its changelog entry is dated, so it may already be released")
+        if one_line:
+            if mine[1].group("rest").lstrip(" \t:–—-").strip().lower() == entry.lower():
+                return f"{version} is not released yet and its changelog entry already says \"{entry}\", so neither is changed."
+            raise Skip(f"the {version} entry in CHANGELOG.md is a single line, which cannot take a second change")
         if not add_to_section(lines, mine, entry, version, lines):
             return f"{version} is not released yet and its changelog entry already says \"{entry}\", so neither is changed."
         write_lines(changelog_path, lines, newline, trailing)
@@ -197,7 +229,10 @@ def bump(plugin_dir, released, entry):
     if json.loads(new_manifest_text).get("version") != new_version:
         raise Skip("plugin.json's version could not be edited in place")
 
-    add_section(lines, found[0], entry, new_version)
+    if one_line:
+        lines.insert(found[0][0], one_line_entry(found[0][1], new_version, entry))
+    else:
+        add_section(lines, found[0], entry, new_version)
     write_lines(changelog_path, lines, newline, trailing)
     manifest_path.write_text(new_manifest_text, encoding="utf-8", newline="")
     return f"{version} is released, so the version is bumped to {new_version} with a changelog entry saying \"{entry}\", undated."

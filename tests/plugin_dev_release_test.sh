@@ -596,14 +596,26 @@ git -C "$WORK/translate-next-tagged/origin.git" tag 6.0.4 6.x-dev
 run translate-next-tagged prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a tagged next patch is skipped, not failed"
 says translate-next-tagged 'release_needed=false' || fail "translations are not released again once the next patch is tagged"
 
-# A one-line changelog is left to a person, as the bump script cannot add an entry to it.
+# A one-line changelog gets a one-line entry, which the release dates.
 new_translated translate-one-line 'Translations update from Weblate:lang/de.json'
 printf '## Changelog\n\n* 6.0.3 - 2026-10-05 - Three\n' > "$WORK/translate-one-line/clone/CHANGELOG.md"
 git -C "$WORK/translate-one-line/clone" commit -q -am 'Use one line [ignore_release]'
 git -C "$WORK/translate-one-line/clone" push -q origin 6.x-dev
-run translate-one-line prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "an unbumpable translation release is skipped, not failed"
-says translate-one-line 'release_needed=false' || fail "translations whose version cannot be bumped are not released"
-says translate-one-line '::warning::Translations were merged into 6.x-dev after 6.0.3, but they are not released' \
+run translate-one-line prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+    || { cat "$WORK/translate-one-line/out" >&2; fail "a one-line changelog's translation release is prepared"; }
+says translate-one-line 'version=6.0.4' || fail "a one-line changelog's translations are released"
+RELEASE_BUMP_ENTRY='Updated translations' run translate-one-line push_plugin_release_date.sh 6.x-dev \
+    || { cat "$WORK/translate-one-line/out" >&2; fail "a one-line changelog's translation release is dated"; }
+[[ "$(git -C "$WORK/translate-one-line/origin.git" show automated/release-date-6.0.4:CHANGELOG.md | sed -n 3p)" \
+    == "* 6.0.4 - $PLUGIN_RELEASE_TODAY - Updated translations" ]] || fail "a one-line changelog gets a dated one-line entry"
+
+new_translated translate-unbumpable 'Translations update from Weblate:lang/de.json'
+printf '## Changelog\n\n### 6.0.3 - 2026-10-05\n#### Fixed\n* Three\n' > "$WORK/translate-unbumpable/clone/CHANGELOG.md"
+git -C "$WORK/translate-unbumpable/clone" commit -q -am 'Group the changes [ignore_release]'
+git -C "$WORK/translate-unbumpable/clone" push -q origin 6.x-dev
+run translate-unbumpable prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "an unbumpable translation release is skipped, not failed"
+says translate-unbumpable 'release_needed=false' || fail "translations whose version cannot be bumped are not released"
+says translate-unbumpable '::warning::Translations were merged into 6.x-dev after 6.0.3, but they are not released' \
     || fail "translations that cannot be released warn"
 
 # --- check_plugin_release_date.sh ---

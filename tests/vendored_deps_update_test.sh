@@ -1891,7 +1891,31 @@ expect_bump "a changelog with CRLF line endings keeps them" "$dir" released 0 6.
 
 ONE_LINE='## Changelog\n\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
 dir=$(bump_plugin one-line 6.0.3 "$ONE_LINE")
-expect_bump "a one-line-per-version changelog is left alone" "$dir" released 3 6.0.3 "$ONE_LINE"
+expect_bump "a one-line changelog gets a new, undated line above the newest" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n* 6.0.4 - Updated dependencies\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
+
+dir=$(bump_plugin one-line-new 6.0.4 "$ONE_LINE")
+expect_bump "an unreleased version with no one-line entry yet gets one" "$dir" unreleased 0 6.0.4 \
+  '## Changelog\n\n* 6.0.4 - Updated dependencies\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
+expect_bump "an unreleased one-line entry that already says it is left as it is" "$dir" unreleased 0 6.0.4 \
+  '## Changelog\n\n* 6.0.4 - Updated dependencies\n* 6.0.3 - 2026-10-12 Fixed a thing\n* 6.0.2 - 2026-09-21 Fixed another\n'
+
+LABELLED='## Changelog\n\n* Foo v6.0.3 - 2026-10-12 - Fixed a thing\n'
+dir=$(bump_plugin one-line-labelled 6.0.3 "$LABELLED")
+expect_bump "a one-line entry keeps the newest one's label and v" "$dir" released 0 6.0.4 \
+  '## Changelog\n\n* Foo v6.0.4 - Updated dependencies\n* Foo v6.0.3 - 2026-10-12 - Fixed a thing\n'
+
+NESTED='## Changelog\n\n* 6.0.3 - 2026-10-12\n  * Fixed a thing\n'
+dir=$(bump_plugin one-line-nested 6.0.3 "$NESTED")
+expect_bump "version bullets with nested items are left alone" "$dir" released 3 6.0.3 "$NESTED"
+
+MIXED='## Changelog\n\n* 6.0.3 - 2026-10-12 - Fixed a thing\n\n## 6.0.2 - 2026-09-21\n- Fixed another\n'
+dir=$(bump_plugin one-line-mixed 6.0.3 "$MIXED")
+expect_bump "one-line entries above version headings are left alone" "$dir" released 3 6.0.3 "$MIXED"
+
+ONE_LINE_PENDING='## Changelog\n\n- 6.0.4 Fixed a thing\n- 6.0.3 - 2026-10-12 - Fixed another\n'
+dir=$(bump_plugin one-line-pending 6.0.4 "$ONE_LINE_PENDING")
+expect_bump "an unreleased one-line entry is not extended with a second change" "$dir" unreleased 3 6.0.4 "$ONE_LINE_PENDING"
 
 FREE_TEXT='## Changelog\n\n6.0.3 - 2026-10-12 - Compatibility with Matomo 6\n- Fixed a thing\n'
 dir=$(bump_plugin free-text 6.0.3 "$FREE_TEXT")
@@ -2000,8 +2024,8 @@ GH_TAGS=0 expect_bump_step "a repository with no tags at all leaves the version,
   "$NOT_FOUND" "$NOT_FOUND" 6.0.3 'could not be checked. The repository has no tags.'
 expect_bump_step "a tag lookup that fails leaves the version, and says it still needs a bump" \
   'fail:gh: Server Error (HTTP 500)' "$NOT_FOUND" 6.0.3 'needs the usual changelog entry and version bump'
-CHANGELOG="$ONE_LINE" expect_bump_step "a changelog the script leaves alone does not fail the step, and the output says why" \
-  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'not bumped, because no version heading'
+CHANGELOG="$FREE_TEXT" expect_bump_step "a changelog the script leaves alone does not fail the step, and the output says why" \
+  refs/tags/6.0.3 "$NOT_FOUND" 6.0.3 'not bumped, because the 6.0.3 heading in CHANGELOG.md carries text'
 CHANGELOG='## Changelog\n\n6.0.3\n- Updated dependencies\n' \
   expect_bump_step "an entry that already has the line gives a note but no files to apply" \
   "$NOT_FOUND" "$NOT_FOUND" 6.0.3 'already says'
