@@ -591,6 +591,10 @@ new_translated translate-ignored 'Translations update from Weblate:lang/de.json'
 run translate-ignored prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations beside an ignored change are prepared"
 says translate-ignored 'version=6.0.4' || fail "a commit marked [ignore_release] does not hold back translations"
 
+new_translated translate-no-release 'Translations update from Weblate:lang/de.json' 'Fix failing tests [no_release]:tests/Test.php'
+run translate-no-release prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations beside a [no_release] change are prepared"
+says translate-no-release 'version=6.0.4' || fail "a commit marked [no_release] does not hold back translations"
+
 new_translated translate-next-tagged 'Translations update from Weblate:lang/de.json'
 git -C "$WORK/translate-next-tagged/origin.git" tag 6.0.4 6.x-dev
 run translate-next-tagged prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a tagged next patch is skipped, not failed"

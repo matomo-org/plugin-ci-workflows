@@ -173,16 +173,17 @@ done
 TRANSLATION_ENTRY="Updated translations"
 VENDORED_DEPS_BRANCH="automated/vendored-dependencies-$BRANCH"
 
-# Whether <commit> is marked [ignore_release] where the developer guide puts the marker: the subject,
-# or for a merge the pull request title on the first body line. A squash body lists every sub-commit,
-# so a marker on a screenshot commit there says nothing about the code the squash also changes.
+# Whether <commit> is marked [ignore_release] or [no_release], which the release monitor also accepts,
+# where the developer guide puts the marker: the subject, or for a merge the pull request title on the
+# first body line. A squash body lists every sub-commit, so a marker on a screenshot commit there says
+# nothing about the code the squash also changes.
 ignored() {
     local marked
     marked=$(git log -1 --format=%s "$1")
     if git rev-parse -q --verify "$1^2" > /dev/null; then
         marked+=$'\n'$(git log -1 --format=%b "$1" | sed -n '/[^[:space:]]/{p;q;}')
     fi
-    [[ "$marked" == *"[ignore_release]"* ]]
+    [[ "$marked" == *"[ignore_release]"* || "$marked" == *"[no_release]"* ]]
 }
 
 # Prints the version the vendored dependencies update branch moves plugin.json to, if there is one.
@@ -198,10 +199,10 @@ vendored_deps_version() {
 }
 
 # Sets translation_version to the patch after the released <version> when every commit on the branch
-# since its tag is a translation update, only records a version, or is marked [ignore_release], and at
-# least one is a translation update. Weblate's are the usual ones: a translation update changes nothing
-# but lang/*.json, and not lang/en.json, which holds the source strings code adds. Merges are read
-# against their first parent, so a merged pull request counts as one commit.
+# since its tag is a translation update, only records a version, or is marked [ignore_release] or
+# [no_release], and at least one is a translation update. Weblate's are the usual ones: a translation
+# update changes nothing but lang/*.json, and not lang/en.json, which holds the source strings code
+# adds. Merges are read against their first parent, so a merged pull request counts as one commit.
 translation_release() {
     local tag="$1" next commit files blocker="" translations=0 vendored
     translation_version=""
