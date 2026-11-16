@@ -538,6 +538,141 @@ run shadow prepare_plugin_dev_release.sh refs/heads/6.x-dev || { cat "$WORK/shad
 run shadow push_plugin_release_date.sh 6.x-dev || { cat "$WORK/shadow/out" >&2; fail "dating ignores a json.py in the plugin"; }
 run shadow tag_plugin_dev_release.sh 6.0.3 2026-10-12 || { cat "$WORK/shadow/out" >&2; fail "tagging ignores a json.py in the plugin"; }
 
+# --- translation releases ---
+
+# Builds <name> with 6.0.3 dated and tagged under a heading changelog, then commits each change on
+# 6.x-dev and pushes them. A change is "<message>:<path> [<path>...]".
+new_translated() {
+    local name="$1" clone="$WORK/$1/clone" change path
+    shift
+    new_repo "$name" '* 6.0.3 - 2026-10-05 - Three'
+    printf '## Changelog\n\n### 6.0.3 - 2026-10-05\n* Three\n\n### 6.0.2 - 2026-09-28\n* Two\n' > "$clone/CHANGELOG.md"
+    git -C "$clone" commit -q -am 'Use headings'
+    git -C "$clone" tag 6.0.3
+    for change in "$@"; do
+        for path in ${change#*:}; do
+            mkdir -p "$clone/$(dirname "$path")"
+            printf '{"%s":"x"}\n' "$path" > "$clone/$path"
+            git -C "$clone" add "$path"
+        done
+        git -C "$clone" commit -q -m "${change%%:*}"
+    done
+    git -C "$clone" push -q origin 6.x-dev refs/tags/6.0.3
+}
+
+new_translated translate 'Translations update from Weblate:lang/de.json lang/fr.json'
+run translate prepare_plugin_dev_release.sh refs/heads/6.x-dev || { cat "$WORK/translate/out" >&2; fail "a translation release is prepared"; }
+if ! { says translate 'release_needed=true' && says translate 'version=6.0.4' && says translate 'bump_entry=Updated translations'; }; then
+    fail "translations merged after a release are released as the next patch"
+fi
+RELEASE_BUMP_ENTRY='Updated translations' run translate push_plugin_release_date.sh 6.x-dev \
+    || { cat "$WORK/translate/out" >&2; fail "a translation release is dated"; }
+[[ "$(git -C "$WORK/translate/origin.git" show automated/release-date-6.0.4:plugin.json)" == '{"name":"TestPlugin","version":"6.0.4"}' ]] \
+    || fail "the translation release's date commit bumps plugin.json"
+[[ "$(git -C "$WORK/translate/origin.git" show automated/release-date-6.0.4:CHANGELOG.md | sed -n 3,4p)" == $'### 6.0.4 - 2026-10-12\n* Updated translations' ]] \
+    || fail "the translation release's date commit adds its dated entry"
+run translate tag_plugin_dev_release.sh 6.0.4 2026-10-12 || { cat "$WORK/translate/out" >&2; fail "a translation release is tagged"; }
+git -C "$WORK/translate/clone" checkout -q -B 6.x-dev origin/6.x-dev
+run translate prepare_plugin_dev_release.sh refs/heads/6.x-dev || { cat "$WORK/translate/out" >&2; fail "a tagged translation release is resumed"; }
+if ! { says translate 'finish=6.0.4:2026-10-12' && says translate 'release_needed=false'; }; then
+    fail "a tagged translation release is finished, and not released again"
+fi
+
+new_translated translate-code 'Translations update from Weblate:lang/de.json' 'Fix a bug:Controller.php'
+run translate-code prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations behind a code change are skipped, not failed"
+says translate-code 'release_needed=false' || fail "translations behind a code change wait for a person"
+says translate-code 'wait for a person to release them with' || fail "translations left for a person say why"
+
+new_translated translate-source 'Add a string:lang/en.json lang/de.json'
+run translate-source prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a source string change is skipped, not failed"
+says translate-source 'release_needed=false' || fail "a change to lang/en.json is not a translation update"
+
+new_translated translate-ignored 'Translations update from Weblate:lang/de.json' '[ignore_release] Tidy the readme:README.md'
+run translate-ignored prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations beside an ignored change are prepared"
+says translate-ignored 'version=6.0.4' || fail "a commit marked [ignore_release] does not hold back translations"
+
+new_translated translate-next-tagged 'Translations update from Weblate:lang/de.json'
+git -C "$WORK/translate-next-tagged/origin.git" tag 6.0.4 6.x-dev
+run translate-next-tagged prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a tagged next patch is skipped, not failed"
+says translate-next-tagged 'release_needed=false' || fail "translations are not released again once the next patch is tagged"
+
+# GitHub's default squash message lists each sub-commit, screenshot syncs marked [ignore_release] included.
+new_translated translate-squash-marker 'Translations update from Weblate:lang/de.json' \
+    $'Fix a bug (#12)\n\n* Fix a bug\n\n* [ignore_release] Sync screenshots:Controller.php'
+run translate-squash-marker prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "a squash with a marked sub-commit is skipped, not failed"
+says translate-squash-marker 'release_needed=false' || fail "a marker in a squash body does not pass over the code it changes"
+
+# A merged pull request is marked in its title, the first line of the merge's body.
+new_translated translate-merge-marker 'Translations update from Weblate:lang/de.json'
+git -C "$WORK/translate-merge-marker/clone" checkout -q -b tidy
+printf 'tidy\n' > "$WORK/translate-merge-marker/clone/README.md"
+git -C "$WORK/translate-merge-marker/clone" add README.md
+git -C "$WORK/translate-merge-marker/clone" commit -q -m 'Tidy the readme'
+git -C "$WORK/translate-merge-marker/clone" checkout -q 6.x-dev
+git -C "$WORK/translate-merge-marker/clone" merge -q --no-ff -m $'Merge pull request #5 from fork/tidy\n\n[ignore_release] Tidy the readme' tidy
+git -C "$WORK/translate-merge-marker/clone" push -q origin 6.x-dev
+run translate-merge-marker prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations beside a marked merge are prepared"
+says translate-merge-marker 'version=6.0.4' || fail "a merge marked in its pull request title does not hold back translations"
+
+# Builds <name> with merged translations and a vendored dependencies update branch at plugin.json <version>.
+new_vendored_pending() {
+    local clone="$WORK/$1/clone"
+    new_translated "$1" 'Translations update from Weblate:lang/de.json'
+    git -C "$clone" checkout -q -b automated/vendored-dependencies-6.x-dev
+    set_version "$1" "$2"
+    git -C "$clone" commit -q --allow-empty -am 'Update vendored dependencies'
+    git -C "$clone" push -q origin automated/vendored-dependencies-6.x-dev
+    git -C "$clone" checkout -q 6.x-dev
+}
+
+new_vendored_pending translate-vendored-bump 6.0.4
+run translate-vendored-bump prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations behind a vendored update are skipped, not failed"
+says translate-vendored-bump 'release_needed=false' || fail "translations do not take the patch an open vendored update bumps to"
+says translate-vendored-bump 'so they are released with that update' || fail "translations left for a vendored update say why"
+
+new_vendored_pending translate-vendored-unbumped 6.0.3
+run translate-vendored-unbumped prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations beside an unbumped vendored update are prepared"
+says translate-vendored-unbumped 'version=6.0.4' || fail "a vendored update that does not bump does not hold back translations"
+
+# A branch origin lists but cannot send fails the run, rather than releasing the patch it may hold.
+new_vendored_pending translate-vendored-unfetchable 6.0.4
+broken=$(git -C "$WORK/translate-vendored-unfetchable/origin.git" rev-parse automated/vendored-dependencies-6.x-dev)
+rm "$WORK/translate-vendored-unfetchable/origin.git/objects/${broken:0:2}/${broken:2}"
+git -C "$WORK/translate-vendored-unfetchable/clone" update-ref -d refs/remotes/origin/automated/vendored-dependencies-6.x-dev
+git -C "$WORK/translate-vendored-unfetchable/clone" branch -q -D automated/vendored-dependencies-6.x-dev
+git -C "$WORK/translate-vendored-unfetchable/clone" reflog expire --expire=now --all
+git -C "$WORK/translate-vendored-unfetchable/clone" gc -q --prune=now
+if run translate-vendored-unfetchable prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+    || says translate-vendored-unfetchable 'release_needed=true'; then
+    fail "a vendored update branch that cannot be fetched fails the run without a release"
+fi
+
+new_translated translate-off 'Translations update from Weblate:lang/de.json'
+RELEASE_TRANSLATIONS=false run translate-off prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations with releases off are skipped, not failed"
+says translate-off 'release_needed=false' || fail "release-translations: false leaves translations unreleased"
+
+# A one-line changelog gets a one-line entry, which the release dates.
+new_translated translate-one-line 'Translations update from Weblate:lang/de.json'
+printf '## Changelog\n\n* 6.0.3 - 2026-10-05 - Three\n' > "$WORK/translate-one-line/clone/CHANGELOG.md"
+git -C "$WORK/translate-one-line/clone" commit -q -am 'Use one line [ignore_release]'
+git -C "$WORK/translate-one-line/clone" push -q origin 6.x-dev
+run translate-one-line prepare_plugin_dev_release.sh refs/heads/6.x-dev \
+    || { cat "$WORK/translate-one-line/out" >&2; fail "a one-line changelog's translation release is prepared"; }
+says translate-one-line 'version=6.0.4' || fail "a one-line changelog's translations are released"
+RELEASE_BUMP_ENTRY='Updated translations' run translate-one-line push_plugin_release_date.sh 6.x-dev \
+    || { cat "$WORK/translate-one-line/out" >&2; fail "a one-line changelog's translation release is dated"; }
+[[ "$(git -C "$WORK/translate-one-line/origin.git" show automated/release-date-6.0.4:CHANGELOG.md | sed -n 3p)" \
+    == "* 6.0.4 - $PLUGIN_RELEASE_TODAY - Updated translations" ]] || fail "a one-line changelog gets a dated one-line entry"
+
+new_translated translate-unbumpable 'Translations update from Weblate:lang/de.json'
+printf '## Changelog\n\n### 6.0.3 - 2026-10-05\n#### Fixed\n* Three\n' > "$WORK/translate-unbumpable/clone/CHANGELOG.md"
+git -C "$WORK/translate-unbumpable/clone" commit -q -am 'Group the changes [ignore_release]'
+git -C "$WORK/translate-unbumpable/clone" push -q origin 6.x-dev
+run translate-unbumpable prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "an unbumpable translation release is skipped, not failed"
+says translate-unbumpable 'release_needed=false' || fail "translations whose version cannot be bumped are not released"
+says translate-unbumpable '::warning::Translations were merged into 6.x-dev after 6.0.3, but they are not released' \
+    || fail "translations that cannot be released warn"
+
 # --- check_plugin_release_date.sh ---
 
 new_repo check-undated '* 6.0.3 Three'

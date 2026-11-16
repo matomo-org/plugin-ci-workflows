@@ -6,8 +6,9 @@
 # The workflow's token opened it, so its pull_request runs are held for approval, and this approves
 # them. With RELEASE_APPROVER_TOKEN, a token for another user, that user approves and merges;
 # GITHUB_TOKEN can do neither to a pull request it opened.
-# Refuses a pull request that changes anything but CHANGELOG.md or carries a commit from anyone
-# other than the workflow, since that is all the approver is trusted to approve.
+# Refuses a pull request that changes anything but CHANGELOG.md, and plugin.json's version for a
+# translation release, or carries a commit from anyone other than the workflow, since that is all the
+# approver is trusted to approve.
 # A pull request left waiting on a person is labelled Needs Review and, with the approver token,
 # sent for review to RELEASE_REVIEWER_TEAM or the organisation's plugin reviewers. Without it, a
 # comment mentions that team instead.
@@ -19,6 +20,7 @@ BASE_BRANCH="${1:-}"
 VERSION="${2:-}"
 BRANCH="automated/release-date-$VERSION"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNS_WAIT_SECONDS="${RUNS_WAIT_SECONDS:-120}"
 RUNS_POLL_SECONDS="${RUNS_POLL_SECONDS:-10}"
 (( RUNS_POLL_SECONDS > 0 )) || RUNS_POLL_SECONDS=1
@@ -29,6 +31,22 @@ if [[ -z "$BASE_BRANCH" || -z "$VERSION" ]]; then
     echo "Usage: $0 <base-branch> <version>" >&2
     exit 1
 fi
+
+# Whether the tagged commit sits on $BASE_BRANCH and changes plugin.json only to set the version to
+# $VERSION.
+version_only_release() {
+    local old new status=0
+    git merge-base --is-ancestor "$tagged_sha^" "refs/remotes/origin/$BASE_BRANCH" 2> /dev/null || return 1
+    old=$(mktemp)
+    new=$(mktemp)
+    if git show "$tagged_sha^:plugin.json" > "$old" 2> /dev/null && git show "$tagged_sha:plugin.json" > "$new" 2> /dev/null; then
+        python3 -I "$SCRIPT_DIR/../python/version_only_change.py" "$old" "$new" "$VERSION" || status=$?
+    else
+        status=1
+    fi
+    rm -f "$old" "$new"
+    return "$status"
+}
 
 # GitHub decodes % in an annotation.
 annotation() {
@@ -132,8 +150,9 @@ if [[ "$head_sha" != "$tagged_sha" ]]; then
     leave_open "its head is not the commit tagged $VERSION."
 fi
 
-files=$(gh pr view "$pr" --json files --jq '.files[].path')
-if [[ "$files" != "CHANGELOG.md" ]]; then
+files=$(gh pr view "$pr" --json files --jq '.files[].path' | sort)
+if [[ "$files" != "CHANGELOG.md" ]] \
+    && ! { [[ "$files" == $'CHANGELOG.md\nplugin.json' ]] && version_only_release; }; then
     leave_open "it changes more than CHANGELOG.md ($(tr '\n' ' ' <<< "$files"))."
 fi
 identities=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$head_sha" \

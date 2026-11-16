@@ -40,6 +40,11 @@ on:
         required: false
         type: string
         default: ''
+      release-translations:
+        description: "Release translation updates merged since the last tag, such as Weblate's, as the next patch when nothing else on the branch waits for a release. False leaves them for a person to release with the next version bump."
+        required: false
+        type: boolean
+        default: true
       require-approver-token:
         description: "Fail before releasing when approver-token is empty, so a secret that was renamed, removed or not passed under secrets: is noticed rather than the release date pull request being left for a person."
         required: false
@@ -140,6 +145,7 @@ jobs:
           RELEASE_SKIP_CI_CHECK: ${{ inputs.skip-ci-check }}
           RELEASE_CI_WAIT_MINUTES: ${{ inputs.ci-wait-minutes }}
           RELEASE_BRANCH: ${{ inputs.release-branch }}
+          RELEASE_TRANSLATIONS: ${{ inputs.release-translations }}
         shell: bash
         run: bash "$RELEASE_SCRIPTS/bash/prepare_plugin_dev_release.sh" "$GITHUB_REF"
 
@@ -147,6 +153,8 @@ jobs:
         if: steps.prepare.outputs.release_needed == 'true'
         env:
           TODAY: ${{ steps.prepare.outputs.today }}
+          # Set for a translation release, which bumps plugin.json in the same commit as the date.
+          RELEASE_BUMP_ENTRY: ${{ steps.prepare.outputs.bump_entry }}
         shell: bash
         run: bash "$RELEASE_SCRIPTS/bash/push_plugin_release_date.sh" "$GITHUB_REF_NAME" "$TODAY"
 

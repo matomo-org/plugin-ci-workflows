@@ -549,4 +549,47 @@ export RELEASE_APPROVER_TOKEN=approver-token FAKE_REVIEW_STATUS=1 FAKE_REQUEST_E
 run || fail "a refused review request leaves the pull request open, not failed"
 says 'Could not request review from matomo-org/plugin-reviewers on #35: Resource not accessible' || fail "a refused review request is passed on"
 
+# A translation release's date commit also sets plugin.json's version. Last, as these move the tag.
+# Writes a commit with plugin.json at <version>, as <name>, on top of <parent> if given.
+plugin_commit() {
+    local blob tree
+    blob=$(printf '{"name":"%s","version":"%s"}\n' "$1" "$2" | git -C "$WORK/clone" hash-object -w --stdin)
+    tree=$(printf '100644 blob %s\tplugin.json\n' "$blob" | git -C "$WORK/clone" mktree)
+    git -c user.name=Test -c user.email=test@example.com -C "$WORK/clone" commit-tree ${3:+-p "$3"} -m 'Add release date for 6.0.3' "$tree"
+}
+released_from=$(plugin_commit TestPlugin 6.0.2)
+git -C "$WORK/clone" update-ref refs/remotes/origin/6.x-dev "$released_from"
+
+reset version-bump
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" tag -f 6.0.3 "$FAKE_HEAD" > /dev/null
+TAGGED="$FAKE_HEAD"
+export FAKE_HEAD FAKE_FILES='plugin.json CHANGELOG.md'
+run || { cat "$OUT" >&2; fail "a translation release's pull request is merged"; }
+merged || fail "a pull request that also sets plugin.json's version to the release is merged"
+
+reset version-and-more
+FAKE_HEAD=$(plugin_commit OtherPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" tag -f 6.0.3 "$FAKE_HEAD" > /dev/null
+TAGGED="$FAKE_HEAD"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json'
+run || fail "a pull request changing more of plugin.json is left open, not failed"
+if merged; then fail "a pull request changing more of plugin.json than the version is never merged"; fi
+
+reset version-other
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+git -C "$WORK/clone" tag -f 6.0.3 "$FAKE_HEAD" > /dev/null
+TAGGED="$FAKE_HEAD"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json'
+run || fail "a pull request setting another version is left open, not failed"
+if merged; then fail "a pull request setting plugin.json to a version other than the release is never merged"; fi
+
+reset version-off-branch
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$(plugin_commit TestPlugin 6.0.2 "$released_from")")
+git -C "$WORK/clone" tag -f 6.0.3 "$FAKE_HEAD" > /dev/null
+TAGGED="$FAKE_HEAD"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json'
+run || fail "a version bump made off the base branch is left open, not failed"
+if merged; then fail "a version bump whose parent is not on the base branch is never merged"; fi
+
 echo 'All release date merge tests passed.'

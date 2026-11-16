@@ -102,6 +102,27 @@ commit released
 if run released; then fail "a change listed under a released version fails"; fi
 says released 'changes the changelog entry of 6.0.2, already released' || { cat "$WORK/released/out" >&2; fail "the failure names the released version"; }
 
+# A translation release's date pull request: 6.0.3 tagged at its head, which bumps plugin.json and adds the entry.
+new_repo translation-release $'## Changelog\n\n### 6.0.2 - 2026-10-05\n* Two\n'
+printf '{"name":"TestPlugin","version":"6.0.2"}\n' > "$WORK/translation-release/clone/plugin.json"
+commit translation-release
+git -C "$WORK/translation-release/clone" push -q origin HEAD:6.x-dev
+git -C "$WORK/translation-release/clone" fetch -q origin
+printf '{"name":"TestPlugin","version":"6.0.3"}\n' > "$WORK/translation-release/clone/plugin.json"
+edit_changelog translation-release '### 6.0.2' $'### 6.0.3 - 2026-10-12\n* Updated translations\n\n### 6.0.2'
+commit translation-release
+git -C "$WORK/translation-release/clone" push -q origin HEAD:refs/tags/6.0.3
+run translation-release || { cat "$WORK/translation-release/out" >&2; fail "a translation release's date pull request passes"; }
+
+# Bumping onto a version already tagged, as before a translation release's date pull request merges.
+new_repo bump-tagged
+printf '{"name":"TestPlugin","version":"6.0.4"}\n' > "$WORK/bump-tagged/clone/plugin.json"
+commit bump-tagged
+run bump-tagged || { cat "$WORK/bump-tagged/out" >&2; fail "bumping to an untagged version passes"; }
+git -C "$WORK/bump-tagged/origin.git" tag -a -m release 6.0.4 6.x-dev
+if run bump-tagged; then fail "bumping onto a tagged version fails"; fi
+says bump-tagged 'This moves plugin.json to 6.0.4, which is already released' || { cat "$WORK/bump-tagged/out" >&2; fail "bumping onto a tagged version says why"; }
+
 new_repo correction
 edit_changelog correction '* Two' '* Two, corrected'
 commit correction

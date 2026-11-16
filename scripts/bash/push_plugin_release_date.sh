@@ -4,6 +4,9 @@
 # request is opened after tagging, by merge_plugin_release_date_pr.sh. HEAD is left on the dated
 # commit when one is pushed, and on the target branch's tip otherwise.
 # Run from a checkout of the target branch, with a pushable origin and an authenticated gh.
+# With RELEASE_BUMP_ENTRY set, as prepare_plugin_dev_release.sh's bump_entry for a translation
+# release, plugin.json's released version is first bumped to its next patch with that changelog line,
+# in the same commit as the date.
 # Usage: push_plugin_release_date.sh <target-branch> [release-date]
 
 set -euo pipefail
@@ -27,6 +30,17 @@ error() {
     exit 1
 }
 
+RELEASE_FILES=(CHANGELOG.md)
+if [[ -n "${RELEASE_BUMP_ENTRY:-}" ]]; then
+    RELEASE_FILES=(CHANGELOG.md plugin.json)
+    bump_status=0
+    bump_note=$(python3 -I "$SCRIPT_DIR/../python/bump_plugin_version.py" . released "$RELEASE_BUMP_ENTRY") || bump_status=$?
+    if (( bump_status != 0 )); then
+        git checkout --quiet -- "${RELEASE_FILES[@]}"
+        error "The version could not be bumped for the release: $bump_note"
+    fi
+fi
+
 # -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
 if ! metadata=$(python3 -P -c 'import json; p = json.load(open("plugin.json", encoding="utf-8")); print(p["version"]); print(p["name"])' 2>&1); then
     error "Could not read the version and name from plugin.json: $metadata"
@@ -40,6 +54,7 @@ BRANCH="automated/release-date-$VERSION"
 tag_status=0
 git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null || tag_status=$?
 if (( tag_status == 0 )); then
+    git checkout --quiet -- "${RELEASE_FILES[@]}"
     echo "::notice::$VERSION is already released, so its changelog date is left alone."
     exit 0
 elif (( tag_status != 2 )); then
@@ -63,7 +78,7 @@ fi
 
 # Leaves the working tree as HEAD has it, so nothing after this reads a date that was not pushed.
 leave_alone() {
-    git checkout --quiet -- CHANGELOG.md
+    git checkout --quiet -- "${RELEASE_FILES[@]}"
     echo "::warning::$*"
     exit 0
 }
@@ -102,7 +117,7 @@ fi
 # The identity check above relies on these, and GIT_AUTHOR_* and GIT_COMMITTER_* would override git config.
 GIT_AUTHOR_NAME="github-actions[bot]" GIT_AUTHOR_EMAIL="$BOT_EMAIL" \
     GIT_COMMITTER_NAME="github-actions[bot]" GIT_COMMITTER_EMAIL="$BOT_EMAIL" \
-    git commit --quiet -m "Add release date for $VERSION" -- CHANGELOG.md
+    git commit --quiet -m "Add release date for $VERSION" -- "${RELEASE_FILES[@]}"
 # The lease refuses the push if anyone pushed to the branch since the check above.
 git push --quiet --force-with-lease="refs/heads/$BRANCH:$expected_tip" origin "HEAD:refs/heads/$BRANCH"
 echo "$BRANCH dates $VERSION as $RELEASE_DATE."
