@@ -72,6 +72,8 @@ fi
 # A pull request that bumps plugin.json onto a version already tagged would never ship, as when a
 # translation release is tagged but its release date pull request, which moves plugin.json on, has
 # not merged yet. That pull request's head is the tagged commit, so it passes.
+# An unreadable plugin.json at the head gives no version here, but still fails the run when its name
+# is read below.
 plugin_version() {
     git show "$1:plugin.json" 2> /dev/null \
         | python3 -I -c 'import json, sys; print(json.load(sys.stdin).get("version") or "")' 2> /dev/null || true
@@ -86,7 +88,7 @@ if [[ -z "$PUSH" ]]; then
             echo "::error::Could not list the tags on origin: $version_tags" >&2
             exit 1
         fi
-        if [[ -n "$version_tags" ]] && ! cut -f1 <<< "$version_tags" | grep -qxF "$HEAD_SHA"; then
+        if [[ -n "$version_tags" ]] && ! grep -qxF "$HEAD_SHA" <<< "$(cut -f1 <<< "$version_tags")"; then
             echo "::error file=plugin.json::This moves plugin.json to $new_version, which is already released, so the change would never ship. If $new_version's release date pull request is open, merge it first, then bump to the version after it." >&2
             exit 1
         fi
