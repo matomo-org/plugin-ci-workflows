@@ -34,7 +34,7 @@ resolve "$conflict" 6.0.3 >/dev/null 2>&1 && fail "a tagged version should be le
 resolve "${conflict/6.0.3/6.0.3 - 2026-11-01}" >/dev/null 2>&1 && fail "a dated version should be left for a person"
 resolve "${conflict/6.0.3/6.0.3 (15/11/2026)}" >/dev/null 2>&1 && fail "a version dated another way should be left for a person"
 resolve "${conflict/6.0.3/## 6.0.3 - Unreleased}" >/dev/null 2>&1 || fail "an Unreleased version should be resolved"
-resolve "${conflict//$'\n'/$'\r\n'}" >/dev/null 2>&1 || fail "a changelog with CRLF line ends should be resolved"
+[[ "$(resolve "${conflict//\\n/\\r\\n}" | od -c)" == *'\r  \n'* ]] || fail "a changelog with CRLF line ends should be resolved"
 resolve "${conflict/||||||| 1/||||||| 1\\n- Old}" >/dev/null 2>&1 && fail "a changed existing line should be left for a person"
 resolve "${conflict/- PR/6.0.4\\n- PR}" >/dev/null 2>&1 && fail "a version line in the conflict should be left for a person"
 resolve '- Two\n<<<<<<< HEAD\n- PR\n||||||| 1\n=======\n- Base\n>>>>>>> base\n' >/dev/null 2>&1 \
