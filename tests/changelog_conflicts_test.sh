@@ -290,4 +290,28 @@ export FAKE_PRS='1:feature:APPROVED:false'
 (cd "$WORK/noapprover/clone" && GH_TOKEN=workflow bash "$SCRIPT" 6.x-dev) >/dev/null 2>&1 \
     && fail "a run without the approver token should fail"
 
+# The workflow files: a nested call gets no more permissions than its caller job grants, and a
+# failed push run would hold the weekly release.
+problems=$(python3 - "$ROOT/.github/workflows" <<'EOF'
+import sys, yaml
+def load(name):
+    with open(f"{sys.argv[1]}/{name}") as handle:
+        return yaml.safe_load(handle)
+umbrella = load("plugin-after-merge.yml").get("jobs", {}).get("changelog-conflicts") or {}
+called = load("plugin-changelog-conflicts.yml").get("jobs", {}).get("resolve") or {}
+if not umbrella.get("uses", "").startswith("matomo-org/plugin-ci-workflows/.github/workflows/plugin-changelog-conflicts.yml@"):
+    print("the after-merge job does not call plugin-changelog-conflicts.yml")
+if umbrella.get("with", {}).get("workflows-ref") != "${{ inputs.workflows-ref }}":
+    print("the after-merge job does not pass workflows-ref")
+if umbrella.get("secrets", {}).get("approver-token") != "${{ secrets.approver-token }}":
+    print("the after-merge job does not pass approver-token")
+for scope, level in called.get("permissions", {}).items():
+    if umbrella.get("permissions", {}).get(scope) != level:
+        print(f"the after-merge job does not grant {scope}: {level}, which the resolve job needs")
+if called.get("continue-on-error") != "${{ github.event_name == 'push' }}":
+    print("the resolve job can fail a push run")
+EOF
+) || fail "the workflow files could not be read"
+[[ -z "$problems" ]] || fail "$problems"
+
 echo "PASS - changelog conflict resolution"

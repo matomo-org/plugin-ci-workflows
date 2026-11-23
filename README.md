@@ -42,6 +42,7 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
 | [`plugin-dev-release.yml`](#weekly-release) | Reusable workflow | Releases a development branch's new `plugin.json` version, dating its changelog entry on the day |
 | [`plugin-release-date-check.yml`](#weekly-release) | Reusable workflow | Fails a changelog date written by hand in a plugin that uses the weekly release, and a pull request that changes a released version's changelog entry |
+| [`plugin-after-merge.yml`](#after-merge) | Reusable workflow | Everything that runs after a merge into a development branch, behind one caller |
 | [`plugin-changelog-conflicts.yml`](#changelog-conflicts) | Reusable workflow | Resolves an approved pull request's conflict on its changelog line after a merge, and approves it again |
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
 | [`plugin-vendored-deps-update.yml`](#vendored-dependencies-update) | Reusable workflow | Updates a plugin's scoped dependencies, rebuilds `vendor/prefixed` and opens a pull request |
@@ -484,7 +485,9 @@ Two pull requests that each add a changelog line conflict as soon as one is merg
 
 It touches a pull request only while its newest approval is on its current head, nobody has requested changes, and it was not opened by the approver token's user. It resolves a conflict only when both sides added nothing but `-` or `*` list lines at the same place, under a version that is not tagged and carries nothing after it but an optional Unreleased, TBD or TBA marker; a dated version counts as released. A version line both sides added is kept once. It approves again only when the lines the pull request adds and removes, file by file, are the same as before the merge, apart from a version or blank line the branch now has too. Anything else, including a conflict in `plugin.json`, a pull request that changes a workflow, or a merge that brings in workflow changes, is left as it was with a notice in the run. Held `pull_request` runs on the pushed merge are approved only for workflows the branch already has.
 
-Run by hand, it checks the pull request against the branch it is dispatched on, so start it on the branch the pull request targets.
+Plugins run it after each merge through [After merge](#after-merge). On those push runs its job can fail, a missing or revoked approver token included, without failing the run, since the weekly release holds a version while a push run on the branch's head has failed.
+
+Calling it directly is only needed to check one pull request by hand. Run by hand, it checks the pull request against the branch it is dispatched on, so start it on the branch the pull request targets, and it fails when it could not finish.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -496,12 +499,10 @@ Run by hand, it checks the pull request against the branch it is dispatched on, 
 | `approver-token` | yes | Token for a user other than github-actions, with write access, that approves the resolved pull request again. The merge is pushed with the workflow's token, so the approver is never the last pusher |
 
 ```yaml
-# Save as .github/workflows/changelog-conflicts.yml
+# Optional: save as .github/workflows/changelog-conflicts.yml to check one pull request by hand
 name: Changelog conflicts
 
 on:
-  push:
-    branches: ['5.x-dev', '6.x-dev']
   workflow_dispatch:
     inputs:
       pull-request:
@@ -517,7 +518,39 @@ jobs:
   resolve:
     uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-changelog-conflicts.yml@main
     with:
-      pull-request: ${{ inputs.pull-request || '' }}
+      pull-request: ${{ inputs.pull-request }}
+    secrets:
+      approver-token: ${{ secrets.APPROVER_TOKEN }}
+```
+
+### After merge
+
+`plugin-after-merge.yml` runs everything that should happen after a merge into a plugin's development branch, so a plugin needs one caller for all of it and a job added here reaches every plugin. Today that is [changelog conflicts](#changelog-conflicts). The calls inside it are fixed at `@main`, as in [Plugins CI](#plugins-ci).
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `workflows-ref` | no | `main` | Ref of this repository for the scripts the called workflows run |
+
+| Secret | Required | Description |
+| --- | --- | --- |
+| `approver-token` | yes | Token for a user other than github-actions, with write access, that approves a pull request again after its changelog conflict is resolved |
+
+```yaml
+# Save as .github/workflows/after-merge.yml
+name: After merge
+
+on:
+  push:
+    branches: ['5.x-dev', '6.x-dev']
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: read
+
+jobs:
+  after-merge:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-after-merge.yml@main
     secrets:
       approver-token: ${{ secrets.APPROVER_TOKEN }}
 ```

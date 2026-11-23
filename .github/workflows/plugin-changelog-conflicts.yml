@@ -2,8 +2,9 @@
 # lines at the same place, and has the approver token approve it again, so an approved pull request
 # that conflicts only on its changelog line can still be merged without another review.
 #
-# The caller owns the triggers: a push to each N.x-dev branch, so every merge checks the pull requests
-# left behind it, and workflow_dispatch with a pull request number for one by hand. What is and is not
+# plugin-after-merge.yml calls it on a push to each N.x-dev branch, so every merge checks the pull
+# requests left behind it; a plugin may also call it directly, with workflow_dispatch and a pull
+# request number, to check one by hand. What is and is not
 # resolved, and why an approval is carried forward, is in scripts/bash/resolve_changelog_conflicts.sh.
 
 name: Plugin changelog conflicts
@@ -45,6 +46,9 @@ jobs:
       contents: write # push the merge to the pull request branch
       pull-requests: read
     timeout-minutes: 30
+    # The weekly release holds a version while a push run on the branch's head has failed, and
+    # nothing that fails here is the release's concern. The job still shows as failed in the run.
+    continue-on-error: ${{ github.event_name == 'push' }}
     env:
       GITHUB_TOKEN: ${{ github.token }}
       GH_TOKEN: ${{ github.token }}
