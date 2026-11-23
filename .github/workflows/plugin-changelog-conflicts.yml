@@ -1,0 +1,89 @@
+# Resolves a pull request's CHANGELOG.md conflict with its base branch when both only added changelog
+# lines at the same place, and has the approver token approve it again, so an approved pull request
+# that conflicts only on its changelog line can still be merged without another review.
+#
+# The caller owns the triggers: a push to each N.x-dev branch, so every merge checks the pull requests
+# left behind it, and workflow_dispatch with a pull request number for one by hand. What is and is not
+# resolved, and why an approval is carried forward, is in scripts/bash/resolve_changelog_conflicts.sh.
+
+name: Plugin changelog conflicts
+
+on:
+  workflow_call:
+    inputs:
+      workflows-ref:
+        description: "Ref of this repository for the scripts. This is this repository, so the workflow SHA is the right value when pinning."
+        required: false
+        type: string
+        default: 'main'
+      pull-request:
+        description: "Number of the one pull request to check. Empty checks every open pull request against the branch the caller runs on."
+        required: false
+        type: string
+        default: ''
+    secrets:
+      approver-token:
+        description: "Token for a user other than github-actions with write access, which approves a resolved pull request again. Without it nothing is resolved, since the push would dismiss the approval."
+        required: true
+
+permissions: {}
+
+# Queued rather than cancelled, so two merges in quick succession cannot interrupt a push halfway.
+concurrency:
+  group: plugin-changelog-conflicts-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve changelog conflicts
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write # approve the pull_request runs the merge push leaves held
+      contents: write # push the merge to the pull request branch
+      pull-requests: read
+    # Up to two minutes per resolved pull request waiting on held runs.
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      - name: Stage scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/conflict-scripts"
+          cp -r "$WORKFLOWS_DIR/scripts/bash" "$WORKFLOWS_DIR/scripts/python" "$RUNNER_TEMP/conflict-scripts/"
+          echo "CONFLICT_SCRIPTS=$RUNNER_TEMP/conflict-scripts" >> "$GITHUB_ENV"
+          # Keep the shared checkout out of the merges.
+          rm -rf "$WORKFLOWS_DIR"
+
+      - name: Configure git credentials
+        shell: bash
+        run: |
+          # git asks the helper, which reads the runner-masked token itself.
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=credential.https://github.com.helper"
+            echo "GIT_CONFIG_VALUE_0=!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
+          } >> "$GITHUB_ENV"
+
+      - name: Resolve changelog conflicts
+        env:
+          APPROVER_TOKEN: ${{ secrets.approver-token }}
+          PULL_REQUEST: ${{ inputs.pull-request }}
+        shell: bash
+        run: bash "$CONFLICT_SCRIPTS/bash/resolve_changelog_conflicts.sh" "$GITHUB_REF_NAME" "$PULL_REQUEST"

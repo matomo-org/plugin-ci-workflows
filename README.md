@@ -42,6 +42,7 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`plugin-branch-sweep.yml`](#branch-sweep) | Reusable workflow | Dispatches the weekly build for each maintained branch that is not the default one |
 | [`plugin-dev-release.yml`](#weekly-release) | Reusable workflow | Releases a development branch's new `plugin.json` version, dating its changelog entry on the day |
 | [`plugin-release-date-check.yml`](#weekly-release) | Reusable workflow | Fails a changelog date written by hand in a plugin that uses the weekly release, and a pull request that changes a released version's changelog entry |
+| [`plugin-changelog-conflicts.yml`](#changelog-conflicts) | Reusable workflow | Resolves an approved pull request's conflict on its changelog line after a merge, and approves it again |
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
 | [`plugin-vendored-deps-update.yml`](#vendored-dependencies-update) | Reusable workflow | Updates a plugin's scoped dependencies, rebuilds `vendor/prefixed` and opens a pull request |
 | [`actions/scope-dependencies`](#scope-dependencies) | Composite action | Scopes a plugin's dependencies with matomo-scoper, downgrades them with Rector, and checks the result |
@@ -476,6 +477,48 @@ Who can start a review: the label is a trigger, not an authorisation check. Anyo
 Refs into our own organisations — the review actions and the agent skills — track `main` on purpose, as they do elsewhere in this repository. Third-party actions are pinned to a full commit SHA. The distinction matters more here than in the other workflows, because these jobs hold `OPENAI_API_KEY`, `TESTS_ACCESS_TOKEN` and write permission on the calling repository, so a change to either of those repositories takes effect on the next review with those credentials in scope. Pin `review-actions-ref` and `matomo-agent-skills-ref` to SHAs for a caller that needs that fixed.
 
 The security model, the trust boundaries and the review prompt are documented in `review/README.md` in the review actions repository.
+
+### Changelog conflicts
+
+Two pull requests that each add a changelog line conflict as soon as one is merged, and resolving that by hand dismisses the other's approval. After each merge to the branch, this workflow merges the branch into every approved pull request from the same repository whose only conflict is in `CHANGELOG.md`, keeps the merged pull request's lines first and the open one's after them, pushes the merge, and has the approver token approve it again.
+
+It resolves a conflict only when both sides added nothing but `-` or `*` list lines at the same place, under a version that is neither tagged nor dated. A version line both sides added is kept once. It approves again only when the lines the pull request adds and removes, file by file, are the same as before the merge, apart from a version or blank line the branch now has too. Anything else, including a conflict in `plugin.json` or a merge that brings in workflow changes, is left as it was with a notice in the run.
+
+| Input | Required | Default | Description |
+| --- | --- | --- | --- |
+| `pull-request` | no | `''` | Check only this pull request number, instead of every open one against the caller's branch |
+| `workflows-ref` | no | `main` | Ref of this repository for the scripts |
+
+| Secret | Required | Description |
+| --- | --- | --- |
+| `approver-token` | yes | Token for a user other than github-actions, with write access, that approves the resolved pull request again. The merge is pushed with the workflow's token, so the approver is never the last pusher |
+
+```yaml
+# Save as .github/workflows/changelog-conflicts.yml
+name: Changelog conflicts
+
+on:
+  push:
+    branches: ['5.x-dev', '6.x-dev']
+  workflow_dispatch:
+    inputs:
+      pull-request:
+        description: "Pull request number to check"
+        required: true
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: read
+
+jobs:
+  resolve:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-changelog-conflicts.yml@main
+    with:
+      pull-request: ${{ inputs.pull-request || '' }}
+    secrets:
+      approver-token: ${{ secrets.APPROVER_TOKEN }}
+```
 
 ### Minimum PHP lint
 

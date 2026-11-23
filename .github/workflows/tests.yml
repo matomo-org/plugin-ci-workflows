@@ -49,6 +49,8 @@ jobs:
         run: bash tests/merge_plugin_release_date_pr_test.sh
       - name: Check GitHub release publishing
         run: bash tests/publish_plugin_release_test.sh
+      - name: Check resolving changelog conflicts
+        run: bash tests/changelog_conflicts_test.sh
 
   plugin-ci-invariants:
     name: Plugins CI invariants
