@@ -34,6 +34,7 @@ resolve "$conflict" 6.0.3 >/dev/null 2>&1 && fail "a tagged version should be le
 resolve "${conflict/6.0.3/6.0.3 - 2026-11-01}" >/dev/null 2>&1 && fail "a dated version should be left for a person"
 resolve "${conflict/6.0.3/6.0.3 (15/11/2026)}" >/dev/null 2>&1 && fail "a version dated another way should be left for a person"
 resolve "${conflict/6.0.3/## 6.0.3 - Unreleased}" >/dev/null 2>&1 || fail "an Unreleased version should be resolved"
+resolve "${conflict//$'\n'/$'\r\n'}" >/dev/null 2>&1 || fail "a changelog with CRLF line ends should be resolved"
 resolve "${conflict/||||||| 1/||||||| 1\\n- Old}" >/dev/null 2>&1 && fail "a changed existing line should be left for a person"
 resolve "${conflict/- PR/6.0.4\\n- PR}" >/dev/null 2>&1 && fail "a version line in the conflict should be left for a person"
 resolve '- Two\n<<<<<<< HEAD\n- PR\n||||||| 1\n=======\n- Base\n>>>>>>> base\n' >/dev/null 2>&1 \
@@ -76,9 +77,15 @@ case "$args" in
     'pr view '*) prs | jq -s ".[] | select(.number == $3)" | filter "$@" ;;
     *'--method POST '*'/reviews '*) [[ "$GH_TOKEN" == approver ]] || exit 1 ;;
     *'/reviews?'*)
+        [[ -z "${FAKE_REVIEWS_FAIL:-}" ]] || exit 1
         number="${args#*pulls/}" number="${number%%/*}"
         sha=$(prs | jq -r "select(.number == $number) | .headRefOid")
-        jq -n --arg s "${FAKE_APPROVED_SHA:-$sha}" --arg h "$sha" --arg cr "${FAKE_CHANGES_REQUESTED:-}" \
+        cr="${FAKE_CHANGES_REQUESTED:-}"
+        # FAKE_CHANGES_REQUESTED=after-push requests changes once the merge is on the branch.
+        if [[ "$cr" == after-push ]] && ! git -C "$FAKE_ORIGIN" rev-parse -q --verify "$sha^2" >/dev/null; then
+            cr=''
+        fi
+        jq -n --arg s "${FAKE_APPROVED_SHA:-$sha}" --arg h "$sha" --arg cr "$cr" \
             '[{user: {login: "reviewer"}, state: "APPROVED", commit_id: $s}]
              + if $cr == "" then [] else [{user: {login: "other"}, state: "CHANGES_REQUESTED", commit_id: $h}] end' \
             | filter "$@"
@@ -213,6 +220,29 @@ before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
 run same || fail "the run with a shared line failed"
 [[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a changed diff should be left alone"
 grep -q 'would change what it adds or removes' "$WORK/same/out" || fail "the notice should say the diff would change"
+
+# A pull request that changes a workflow would have its own workflow code run, so it is left alone.
+new_repo workflow feature=Feature base=Base
+seed="$WORK/workflow/seed"
+git -C "$seed" checkout -q feature && printf 'name: Changed\n' > "$seed/.github/workflows/ci.yml" && git -C "$seed" commit -q -am workflow
+git -C "$FAKE_ORIGIN" fetch -q "$seed" '+refs/heads/*:refs/heads/*'
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+run workflow || fail "the run with a workflow change failed"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a workflow change should be left alone"
+grep -q 'it changes workflows' "$WORK/workflow/out" || fail "the notice should say it changes workflows"
+
+# Changes requested after the push: resolved, but not approved again.
+new_repo late feature=Feature base=Base
+FAKE_CHANGES_REQUESTED=after-push run late && fail "a pull request not approved again should fail the job"
+git -C "$FAKE_ORIGIN" merge-base --is-ancestor 6.x-dev feature || fail "the merge should still be pushed"
+grep -q 'POST .*/reviews' "$FAKE_GH_LOG" && fail "changes requested after the push should stop the approval"
+
+# The reviews cannot be read: nothing is pushed, and the job fails rather than passing as a skip.
+new_repo unreadable feature=Feature base=Base
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+FAKE_REVIEWS_FAIL=1 run unreadable && fail "unreadable reviews should fail the job"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a pull request whose reviews cannot be read should be left alone"
+
 new_repo clean feature=Feature
 export FAKE_PRS='1:feature:APPROVED:false'
 before=$(git -C "$FAKE_ORIGIN" rev-parse feature)

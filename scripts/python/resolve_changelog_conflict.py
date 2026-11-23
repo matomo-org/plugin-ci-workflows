@@ -16,7 +16,7 @@ import sys
 LIST_LINE = re.compile(r"[-*][ \t]+\S")
 VERSION_LINE = re.compile(r"#*[ \t]*v?(?P<number>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?P<rest>.*)$")
 # Anything else after the version, a date in whatever form included, is read as released.
-UNRELEASED_REST = re.compile(r"[ \t]*(?:[-–—:][ \t]*)?(?:\(?(?:unreleased|not yet released|tbd|tba)\)?)?[ \t]*$", re.I)
+UNRELEASED_REST = re.compile(r"(?:[-–—:][ \t]*)?(?:\(?(?:unreleased|not yet released|tbd|tba)\)?)?$", re.I)
 
 
 class Unresolvable(Exception):
@@ -65,7 +65,7 @@ def resolve(lines, released):
         version = version_above(resolved)
         if version is None:
             raise Unresolvable("a conflict is not under a version line")
-        if version.group("number") in released or not UNRELEASED_REST.match(version.group("rest")):
+        if version.group("number") in released or not UNRELEASED_REST.match(version.group("rest").strip()):
             raise Unresolvable(f"the lines would land in {version.group('number')}, which is released")
         resolved.extend(theirs)
         resolved.extend(ours)

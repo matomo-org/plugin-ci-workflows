@@ -8,8 +8,9 @@
 # so it is checked again just before the push and before approving. It is approved again only when,
 # file by file, the lines it adds and removes are the same before and after the merge, apart from a
 # version or blank line the base branch now has too. The merge is pushed with the workflow's token, so
-# the approver is not the last pusher, and the pull_request runs that push leaves held are approved,
-# for workflows the base branch already has. Anything else is left as it was, with a notice saying why.
+# the approver is not the last pusher, and the pull_request runs that push leaves held are approved;
+# a pull request that changes a workflow is left alone, so those runs only run the base branch's
+# workflows. Anything else is left as it was, with a notice saying why.
 # Usage: resolve_changelog_conflicts.sh <base-branch> [pull request number]
 
 set -euo pipefail
@@ -63,20 +64,35 @@ skip() {
     echo "::notice::#$pr was left as it is, because $1"
 }
 
-# Succeeds while the pull request is open against the base, from the same head, with its newest
-# approval on that head and no review requesting changes since.
+# Succeeds while the pull request is open against the base, from the same head, with no reviewer whose
+# newest decisive review requests changes and, unless decision is "any", an approval on that head.
+# Returns 1 when it is not, and 2 when GitHub could not be asked.
 still_approved() {
-    local pr="$1" sha="$2" state
+    local pr="$1" sha="$2" decision="${3:-APPROVED}" state
     state=$(gh pr view "$pr" --json state,baseRefName,headRefOid,reviewDecision \
-        --jq '"\(.state) \(.baseRefName) \(.headRefOid) \(.reviewDecision)"') || return 1
-    [[ "$state" == "OPEN $BASE_BRANCH $sha APPROVED" ]] || return 1
-    # Each reviewer's newest decisive review counts; the newest approval must be on this head.
+        --jq '"\(.state) \(.baseRefName) \(.headRefOid) \(.reviewDecision)"') || return 2
+    [[ "$state" == "OPEN $BASE_BRANCH $sha "* ]] || return 1
+    [[ "$decision" == any || "$state" == *" APPROVED" ]] || return 1
     state=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews?per_page=100" \
         --jq '.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") | "\(.user.login) \(.state) \(.commit_id)"') \
-        || return 1
-    awk -v sha="$sha" '{ last[$1] = $2 " " $3 } END {
+        || return 2
+    awk -v sha="$sha" -v any="$decision" '{ last[$1] = $2 " " $3 } END {
             for (u in last) { split(last[u], s, " "); if (s[1] == "CHANGES_REQUESTED") exit 1; if (s[2] == sha) ok = 1 }
-            exit ok ? 0 : 1 }' <<< "$state"
+            exit ok || any == "any" ? 0 : 1 }' <<< "$state"
+}
+
+# Skips the pull request with a notice when still_approved fails, and fails the job when GitHub could
+# not be asked, since that is not a decision about the pull request.
+check_approved() {
+    local result=0
+    still_approved "$@" || result=$?
+    if (( result == 2 )); then
+        echo "::warning::Could not read #$pr's state or reviews, so it was left as it is."
+        status=1
+    elif (( result == 1 )); then
+        skip "it is no longer open against $BASE_BRANCH on the same head, its newest approval is not on that head, or changes are requested."
+    fi
+    return "$result"
 }
 
 filter='.[] | select(.isCrossRepository == false and .reviewDecision == "APPROVED")
@@ -106,10 +122,7 @@ while read -r pr head_sha author head_ref; do
         skip "its branch moved on or went away while this ran."
         continue
     fi
-    if ! still_approved "$pr" "$head_sha"; then
-        skip "its newest approval is not on its head, or changes are requested."
-        continue
-    fi
+    check_approved "$pr" "$head_sha" || continue
     git checkout --quiet --detach "$head_sha"
     if git merge --quiet --no-edit "$base_sha" >/dev/null 2>&1; then
         # A clean merge is GitHub's Update branch, which needs nothing from this.
@@ -145,20 +158,28 @@ while read -r pr head_sha author head_ref; do
         continue
     fi
     # The workflow's token cannot push a commit that changes a workflow.
-    if git diff --name-only "$head_sha" "$merge_sha" | grep -q '^\.github/workflows/'; then
+    if [[ -n "$(git diff --name-only "$head_sha" "$merge_sha" -- .github/workflows/)" ]]; then
         skip "the merge brings in workflow changes from $BASE_BRANCH, which this token cannot push. Use Update branch first."
         git reset --quiet --hard "$head_sha"
         continue
     fi
-
-    if ! still_approved "$pr" "$head_sha"; then
-        skip "its approval or head changed while this ran."
+    # Its held runs would run the pull request's own workflow code, which is not this job's to approve.
+    if [[ -n "$(git diff --name-only "$base_sha" "$merge_sha" -- .github/workflows/)" ]]; then
+        skip "it changes workflows, and the runs they would hold are not approved by this."
+        git reset --quiet --hard "$head_sha"
         continue
     fi
+
+    check_approved "$pr" "$head_sha" || continue
     if ! out=$(git push --quiet origin "$merge_sha:refs/heads/$head_ref" 2>&1); then
         # A plain push fails rather than overwrite anything pushed since the fetch.
-        echo "::warning::Could not push the resolved merge to #$pr: $out"
-        status=1
+        if git fetch --quiet --no-tags origin "+refs/heads/$head_ref:refs/remotes/origin/$head_ref" 2>/dev/null \
+            && [[ "$(git rev-parse "refs/remotes/origin/$head_ref")" != "$head_sha" ]]; then
+            skip "its branch moved on while this ran."
+        else
+            echo "::warning::Could not push the resolved merge to #$pr: $out"
+            status=1
+        fi
         continue
     fi
     echo "Resolved the CHANGELOG.md conflict on #$pr with ${merge_sha:0:12}."
@@ -172,6 +193,7 @@ fi
 # One wait for every push, approving each held pull_request run of a workflow the base branch has.
 polls=$(( RUNS_WAIT_SECONDS / RUNS_POLL_SECONDS ))
 approved=" "
+failed_runs=" "
 while :; do
     for entry in "${pushed[@]}"; do
         sha="${entry#* }"
@@ -185,15 +207,16 @@ while :; do
             if [[ -z "$run_id" || "$conclusion" != action_required || "$approved" == *" $run_id "* ]]; then
                 continue
             fi
-            approved+="$run_id "
             if [[ "$base_workflows" != *" ${path%%@*} "* ]]; then
+                approved+="$run_id "
                 echo "::warning::Left held run $run_id of $path, which $BASE_BRANCH does not have."
                 status=1
             elif out=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/approve" 2>&1); then
+                approved+="$run_id "
                 echo "Approved held run $run_id."
             else
-                echo "::warning::Could not approve held run $run_id: $out"
-                status=1
+                # Tried again on the next poll; the job fails only if it never goes through.
+                failed_runs+="$run_id "
             fi
         done <<< "$runs"
     done
@@ -202,13 +225,19 @@ while :; do
     fi
     sleep "$RUNS_POLL_SECONDS"
 done
+for run_id in $failed_runs; do
+    if [[ "$approved" != *" $run_id "* ]]; then
+        echo "::warning::Could not approve held run $run_id."
+        status=1
+    fi
+done
 
 for entry in "${pushed[@]}"; do
     pr="${entry%% *}" sha="${entry#* }"
-    # The human approval was dismissed by the push, so this checks nobody requested changes meanwhile.
-    if ! decisions=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews?per_page=100" \
-        --jq '.[] | select(.state == "CHANGES_REQUESTED" and .commit_id == "'"$sha"'") | .id' 2>&1) || [[ -n "$decisions" ]]; then
-        echo "::warning::Resolved #$pr, but did not approve it again, since changes were requested or the reviews could not be read."
+    # The push dismissed the approval, so this checks the pull request is still as pushed and nobody
+    # has requested changes since.
+    if ! still_approved "$pr" "$sha" any; then
+        echo "::warning::Resolved #$pr, but did not approve it again, since it changed, changes were requested, or it could not be read."
         status=1
         continue
     fi
