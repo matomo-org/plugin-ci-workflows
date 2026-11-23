@@ -3,12 +3,13 @@
 # resolve_changelog_conflict.py can resolve, pushes the merge, and has the approver token approve it
 # again, so a pull request that conflicts only on its changelog line can still be merged as approved.
 #
-# Only a pull request from a branch of this repository is touched, and only while it is approved:
-# that approval is what gets carried forward. It is approved again only when, file by file, the lines
-# it adds and removes are the same before and after the merge, apart from a version line the base
-# branch now has too. The merge is pushed with the workflow's token, so the approver is not the last
-# pusher, and the pull_request runs that push leaves held for approval are approved.
-# Anything else is left as it was, with a notice saying why.
+# Only a pull request from a branch of this repository is touched, and only while its newest approval
+# is on its current head and nobody has requested changes: that approval is what gets carried forward,
+# so it is checked again just before the push and before approving. It is approved again only when,
+# file by file, the lines it adds and removes are the same before and after the merge, apart from a
+# version or blank line the base branch now has too. The merge is pushed with the workflow's token, so
+# the approver is not the last pusher, and the pull_request runs that push leaves held are approved,
+# for workflows the base branch already has. Anything else is left as it was, with a notice saying why.
 # Usage: resolve_changelog_conflicts.sh <base-branch> [pull request number]
 
 set -euo pipefail
@@ -22,7 +23,7 @@ BOT_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
 RUNS_WAIT_SECONDS="${RUNS_WAIT_SECONDS:-120}"
 RUNS_POLL_SECONDS="${RUNS_POLL_SECONDS:-15}"
 
-if [[ -z "$BASE_BRANCH" ]]; then
+if [[ ! "$BASE_BRANCH" =~ ^[0-9A-Za-z._/-]+$ ]]; then
     echo "Usage: resolve_changelog_conflicts.sh <base-branch> [pull request number]" >&2
     exit 1
 fi
@@ -35,6 +36,10 @@ if [[ -z "${APPROVER_TOKEN:-}" ]]; then
     echo "::error::No approver token, so no conflict was resolved. Pass approver-token under secrets:." >&2
     exit 1
 fi
+if ! approver=$(GH_TOKEN="$APPROVER_TOKEN" gh api user --jq .login 2>&1); then
+    echo "::error::Could not look up the approver token's user: $approver" >&2
+    exit 1
+fi
 
 git config user.name "$BOT_NAME"
 git config user.email "$BOT_EMAIL"
@@ -42,6 +47,8 @@ git config merge.conflictStyle zdiff3
 git fetch --quiet --tags origin "+refs/heads/$BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH"
 base_sha=$(git rev-parse "refs/remotes/origin/$BASE_BRANCH")
 mapfile -t released < <(git tag -l | sed 's/^v//')
+# Held runs are approved only for these, so a run is never approved for a workflow the branch lacks.
+base_workflows=" $(git ls-tree --name-only "$base_sha" .github/workflows/ | paste -sd' ') "
 
 # Prints "file<TAB>+line" or "file<TAB>-line" for each line a diff adds or removes, sorted.
 changed_lines() {
@@ -56,50 +63,51 @@ skip() {
     echo "::notice::#$pr was left as it is, because $1"
 }
 
-# Approves the pull_request runs a push by the workflow's token leaves held, until RUNS_WAIT_SECONDS
-# have passed, so the required checks report on the merge.
-approve_held_runs() {
-    local sha="$1" polls=$(( RUNS_WAIT_SECONDS / RUNS_POLL_SECONDS )) approved=" " runs run_id conclusion
-    while :; do
-        runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&event=pull_request" \
-            --jq '.workflow_runs[] | "\(.id) \(.conclusion)"') || runs=''
-        while read -r run_id conclusion; do
-            if [[ -z "$run_id" || "$conclusion" != action_required || "$approved" == *" $run_id "* ]]; then
-                continue
-            fi
-            approved+="$run_id "
-            if out=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/approve" 2>&1); then
-                echo "Approved held run $run_id."
-            else
-                echo "::warning::Could not approve held run $run_id: $out"
-            fi
-        done <<< "$runs"
-        if (( polls-- <= 0 )); then
-            break
-        fi
-        sleep "$RUNS_POLL_SECONDS"
-    done
+# Succeeds while the pull request is open against the base, from the same head, with its newest
+# approval on that head and no review requesting changes since.
+still_approved() {
+    local pr="$1" sha="$2" state
+    state=$(gh pr view "$pr" --json state,baseRefName,headRefOid,reviewDecision \
+        --jq '"\(.state) \(.baseRefName) \(.headRefOid) \(.reviewDecision)"') || return 1
+    [[ "$state" == "OPEN $BASE_BRANCH $sha APPROVED" ]] || return 1
+    # Each reviewer's newest decisive review counts; the newest approval must be on this head.
+    state=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews?per_page=100" \
+        --jq '.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED") | "\(.user.login) \(.state) \(.commit_id)"') \
+        || return 1
+    awk -v sha="$sha" '{ last[$1] = $2 " " $3 } END {
+            for (u in last) { split(last[u], s, " "); if (s[1] == "CHANGES_REQUESTED") exit 1; if (s[2] == sha) ok = 1 }
+            exit ok ? 0 : 1 }' <<< "$state"
 }
 
 filter='.[] | select(.isCrossRepository == false and .reviewDecision == "APPROVED")
-    | "\(.number) \(.headRefOid) \(.headRefName)"'
+    | "\(.number) \(.headRefOid) \(.author.login) \(.headRefName)"'
 if [[ -n "$ONLY_PR" ]]; then
-    candidates=$(gh pr view "$ONLY_PR" --json number,baseRefName,headRefOid,headRefName,isCrossRepository,reviewDecision,state \
+    candidates=$(gh pr view "$ONLY_PR" --json number,baseRefName,headRefOid,headRefName,isCrossRepository,reviewDecision,state,author \
         --jq "[select(.state == \"OPEN\" and .baseRefName == \"$BASE_BRANCH\")] | $filter")
     if [[ -z "$candidates" ]]; then
-        echo "::notice::#$ONLY_PR is not an open, approved pull request from this repository against $BASE_BRANCH."
+        echo "::notice::#$ONLY_PR is not an open, approved pull request from this repository against $BASE_BRANCH. Run this on the branch it targets."
     fi
 else
-    candidates=$(gh pr list --base "$BASE_BRANCH" --state open --limit 200 \
-        --json number,headRefOid,headRefName,isCrossRepository,reviewDecision --jq "$filter")
+    # Far beyond the open pull requests any plugin has; gh pages through them.
+    candidates=$(gh pr list --base "$BASE_BRANCH" --state open --limit 1000 \
+        --json number,headRefOid,headRefName,isCrossRepository,reviewDecision,author --jq "$filter")
 fi
 
 status=0
-while read -r pr head_sha head_ref; do
+pushed=()
+while read -r pr head_sha author head_ref; do
     [[ -n "$pr" ]] || continue
-    git fetch --quiet --no-tags origin "+refs/heads/$head_ref:refs/remotes/origin/$head_ref"
-    if [[ "$(git rev-parse "refs/remotes/origin/$head_ref")" != "$head_sha" ]]; then
-        skip "its branch moved on while this ran."
+    if [[ "$author" == "$approver" ]]; then
+        skip "the approver token's user opened it, and GitHub refuses an approval of one's own pull request."
+        continue
+    fi
+    if ! git fetch --quiet --no-tags origin "+refs/heads/$head_ref:refs/remotes/origin/$head_ref" 2>/dev/null \
+        || [[ "$(git rev-parse "refs/remotes/origin/$head_ref")" != "$head_sha" ]]; then
+        skip "its branch moved on or went away while this ran."
+        continue
+    fi
+    if ! still_approved "$pr" "$head_sha"; then
+        skip "its newest approval is not on its head, or changes are requested."
         continue
     fi
     git checkout --quiet --detach "$head_sha"
@@ -110,8 +118,8 @@ while read -r pr head_sha head_ref; do
     fi
     conflicted=$(git diff --name-only --diff-filter=U)
     if [[ "$conflicted" != CHANGELOG.md ]]; then
-        git merge --abort
-        skip "it conflicts in more than CHANGELOG.md: $(echo "$conflicted" | paste -sd' ')."
+        git merge --abort 2>/dev/null || git reset --quiet --hard "$head_sha"
+        skip "it does not conflict in CHANGELOG.md alone: $(echo "${conflicted:-the merge failed without a conflict}" | paste -sd' ')."
         continue
     fi
     if ! reason=$(python3 -I "$RESOLVER" CHANGELOG.md "${released[@]}" 2>&1 >"$RUNNER_TEMP/CHANGELOG.md"); then
@@ -129,7 +137,7 @@ while read -r pr head_sha head_ref; do
     after=$(changed_lines "$base_sha" "$merge_sha")
     gained=$(LC_ALL=C comm -13 <(echo "$before") <(echo "$after"))
     lost=$(LC_ALL=C comm -23 <(echo "$before") <(echo "$after") \
-        | grep -vxF -f <(git show "$base_sha:CHANGELOG.md" | grep -E '^(#*[ \t]*v?[0-9]+\.[0-9]+\.[0-9]+|[[:space:]]*$)' \
+        | grep -vxF -f <(git show "$base_sha:CHANGELOG.md" | grep -E '^(#*[[:blank:]]*v?[0-9]+\.[0-9]+\.[0-9]+|[[:space:]]*$)' \
             | sed 's/^/CHANGELOG.md\t+/') || true)
     if [[ -n "$gained" || -n "$lost" ]]; then
         skip "resolving the conflict would change what it adds or removes."
@@ -143,6 +151,10 @@ while read -r pr head_sha head_ref; do
         continue
     fi
 
+    if ! still_approved "$pr" "$head_sha"; then
+        skip "its approval or head changed while this ran."
+        continue
+    fi
     if ! out=$(git push --quiet origin "$merge_sha:refs/heads/$head_ref" 2>&1); then
         # A plain push fails rather than overwrite anything pushed since the fetch.
         echo "::warning::Could not push the resolved merge to #$pr: $out"
@@ -150,14 +162,63 @@ while read -r pr head_sha head_ref; do
         continue
     fi
     echo "Resolved the CHANGELOG.md conflict on #$pr with ${merge_sha:0:12}."
-    approve_held_runs "$merge_sha"
+    pushed+=("$pr $merge_sha")
+done <<< "$candidates"
+
+if (( ${#pushed[@]} == 0 )); then
+    exit "$status"
+fi
+
+# One wait for every push, approving each held pull_request run of a workflow the base branch has.
+polls=$(( RUNS_WAIT_SECONDS / RUNS_POLL_SECONDS ))
+approved=" "
+while :; do
+    for entry in "${pushed[@]}"; do
+        sha="${entry#* }"
+        if ! runs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&event=pull_request&per_page=100" \
+            --jq '.workflow_runs[] | "\(.id) \(.conclusion) \(.path)"' 2>&1); then
+            echo "::warning::Could not list the runs on ${sha:0:12}: $runs"
+            status=1
+            continue
+        fi
+        while read -r run_id conclusion path; do
+            if [[ -z "$run_id" || "$conclusion" != action_required || "$approved" == *" $run_id "* ]]; then
+                continue
+            fi
+            approved+="$run_id "
+            if [[ "$base_workflows" != *" ${path%%@*} "* ]]; then
+                echo "::warning::Left held run $run_id of $path, which $BASE_BRANCH does not have."
+                status=1
+            elif out=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/approve" 2>&1); then
+                echo "Approved held run $run_id."
+            else
+                echo "::warning::Could not approve held run $run_id: $out"
+                status=1
+            fi
+        done <<< "$runs"
+    done
+    if (( polls-- <= 0 )); then
+        break
+    fi
+    sleep "$RUNS_POLL_SECONDS"
+done
+
+for entry in "${pushed[@]}"; do
+    pr="${entry%% *}" sha="${entry#* }"
+    # The human approval was dismissed by the push, so this checks nobody requested changes meanwhile.
+    if ! decisions=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews?per_page=100" \
+        --jq '.[] | select(.state == "CHANGES_REQUESTED" and .commit_id == "'"$sha"'") | .id' 2>&1) || [[ -n "$decisions" ]]; then
+        echo "::warning::Resolved #$pr, but did not approve it again, since changes were requested or the reviews could not be read."
+        status=1
+        continue
+    fi
     # With commit_id, GitHub refuses (422) once someone has pushed on top of the merge.
     if ! out=$(GH_TOKEN="$APPROVER_TOKEN" gh api --method POST "repos/$GITHUB_REPOSITORY/pulls/$pr/reviews" \
-        -f event=APPROVE -f "commit_id=$merge_sha" \
+        -f event=APPROVE -f "commit_id=$sha" \
         -f "body=Merged $BASE_BRANCH and resolved the CHANGELOG.md conflict; the pull request's own changes are as approved before, so the approval stands." \
         2>&1 >/dev/null); then
         echo "::warning::Resolved #$pr, but could not approve it again, so it needs a new review: $out"
         status=1
     fi
-done <<< "$candidates"
+done
 exit "$status"

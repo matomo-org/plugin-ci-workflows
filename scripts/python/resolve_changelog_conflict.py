@@ -5,7 +5,8 @@ The merge must be run with merge.conflictStyle=zdiff3, so a version line both si
 the conflict. A conflict is resolved only when nothing was there before (an empty base section) and
 both sides hold nothing but "-" or "*" list lines: the base branch's lines are kept first and the pull
 request's follow them, as if it had been merged second. The version they land in must not be released,
-that is tagged or dated, or the pull request's lines would join a release they are not part of.
+that is tagged or followed by anything but an Unreleased, TBD or TBA marker, such as a date, or the
+pull request's lines would join a release they are not part of.
 Anything else is a conflict for a person, and the reason goes to stderr with exit status 2.
 Usage: resolve_changelog_conflict.py <conflicted CHANGELOG.md> [released version ...]
 """
@@ -14,7 +15,8 @@ import sys
 
 LIST_LINE = re.compile(r"[-*][ \t]+\S")
 VERSION_LINE = re.compile(r"#*[ \t]*v?(?P<number>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?P<rest>.*)$")
-DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+# Anything else after the version, a date in whatever form included, is read as released.
+UNRELEASED_REST = re.compile(r"[ \t]*(?:[-–—:][ \t]*)?(?:\(?(?:unreleased|not yet released|tbd|tba)\)?)?[ \t]*$", re.I)
 
 
 class Unresolvable(Exception):
@@ -63,7 +65,7 @@ def resolve(lines, released):
         version = version_above(resolved)
         if version is None:
             raise Unresolvable("a conflict is not under a version line")
-        if version.group("number") in released or DATE.search(version.group("rest")):
+        if version.group("number") in released or not UNRELEASED_REST.match(version.group("rest")):
             raise Unresolvable(f"the lines would land in {version.group('number')}, which is released")
         resolved.extend(theirs)
         resolved.extend(ours)

@@ -32,6 +32,8 @@ conflict='6.0.3\n<<<<<<< HEAD\n- PR\n||||||| 1\n=======\n- Base\n>>>>>>> base\n\
     || fail "the base branch's line should come first and the pull request's after it"
 resolve "$conflict" 6.0.3 >/dev/null 2>&1 && fail "a tagged version should be left for a person"
 resolve "${conflict/6.0.3/6.0.3 - 2026-11-01}" >/dev/null 2>&1 && fail "a dated version should be left for a person"
+resolve "${conflict/6.0.3/6.0.3 (15/11/2026)}" >/dev/null 2>&1 && fail "a version dated another way should be left for a person"
+resolve "${conflict/6.0.3/## 6.0.3 - Unreleased}" >/dev/null 2>&1 || fail "an Unreleased version should be resolved"
 resolve "${conflict/||||||| 1/||||||| 1\\n- Old}" >/dev/null 2>&1 && fail "a changed existing line should be left for a person"
 resolve "${conflict/- PR/6.0.4\\n- PR}" >/dev/null 2>&1 && fail "a version line in the conflict should be left for a person"
 resolve '- Two\n<<<<<<< HEAD\n- PR\n||||||| 1\n=======\n- Base\n>>>>>>> base\n' >/dev/null 2>&1 \
@@ -46,7 +48,9 @@ FAKE_BIN="$WORK/bin"
 mkdir -p "$FAKE_BIN"
 cat > "$FAKE_BIN/gh" <<'SH'
 #!/bin/bash
-# FAKE_PRS is number:branch:decision:cross triples, read live from origin for each head.
+# FAKE_PRS is number:branch:decision:cross[:author] entries, read live from origin for each head.
+# Every pull request has one approval, on its head unless FAKE_APPROVED_SHA names another commit,
+# followed by a request for changes when FAKE_CHANGES_REQUESTED is set.
 args="$*"
 echo "$args" >> "$FAKE_GH_LOG"
 filter() {
@@ -59,19 +63,32 @@ filter() {
 }
 prs() {
     for entry in $FAKE_PRS; do
-        IFS=: read -r number branch decision cross <<< "$entry"
+        IFS=: read -r number branch decision cross author <<< "$entry"
         jq -n --argjson n "$number" --arg b "$branch" --arg d "$decision" --argjson c "$cross" \
-            --arg sha "$(git -C "$FAKE_ORIGIN" rev-parse "refs/heads/$branch")" \
+            --arg sha "$(git -C "$FAKE_ORIGIN" rev-parse "refs/heads/$branch")" --arg a "${author:-dev}" \
             '{number: $n, baseRefName: "6.x-dev", headRefName: $b, headRefOid: $sha, reviewDecision: $d,
-              isCrossRepository: $c, state: "OPEN"}'
+              isCrossRepository: $c, state: "OPEN", author: {login: $a}}'
     done
 }
 case "$args" in
+    'api user '*) [[ "$GH_TOKEN" == approver ]] && echo approver-user ;;
     'pr list '*) prs | jq -s . | filter "$@" ;;
     'pr view '*) prs | jq -s ".[] | select(.number == $3)" | filter "$@" ;;
-    *'/actions/runs?'*) jq -n '{workflow_runs: [{id: 7, conclusion: "action_required"}]}' | filter "$@" ;;
-    *'/approve') ;;
     *'--method POST '*'/reviews '*) [[ "$GH_TOKEN" == approver ]] || exit 1 ;;
+    *'/reviews?'*)
+        number="${args#*pulls/}" number="${number%%/*}"
+        sha=$(prs | jq -r "select(.number == $number) | .headRefOid")
+        jq -n --arg s "${FAKE_APPROVED_SHA:-$sha}" --arg h "$sha" --arg cr "${FAKE_CHANGES_REQUESTED:-}" \
+            '[{user: {login: "reviewer"}, state: "APPROVED", commit_id: $s}]
+             + if $cr == "" then [] else [{user: {login: "other"}, state: "CHANGES_REQUESTED", commit_id: $h}] end' \
+            | filter "$@"
+        ;;
+    # Run 7 is of a workflow the base branch has; run 8, with FAKE_UNKNOWN_RUN, of one it does not.
+    *'/actions/runs?'*)
+        jq -n --arg u "${FAKE_UNKNOWN_RUN:-}" '{workflow_runs: ([{id: 7, conclusion: "action_required", path: ".github/workflows/ci.yml@refs/pull/1/merge"}]
+            + if $u == "" then [] else [{id: 8, conclusion: "action_required", path: ".github/workflows/added.yml@refs/pull/1/merge"}] end)}' \
+            | filter "$@" ;;
+    *'/approve') ;;
 esac
 SH
 chmod +x "$FAKE_BIN/gh"
@@ -97,6 +114,8 @@ new_repo() {
     printf '{"version":"6.0.3"}\n' > "$seed/plugin.json"
     printf '%s' "$CHANGELOG" > "$seed/CHANGELOG.md"
     printf '<?php\n' > "$seed/API.php"
+    mkdir -p "$seed/.github/workflows"
+    printf 'name: CI\n' > "$seed/.github/workflows/ci.yml"
     git -C "$seed" add .
     git -C "$seed" commit -q -m initial
     git -C "$seed" tag 6.0.2
@@ -132,7 +151,9 @@ run() {
 # approved again, with its line after the base branch's.
 new_repo resolved feature=Feature base=Base
 export FAKE_PRS='1:feature:APPROVED:false'
-run resolved || fail "the resolve run failed: $(cat "$WORK/resolved/out")"
+FAKE_UNKNOWN_RUN=1 run resolved && fail "a run left held should fail the job"
+grep -q 'Left held run 8' "$WORK/resolved/out" || fail "a run of a workflow the base lacks should be left held"
+grep -q 'runs/8/approve' "$FAKE_GH_LOG" && fail "a run of a workflow the base lacks should not be approved"
 [[ "$(git -C "$FAKE_ORIGIN" show feature:CHANGELOG.md | sed -n '4,6p')" == "$(printf -- '- Three\n- Base\n- Feature')" ]] \
     || fail "the pushed changelog should hold the base line then the pull request's"
 git -C "$FAKE_ORIGIN" merge-base --is-ancestor 6.x-dev feature || fail "the push should be a merge of 6.x-dev"
@@ -161,23 +182,43 @@ export FAKE_PRS='1:feature:APPROVED:false'
 run bump || fail "the run with a shared new version failed: $(cat "$WORK/bump/out")"
 [[ "$(git -C "$FAKE_ORIGIN" show feature:CHANGELOG.md | sed -n '3,5p')" == "$(printf -- '6.0.4\n- 6.x-dev\n- feature')" ]] \
     || fail "a shared new version should hold both lines"
-grep -q '/reviews' "$FAKE_GH_LOG" || fail "a shared new version should be approved again"
+grep -q 'POST .*/reviews' "$FAKE_GH_LOG" || fail "a shared new version should be approved again"
 
-# Not approved, from a fork, or with no conflict: nothing is pushed or approved.
-for case in 'unapproved:REVIEW_REQUIRED:false' 'fork:APPROVED:true'; do
-    IFS=: read -r name decision cross <<< "$case"
+# Not approved, from a fork, opened by the approver, approved on an older commit, or with changes
+# requested: nothing is pushed or approved.
+for case in 'unapproved:REVIEW_REQUIRED:false' 'fork:APPROVED:true' 'own:APPROVED:false:approver-user' \
+    'stale:APPROVED:false' 'changes:APPROVED:false'; do
+    IFS=: read -r name decision cross author <<< "$case"
     new_repo "$name" feature=Feature base=Base
     before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
-    export FAKE_PRS="1:feature:$decision:$cross"
-    run "$name" || fail "the $name run failed"
+    export FAKE_PRS="1:feature:$decision:$cross:$author"
+    FAKE_APPROVED_SHA='' FAKE_CHANGES_REQUESTED=''
+    [[ "$name" == stale ]] && FAKE_APPROVED_SHA=$(git -C "$FAKE_ORIGIN" rev-parse 6.x-dev)
+    [[ "$name" == changes ]] && FAKE_CHANGES_REQUESTED=1
+    export FAKE_APPROVED_SHA FAKE_CHANGES_REQUESTED
+    run "$name" || fail "the $name run failed: $(cat "$WORK/$name/out")"
     [[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "the $name pull request should be left alone"
 done
+unset FAKE_APPROVED_SHA FAKE_CHANGES_REQUESTED
+
+# A line both sides added elsewhere drops out of the pull request's diff, so it is not approved again.
+new_repo same feature=Feature base=Base
+seed="$WORK/same/seed"
+for side in feature 6.x-dev; do
+    git -C "$seed" checkout -q "$side" && printf '<?php\n// same\n' > "$seed/API.php" && git -C "$seed" commit -q -am same
+done
+git -C "$FAKE_ORIGIN" fetch -q "$seed" '+refs/heads/*:refs/heads/*'
+export FAKE_PRS='1:feature:APPROVED:false'
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+run same || fail "the run with a shared line failed"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a changed diff should be left alone"
+grep -q 'would change what it adds or removes' "$WORK/same/out" || fail "the notice should say the diff would change"
 new_repo clean feature=Feature
 export FAKE_PRS='1:feature:APPROVED:false'
 before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
 run clean || fail "the clean run failed"
 [[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a pull request with no conflict should be left alone"
-grep -q '/reviews' "$FAKE_GH_LOG" && fail "a pull request with no conflict should not be approved"
+grep -q 'POST .*/reviews' "$FAKE_GH_LOG" && fail "a pull request with no conflict should not be approved"
 
 # A conflict beyond CHANGELOG.md is left for a person, with a notice.
 new_repo plugin feature=Feature base=Base
@@ -188,7 +229,7 @@ git -C "$FAKE_ORIGIN" fetch -q "$seed" '+refs/heads/*:refs/heads/*'
 before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
 run plugin || fail "the run with a plugin.json conflict failed"
 [[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a plugin.json conflict should be left alone"
-grep -q 'more than CHANGELOG.md: CHANGELOG.md plugin.json' "$WORK/plugin/out" || fail "the notice should name the files"
+grep -q 'does not conflict in CHANGELOG.md alone: CHANGELOG.md plugin.json' "$WORK/plugin/out" || fail "the notice should name the files"
 
 # A conflict landing in a released version is left for a person.
 new_repo released feature=Feature base=Base

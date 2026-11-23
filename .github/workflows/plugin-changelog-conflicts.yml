@@ -28,9 +28,12 @@ on:
 
 permissions: {}
 
-# Queued rather than cancelled, so two merges in quick succession cannot interrupt a push halfway.
+# A running job is never cancelled, so a push is not interrupted halfway. GitHub keeps only the newest
+# waiting run of a group, which loses nothing for runs that check every pull request; a run for one pull
+# request has its own group so it cannot displace those. Pushes are not forced, so two runs racing on
+# the same branch cannot overwrite each other.
 concurrency:
-  group: plugin-changelog-conflicts-${{ github.ref_name }}
+  group: plugin-changelog-conflicts-${{ github.ref_name }}-${{ inputs.pull-request || 'all' }}
   cancel-in-progress: false
 
 jobs:
@@ -41,7 +44,6 @@ jobs:
       actions: write # approve the pull_request runs the merge push leaves held
       contents: write # push the merge to the pull request branch
       pull-requests: read
-    # Up to two minutes per resolved pull request waiting on held runs.
     timeout-minutes: 30
     env:
       GITHUB_TOKEN: ${{ github.token }}
