@@ -95,6 +95,7 @@ check_approved() {
     return "$result"
 }
 
+status=0
 filter='.[] | select(.isCrossRepository == false and .reviewDecision == "APPROVED")
     | "\(.number) \(.headRefOid) \(.author.login) \(.headRefName)"'
 if [[ -n "$ONLY_PR" ]]; then
@@ -105,11 +106,15 @@ if [[ -n "$ONLY_PR" ]]; then
     fi
 else
     # Far beyond the open pull requests any plugin has; gh pages through them.
-    candidates=$(gh pr list --base "$BASE_BRANCH" --state open --limit 1000 \
-        --json number,headRefOid,headRefName,isCrossRepository,reviewDecision,author --jq "$filter")
+    open_prs=$(gh pr list --base "$BASE_BRANCH" --state open --limit 1000 \
+        --json number,headRefOid,headRefName,isCrossRepository,reviewDecision,author)
+    if [[ "$(jq length <<< "$open_prs")" -ge 1000 ]]; then
+        echo "::warning::Only the first 1000 open pull requests against $BASE_BRANCH were checked."
+        status=1
+    fi
+    candidates=$(jq -r "$filter" <<< "$open_prs")
 fi
 
-status=0
 pushed=()
 while read -r pr head_sha author head_ref; do
     [[ -n "$pr" ]] || continue
@@ -193,7 +198,8 @@ fi
 # One wait for every push, approving each held pull_request run of a workflow the base branch has.
 polls=$(( RUNS_WAIT_SECONDS / RUNS_POLL_SECONDS ))
 approved=" "
-failed_runs=" "
+# The last error of each held run whose approval failed and is tried again on the next poll.
+declare -A failed_runs=()
 while :; do
     for entry in "${pushed[@]}"; do
         sha="${entry#* }"
@@ -204,6 +210,10 @@ while :; do
             continue
         fi
         while read -r run_id conclusion path; do
+            if [[ -n "$run_id" && "$conclusion" != action_required ]]; then
+                # Approved or cancelled by someone else since.
+                unset "failed_runs[$run_id]"
+            fi
             if [[ -z "$run_id" || "$conclusion" != action_required || "$approved" == *" $run_id "* ]]; then
                 continue
             fi
@@ -213,10 +223,10 @@ while :; do
                 status=1
             elif out=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/approve" 2>&1); then
                 approved+="$run_id "
+                unset "failed_runs[$run_id]"
                 echo "Approved held run $run_id."
             else
-                # Tried again on the next poll; the job fails only if it never goes through.
-                failed_runs+="$run_id "
+                failed_runs[$run_id]="$out"
             fi
         done <<< "$runs"
     done
@@ -225,11 +235,9 @@ while :; do
     fi
     sleep "$RUNS_POLL_SECONDS"
 done
-for run_id in $failed_runs; do
-    if [[ "$approved" != *" $run_id "* ]]; then
-        echo "::warning::Could not approve held run $run_id."
-        status=1
-    fi
+for run_id in "${!failed_runs[@]}"; do
+    echo "::warning::Could not approve held run $run_id: ${failed_runs[$run_id]}"
+    status=1
 done
 
 for entry in "${pushed[@]}"; do

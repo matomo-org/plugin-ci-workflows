@@ -95,7 +95,13 @@ case "$args" in
         jq -n --arg u "${FAKE_UNKNOWN_RUN:-}" '{workflow_runs: ([{id: 7, conclusion: "action_required", path: ".github/workflows/ci.yml@refs/pull/1/merge"}]
             + if $u == "" then [] else [{id: 8, conclusion: "action_required", path: ".github/workflows/added.yml@refs/pull/1/merge"}] end)}' \
             | filter "$@" ;;
-    *'/approve') ;;
+    # FAKE_APPROVE_FAIL=always fails every held-run approval, =once only the first.
+    *'/approve')
+        case "${FAKE_APPROVE_FAIL:-}" in
+            always) echo "HTTP 500" >&2; exit 1 ;;
+            once) [[ -e "$FAKE_ORIGIN.failed" ]] || { touch "$FAKE_ORIGIN.failed"; echo "HTTP 500" >&2; exit 1; } ;;
+        esac
+        ;;
 esac
 SH
 chmod +x "$FAKE_BIN/gh"
@@ -242,6 +248,14 @@ new_repo unreadable feature=Feature base=Base
 before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
 FAKE_REVIEWS_FAIL=1 run unreadable && fail "unreadable reviews should fail the job"
 [[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a pull request whose reviews cannot be read should be left alone"
+
+# A held-run approval that fails once is tried again on the next poll; one that never goes through
+# fails the job with GitHub's error.
+new_repo retry feature=Feature base=Base
+FAKE_APPROVE_FAIL=once RUNS_WAIT_SECONDS=1 run retry || fail "a held-run approval should be tried again: $(cat "$WORK/retry/out")"
+new_repo held feature=Feature base=Base
+FAKE_APPROVE_FAIL=always run held && fail "a held run never approved should fail the job"
+grep -q 'Could not approve held run 7: HTTP 500' "$WORK/held/out" || fail "the warning should carry GitHub's error"
 
 new_repo clean feature=Feature
 export FAKE_PRS='1:feature:APPROVED:false'
