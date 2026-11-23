@@ -677,6 +677,81 @@ says translate-unbumpable 'release_needed=false' || fail "translations whose ver
 says translate-unbumpable '::warning::Translations were merged into 6.x-dev after 6.0.3, but they are not released' \
     || fail "translations that cannot be released warn"
 
+# --- bump_plugin_translations.sh ---
+
+bump_tip() {
+    git -C "$WORK/$1/origin.git" rev-parse --verify -q automated/translation-version-6.0.4 || true
+}
+
+new_translated bump 'Translations update from Weblate:lang/de.json'
+run bump bump_plugin_translations.sh 6.x-dev || { cat "$WORK/bump/out" >&2; fail "translations are bumped"; }
+bumped=$(bump_tip bump)
+{ says bump "sha=$bumped" && [[ -n "$bumped" ]] && says bump 'version=6.0.4'; } || fail "the bump's version and pushed commit are written out"
+[[ "$(git -C "$WORK/bump/origin.git" show "$bumped:plugin.json")" == '{"name":"TestPlugin","version":"6.0.4"}' ]] \
+    || fail "the bump moves plugin.json to the next patch"
+[[ "$(git -C "$WORK/bump/origin.git" show "$bumped:CHANGELOG.md" | sed -n 3,4p)" == $'### 6.0.4\n* Updated translations' ]] \
+    || fail "the bump adds an undated Updated translations entry"
+[[ "$(git -C "$WORK/bump/origin.git" rev-parse "$bumped^")" == "$(git -C "$WORK/bump/origin.git" rev-parse 6.x-dev)" ]] \
+    || fail "the bump sits on the branch's tip"
+[[ "$(git -C "$WORK/bump/origin.git" log -1 --format='%ae %ce' "$bumped")" \
+    == 'github-actions[bot]@users.noreply.github.com github-actions[bot]@users.noreply.github.com' ]] \
+    || fail "the bump is the workflow's commit"
+
+# Another date, so a commit made again would not be the same one.
+GIT_AUTHOR_DATE=2026-10-13T00:00:00Z GIT_COMMITTER_DATE=2026-10-13T00:00:00Z run bump bump_plugin_translations.sh 6.x-dev \
+    || fail "a rerun succeeds"
+{ [[ "$(bump_tip bump)" == "$bumped" ]] && says bump "sha=$bumped"; } || fail "a rerun on the same tip keeps the pushed commit"
+
+git -C "$WORK/bump/clone" checkout -q 6.x-dev
+run bump prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations with a bump pending are skipped, not failed"
+{ says bump 'release_needed=false' && says bump 'already moves plugin.json to 6.0.4' \
+   ; } || fail "the weekly release leaves translations to a pending bump"
+
+# A translation merged after the bump was pushed moves the bump onto the new tip.
+printf '{"x":"y"}\n' > "$WORK/bump/clone/lang/fr.json"
+git -C "$WORK/bump/clone" checkout -q 6.x-dev
+git -C "$WORK/bump/clone" reset -q --hard origin/6.x-dev
+git -C "$WORK/bump/clone" add lang/fr.json
+git -C "$WORK/bump/clone" commit -q -m 'Translations update from Weblate'
+git -C "$WORK/bump/clone" push -q origin 6.x-dev
+git -C "$WORK/bump/clone" checkout -q --detach HEAD~1
+run bump bump_plugin_translations.sh 6.x-dev || fail "translations merged after a pushed bump are bumped"
+[[ "$(git -C "$WORK/bump/origin.git" rev-parse "$(bump_tip bump)^")" == "$(git -C "$WORK/bump/origin.git" rev-parse 6.x-dev)" ]] \
+    || fail "the bump is rebuilt on origin's tip, not the checkout's"
+
+new_translated bump-hand 'Translations update from Weblate:lang/de.json'
+run bump-hand bump_plugin_translations.sh 6.x-dev || fail "a bump to be amended by hand is pushed"
+git -C "$WORK/bump-hand/clone" fetch -q origin automated/translation-version-6.0.4
+git -C "$WORK/bump-hand/clone" checkout -q FETCH_HEAD
+git -C "$WORK/bump-hand/clone" commit -q --allow-empty -m 'Note'
+git -C "$WORK/bump-hand/clone" push -q origin HEAD:automated/translation-version-6.0.4
+hand_tip=$(bump_tip bump-hand)
+printf '{"x":"y"}\n' > "$WORK/bump-hand/clone/lang/fr.json"
+git -C "$WORK/bump-hand/clone" checkout -q 6.x-dev
+git -C "$WORK/bump-hand/clone" add lang/fr.json
+git -C "$WORK/bump-hand/clone" commit -q -m 'Translations update from Weblate'
+git -C "$WORK/bump-hand/clone" push -q origin 6.x-dev
+run bump-hand bump_plugin_translations.sh 6.x-dev || fail "a bump branch someone added to is skipped, not failed"
+{ [[ "$(bump_tip bump-hand)" == "$hand_tip" ]] && says bump-hand 'sha=' && ! says bump-hand "sha=$hand_tip" \
+   ; } || fail "a bump branch with someone else's commit is left alone"
+
+new_translated bump-code 'Translations update from Weblate:lang/de.json' 'Fix a bug:Controller.php'
+run bump-code bump_plugin_translations.sh 6.x-dev || fail "translations behind a code change are skipped, not failed"
+[[ -z "$(bump_tip bump-code)" ]] || fail "translations behind a code change are not bumped"
+
+new_translated bump-unreleased 'Translations update from Weblate:lang/de.json'
+set_version bump-unreleased 6.0.4
+git -C "$WORK/bump-unreleased/clone" commit -q -am 'Start 6.0.4'
+git -C "$WORK/bump-unreleased/clone" push -q origin 6.x-dev
+git -C "$WORK/bump-unreleased/clone" checkout -q --detach HEAD~1
+run bump-unreleased bump_plugin_translations.sh 6.x-dev || fail "translations under an unreleased version are skipped, not failed"
+{ [[ -z "$(bump_tip bump-unreleased)" ]] && says bump-unreleased 'not released yet' \
+   ; } || fail "translations under an unreleased version on origin's tip are not bumped"
+
+new_vendored_pending bump-vendored 6.0.4
+run bump-vendored bump_plugin_translations.sh 6.x-dev || fail "translations behind a vendored update are skipped, not failed"
+[[ -z "$(bump_tip bump-vendored)" ]] || fail "translations do not take the patch an open vendored update bumps to"
+
 # --- check_plugin_release_date.sh ---
 
 new_repo check-undated '* 6.0.3 Three'
