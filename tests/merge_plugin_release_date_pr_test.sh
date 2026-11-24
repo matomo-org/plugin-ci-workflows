@@ -641,6 +641,15 @@ bump_run "$FAKE_HEAD" 6.0.3 || fail "a translation version pull request for a re
 if grep -Fq 'pr create' "$FAKE_GH_LOG" || merged; then fail "a translation version pull request for a version released meanwhile is never merged"; fi
 says '6.0.3 was released while' || fail "a translation version pull request for a released version says why"
 
+reset translation-bump-released-open
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.3"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=35
+bump_run "$FAKE_HEAD" 6.0.3 || fail "an open translation version pull request for a released version is left alone, not failed"
+grep -Fq ' pr close 35 --delete-branch ' "$FAKE_GH_LOG" \
+    || fail "an open translation version pull request for a version released before this run is closed"
+if merged; then fail "an open translation version pull request for a released version is never merged"; fi
+
 reset translation-bump-released-late
 FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
 git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"

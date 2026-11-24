@@ -163,9 +163,9 @@ stop_if_released() {
         exit 1
     fi
 }
-stop_if_released
-
+# Looked up first, so a pull request an earlier run opened is closed if the version is already tagged.
 pr=$(find_pr)
+stop_if_released
 if [[ -z "$pr" ]]; then
     # Nothing to open when the base already had the date, or a person merged it before a resumed run.
     branch_status=0
