@@ -86,6 +86,9 @@ new_repo() {
     if [[ "$calls_release" == yes ]]; then
         printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n' \
             > "$seed/.github/workflows/release.yml"
+    elif [[ "$calls_release" == other-branch ]]; then
+        printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    with:\n      release-branch: 5.x-dev\n' \
+            > "$seed/.github/workflows/release.yml"
     elif [[ "$calls_release" == commented ]]; then
         printf 'jobs:\n  release:\n    # uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    runs-on: ubuntu-24.04\n' \
             > "$seed/.github/workflows/release.yml"
@@ -751,6 +754,59 @@ run bump-unreleased bump_plugin_translations.sh 6.x-dev || fail "translations un
 new_vendored_pending bump-vendored 6.0.4
 run bump-vendored bump_plugin_translations.sh 6.x-dev || fail "translations behind a vendored update are skipped, not failed"
 [[ -z "$(bump_tip bump-vendored)" ]] || fail "translations do not take the patch an open vendored update bumps to"
+
+new_translated bump-dated 'Translations update from Weblate:lang/de.json'
+git -C "$WORK/bump-dated/clone" push -q origin 6.0.3:refs/heads/automated/release-date-6.0.3
+run bump-dated bump_plugin_translations.sh 6.x-dev || fail "translations after a merged release date are bumped, not failed"
+[[ -n "$(bump_tip bump-dated)" ]] || fail "a release date branch left after its pull request merged does not hold translations"
+
+# Tags <name>'s clone at 6.0.3 and pushes a translation update after it.
+translate_after_tag() {
+    local clone="$WORK/$1/clone"
+    git -C "$clone" tag 6.0.3
+    mkdir -p "$clone/lang"
+    printf '{"de":"x"}\n' > "$clone/lang/de.json"
+    git -C "$clone" add lang/de.json
+    git -C "$clone" commit -q -m 'Translations update from Weblate'
+    git -C "$clone" push -q origin 6.x-dev refs/tags/6.0.3
+}
+
+new_repo bump-date-pending '* 6.0.3 - Three'
+translate_after_tag bump-date-pending
+git -C "$WORK/bump-date-pending/clone" push -q origin 6.0.3:refs/heads/automated/release-date-6.0.3
+run bump-date-pending bump_plugin_translations.sh 6.x-dev || fail "translations before a release date merges are skipped, not failed"
+{ [[ -z "$(bump_tip bump-date-pending)" ]] && says bump-date-pending 'release date pull request is not merged yet'; } \
+    || fail "translations wait for the release date pull request they would conflict with"
+
+new_repo bump-no-release '* 6.0.3 - 2026-10-05 - Three' no
+translate_after_tag bump-no-release
+run bump-no-release bump_plugin_translations.sh 6.x-dev || fail "a plugin without the weekly release is skipped, not failed"
+{ [[ -z "$(bump_tip bump-no-release)" ]] && says bump-no-release 'does not call plugin-dev-release.yml'; } \
+    || fail "a plugin the weekly release does not release gets no translation bump"
+
+new_repo bump-other-branch '* 6.0.3 - 2026-10-05 - Three' other-branch
+translate_after_tag bump-other-branch
+run bump-other-branch bump_plugin_translations.sh 6.x-dev || fail "a branch the weekly release skips is skipped, not failed"
+{ [[ -z "$(bump_tip bump-other-branch)" ]] && says bump-other-branch 'is not released by the weekly release'; } \
+    || fail "translations on a branch the weekly release skips are not bumped"
+
+new_repo bump-no-changelog '* 6.0.3 - 2026-10-05 - Three'
+git -C "$WORK/bump-no-changelog/clone" rm -q CHANGELOG.md
+git -C "$WORK/bump-no-changelog/clone" commit -q -m 'Drop the changelog'
+translate_after_tag bump-no-changelog
+run bump-no-changelog bump_plugin_translations.sh 6.x-dev \
+    || { cat "$WORK/bump-no-changelog/out" >&2; fail "a plugin without a changelog is warned about, not failed"; }
+{ [[ -z "$(bump_tip bump-no-changelog)" ]] && says bump-no-changelog 'could not be bumped'; } \
+    || fail "a plugin without a changelog gets a warning and no bump"
+
+new_translated translate-claimed 'Translations update from Weblate:lang/de.json'
+git -C "$WORK/translate-claimed/clone" push -q origin 6.x-dev:refs/heads/automated/translation-version-6.0.4
+if RELEASE_BUMP_ENTRY='Updated translations' run translate-claimed push_plugin_release_date.sh 6.x-dev; then
+    fail "a translation release the after-merge bump claimed meanwhile is not dated"
+fi
+{ says translate-claimed 'was pushed during this run' \
+    && ! git -C "$WORK/translate-claimed/origin.git" rev-parse -q --verify automated/release-date-6.0.4 > /dev/null; } \
+    || fail "a translation release stops when the after-merge bump claims its patch"
 
 # --- check_plugin_release_date.sh ---
 

@@ -82,6 +82,11 @@ jobs:
             echo "GIT_CONFIG_VALUE_0=!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
           } >> "$GITHUB_ENV"
 
+      # The weekly release check fails closed without PyYAML; see plugin-ci.yml for why the install is conditional.
+      - name: Install the YAML parser the bump needs
+        shell: bash
+        run: python3 -P -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+
       - name: Bump the version
         id: bump
         shell: bash

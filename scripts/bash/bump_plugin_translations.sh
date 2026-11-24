@@ -47,13 +47,40 @@ git fetch --quiet --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRA
 git checkout --quiet --detach "refs/remotes/origin/$BRANCH"
 base_sha=$(git rev-parse HEAD)
 
-# -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
-if ! VERSION=$(python3 -P -c 'import json; print(json.load(open("plugin.json", encoding="utf-8"))["version"])' 2>&1); then
-    echo "::error file=plugin.json::Could not read the version from plugin.json: $VERSION" >&2
+# Only the weekly release releases the bumped version, so a plugin or branch it does not release is left alone.
+shopt -s nullglob
+workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
+shopt -u nullglob
+calls_status=0
+calls_output=$(python3 -I "$SCRIPT_DIR/../python/weekly_release_branches.py" \
+    'plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@' "${workflow_files[@]}") || calls_status=$?
+if (( calls_status == 3 )); then
+    nothing "This plugin does not call plugin-dev-release.yml, so its translations are not bumped."
+elif (( calls_status != 0 )); then
+    echo "::error::Could not read the plugin's workflows: $calls_output" >&2
     exit 1
 fi
+if ! grep -qxF -- "$BRANCH" <<< "$calls_output" \
+    && ! { [[ "$BRANCH" =~ ^[0-9]+\.x-dev$ ]] && grep -qxF '*' <<< "$calls_output"; }; then
+    nothing "$BRANCH is not released by the weekly release, so its translations are not bumped."
+fi
+
+# -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
+if ! metadata=$(python3 -P -c 'import json; p = json.load(open("plugin.json", encoding="utf-8")); print(p["version"]); print(p["name"])' 2>&1); then
+    echo "::error file=plugin.json::Could not read the version and name from plugin.json: $metadata" >&2
+    exit 1
+fi
+mapfile -t metadata_lines <<< "$metadata"
+VERSION="${metadata_lines[0]}"
 if ! tagged "$VERSION"; then
     nothing "$VERSION is not released yet, so translations merged into $BRANCH are released with it."
+fi
+# A bump merged before the release's date pull request would conflict with it, as both edit the top
+# of the changelog.
+if grep -qxF "refs/heads/automated/release-date-$VERSION" <<< "$(cut -f2 <<< "$remote_refs")" \
+    && ! python3 -I "$SCRIPT_DIR/../python/update_changelog_date.py" \
+        --read-date --plugin-name "${metadata_lines[1]}" CHANGELOG.md "$VERSION" > /dev/null 2>&1; then
+    nothing "The $VERSION release date pull request is not merged yet, so translations wait for it."
 fi
 translation_release "$VERSION" || nothing "Nothing on $BRANCH since $VERSION calls for a translation release."
 
@@ -61,7 +88,8 @@ bump_status=0
 bump_note=$(python3 -I "$SCRIPT_DIR/../python/bump_plugin_version.py" . released "$TRANSLATION_ENTRY") || bump_status=$?
 bumped=$(python3 -P -c 'import json; print(json.load(open("plugin.json", encoding="utf-8"))["version"])' 2> /dev/null) || bumped=""
 if (( bump_status != 0 )) || [[ "$bumped" != "$translation_version" ]]; then
-    git checkout --quiet -- plugin.json CHANGELOG.md
+    # Not a checkout of the two files by name: a plugin may have no CHANGELOG.md.
+    git reset --quiet --hard
     echo "::warning::Translations were merged into $BRANCH after $VERSION, but the version could not be bumped for them: $bump_note"
     nothing "The weekly release tries again."
 fi

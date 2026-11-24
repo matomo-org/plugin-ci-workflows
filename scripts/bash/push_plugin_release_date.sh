@@ -61,6 +61,20 @@ elif (( tag_status != 2 )); then
     error "Could not list the tags on origin."
 fi
 
+# The after-merge bump (bump_plugin_translations.sh) may have claimed this patch since the release was
+# prepared, and the two would conflict.
+if [[ -n "${RELEASE_BUMP_ENTRY:-}" ]]; then
+    claimed_status=0
+    git ls-remote --exit-code --heads origin "refs/heads/automated/translation-version-$VERSION" > /dev/null \
+        || claimed_status=$?
+    if (( claimed_status == 0 )); then
+        git checkout --quiet -- "${RELEASE_FILES[@]}"
+        error "automated/translation-version-$VERSION was pushed during this run, so the translations are released with it instead."
+    elif (( claimed_status != 2 )); then
+        error "Could not list the branches on origin."
+    fi
+fi
+
 # Plugins CI fails a dated entry on a pull request, so a date on the branch was pushed by hand and
 # is about to be replaced. HEAD is not read, since a rerun in the same checkout sits on our own date.
 if hand_date=$(git show "refs/remotes/origin/$TARGET_BRANCH:CHANGELOG.md" 2> /dev/null \

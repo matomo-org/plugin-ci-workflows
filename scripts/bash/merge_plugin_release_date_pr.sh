@@ -31,7 +31,11 @@ if [[ -n "$BUMP_SHA" ]]; then
     BRANCH="automated/translation-version-$VERSION"
     KIND="Translation version"
     TITLE="Bump version to $VERSION for updated translations"
-    BODY="Records the translation updates merged since the last release as $VERSION, which the weekly release then releases."
+    # The AI checklist gate fails a body without its two items, and no AI made this change.
+    BODY="Records the translation updates merged since the last release as $VERSION, which the weekly release then releases.
+
+- [NA] I have understood, reviewed, and tested all AI outputs before use
+- [NA] All AI instructions respect security, IP, and privacy rules"
     APPROVAL_BODY="Bumps the version to $VERSION for translations; approved by the after-merge workflow."
     HEAD_NAME="the translation bump commit"
 else
@@ -134,6 +138,19 @@ if [[ -n "$BUMP_SHA" ]]; then
     release_sha=$(git rev-parse --verify "$BUMP_SHA^{commit}")
 else
     release_sha=$(git rev-parse "refs/tags/$VERSION^{commit}")
+fi
+
+# The weekly release may have released this patch itself since the bump was pushed.
+if [[ -n "$BUMP_SHA" ]]; then
+    tag_status=0
+    git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null || tag_status=$?
+    if (( tag_status == 0 )); then
+        echo "::warning::$VERSION was released while $BRANCH waited, so it is neither opened nor merged; delete the branch."
+        exit 0
+    elif (( tag_status != 2 )); then
+        echo "::error::Could not list the tags on origin." >&2
+        exit 1
+    fi
 fi
 
 pr=$(find_pr)
