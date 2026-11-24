@@ -1,9 +1,14 @@
 """Prints the branch each plugin-dev-release.yml call in the given workflow files releases from:
 its release-branch, or * for N.x-dev. Exits 3 when no job calls it, and 1 with the error on stdout
-when a workflow cannot be read or a release-branch is unusable.
-Usage: weekly_release_branches.py <uses-target> <workflow-file>..."""
+when a workflow cannot be read or a release-branch is unusable. With --translations, a call that does
+not release translations, by its release-translations input, is left out.
+Usage: weekly_release_branches.py [--translations] <uses-target> <workflow-file>..."""
 import sys, yaml
-target = sys.argv[1]
+args = sys.argv[1:]
+translations_only = args[:1] == ['--translations']
+if translations_only:
+    args = args[1:]
+target = args[0]
 found = False
 release_branches = []
 
@@ -12,7 +17,7 @@ def fail(message):
     print(message)
     sys.exit(1)
 
-for path in sys.argv[2:]:
+for path in args[1:]:
     try:
         with open(path, encoding='utf-8') as handle:
             doc = yaml.safe_load(handle)
@@ -32,6 +37,9 @@ for path in sys.argv[2:]:
             if branch is not None and not isinstance(branch, str):
                 # YAML reads 1.10 as the number 1.1, so the branch name is already lost.
                 fail(f'{path}: quote release-branch, it is read as {branch!r}')
+            # Anything but the default or a literal true, an expression included, may turn translations off.
+            if translations_only and (inputs if isinstance(inputs, dict) else {}).get('release-translations', True) is not True:
+                continue
             # '*' cannot be a branch name, so it marks a call that releases from N.x-dev.
             release_branches.append(branch if isinstance(branch, str) and branch else '*')
 if not found:

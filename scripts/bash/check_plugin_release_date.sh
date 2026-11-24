@@ -40,7 +40,7 @@ fi
 # unreadable workflow cannot pass as a plugin that does not. That holds on every branch, as the
 # branch to check comes from the workflows. Prints each call's release-branch, or the error.
 calls_status=0
-calls_output=$(python3 -I "$SCRIPT_DIR/../python/weekly_release_branches.py" "$RELEASE_WORKFLOW" "${workflow_files[@]}") || calls_status=$?
+calls_output=$(python3 -P "$SCRIPT_DIR/../python/weekly_release_branches.py" "$RELEASE_WORKFLOW" "${workflow_files[@]}") || calls_status=$?
 if (( calls_status == 3 )); then
     echo "This plugin does not call plugin-dev-release.yml, so its changelog dates are its own."
     exit 0

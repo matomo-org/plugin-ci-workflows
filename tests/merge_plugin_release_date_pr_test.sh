@@ -33,7 +33,11 @@ case "$*" in
         if [[ -n "$number" ]]; then prs=$(jq -c --argjson n "$number" '. + [{number: $n, isCrossRepository: false}]' <<< "$prs"); fi
         filter <<< "$prs"
         ;;
-    'pr create '*) echo 35 > "$FAKE_GH_LOG.pr" ;;
+    'pr create '*)
+        echo 35 > "$FAKE_GH_LOG.pr"
+        # A release tagged while the pull request is opened, from the checkout gh runs in.
+        if [[ -n "${FAKE_TAG_ON_CREATE:-}" ]]; then git push -q origin "$FAKE_TAG_ON_CREATE"; fi
+        ;;
     # FAKE_LATE_HEAD is the head from the second look on.
     'pr view '*'--json headRefOid'*)
         head="$FAKE_HEAD"
@@ -159,7 +163,7 @@ reset() {
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_COMMITS="$BOT_EMAIL:$BOT_EMAIL" FAKE_RUNS='' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
     unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR \
         FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR FAKE_LATE_HEAD FAKE_LATE_HEAD_ERROR \
-        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE
+        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE FAKE_TAG_ON_CREATE
 }
 
 run() {
@@ -618,7 +622,7 @@ says 'its head is not the translation bump commit' || fail "a moved translation 
 reset translation-bump-open
 FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
 TAGGED="$FAKE_HEAD"
-git -C "$WORK/clone" push -q origin "$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
 export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=''
 bump_run "$FAKE_HEAD" || { cat "$OUT" >&2; fail "a translation version pull request is opened"; }
 grep -Fq 'pr create --base 6.x-dev --head automated/translation-version-6.0.4 --title Bump version to 6.0.4 for updated translations' "$FAKE_GH_LOG" \
@@ -634,5 +638,14 @@ export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=''
 bump_run "$FAKE_HEAD" 6.0.3 || fail "a translation version pull request for a released version is left alone, not failed"
 if grep -Fq 'pr create' "$FAKE_GH_LOG" || merged; then fail "a translation version pull request for a version released meanwhile is never merged"; fi
 says '6.0.3 was released while' || fail "a translation version pull request for a released version says why"
+
+reset translation-bump-released-late
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CREATE="$FAKE_HEAD:refs/tags/6.0.4"
+bump_run "$FAKE_HEAD" || fail "a translation version pull request released while it opens is left alone, not failed"
+if merged; then fail "a translation version pull request whose version is tagged after it opens is never merged"; fi
+says '6.0.4 was released while' || fail "a translation version pull request released while it opens says why"
+git -C "$WORK/clone" push -q origin :refs/tags/6.0.4
 
 echo 'All release date merge tests passed.'

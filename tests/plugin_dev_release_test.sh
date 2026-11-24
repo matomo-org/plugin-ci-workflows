@@ -89,6 +89,9 @@ new_repo() {
     elif [[ "$calls_release" == other-branch ]]; then
         printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    with:\n      release-branch: 5.x-dev\n' \
             > "$seed/.github/workflows/release.yml"
+    elif [[ "$calls_release" == no-translations ]]; then
+        printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    with:\n      release-translations: false\n' \
+            > "$seed/.github/workflows/release.yml"
     elif [[ "$calls_release" == commented ]]; then
         printf 'jobs:\n  release:\n    # uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    runs-on: ubuntu-24.04\n' \
             > "$seed/.github/workflows/release.yml"
@@ -787,8 +790,14 @@ run bump-no-release bump_plugin_translations.sh 6.x-dev || fail "a plugin withou
 new_repo bump-other-branch '* 6.0.3 - 2026-10-05 - Three' other-branch
 translate_after_tag bump-other-branch
 run bump-other-branch bump_plugin_translations.sh 6.x-dev || fail "a branch the weekly release skips is skipped, not failed"
-{ [[ -z "$(bump_tip bump-other-branch)" ]] && says bump-other-branch 'is not released by the weekly release'; } \
+{ [[ -z "$(bump_tip bump-other-branch)" ]] && says bump-other-branch 'does not release translations on 6.x-dev'; } \
     || fail "translations on a branch the weekly release skips are not bumped"
+
+new_repo bump-opted-out '* 6.0.3 - 2026-10-05 - Three' no-translations
+translate_after_tag bump-opted-out
+run bump-opted-out bump_plugin_translations.sh 6.x-dev || fail "a plugin that releases its translations by hand is skipped, not failed"
+{ [[ -z "$(bump_tip bump-opted-out)" ]] && says bump-opted-out 'does not release translations on 6.x-dev'; } \
+    || fail "release-translations: false also turns off the translation bump"
 
 new_repo bump-no-changelog '* 6.0.3 - 2026-10-05 - Three'
 git -C "$WORK/bump-no-changelog/clone" rm -q CHANGELOG.md

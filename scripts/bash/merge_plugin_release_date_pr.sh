@@ -140,18 +140,21 @@ else
     release_sha=$(git rev-parse "refs/tags/$VERSION^{commit}")
 fi
 
-# The weekly release may have released this patch itself since the bump was pushed.
-if [[ -n "$BUMP_SHA" ]]; then
-    tag_status=0
+# The weekly release may have released this patch itself since the bump was pushed, so a bump checks
+# before it opens the pull request and again before it merges it.
+stop_if_released() {
+    [[ -n "$BUMP_SHA" ]] || return 0
+    local tag_status=0
     git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null || tag_status=$?
     if (( tag_status == 0 )); then
-        echo "::warning::$VERSION was released while $BRANCH waited, so it is neither opened nor merged; delete the branch."
+        echo "::warning::$VERSION was released while $BRANCH waited, so it is not merged; close any pull request from it and delete the branch."
         exit 0
     elif (( tag_status != 2 )); then
         echo "::error::Could not list the tags on origin." >&2
         exit 1
     fi
-fi
+}
+stop_if_released
 
 pr=$(find_pr)
 if [[ -z "$pr" ]]; then
@@ -245,6 +248,7 @@ fi
 
 # --auto merges straight away when nothing required is outstanding, and otherwise once it is, so the
 # release never waits on checks the branch protection does not require.
+stop_if_released
 merge=(gh pr merge "$pr" --merge --match-head-commit "$head_sha")
 if ! merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" --auto 2>&1); then
     # gh only asks for auto-merge when GitHub has not yet said the pull request can merge now, and

@@ -47,12 +47,13 @@ git fetch --quiet --no-tags origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRA
 git checkout --quiet --detach "refs/remotes/origin/$BRANCH"
 base_sha=$(git rev-parse HEAD)
 
-# Only the weekly release releases the bumped version, so a plugin or branch it does not release is left alone.
+# Only the weekly release releases the bumped version, so a plugin or branch whose translations it does not
+# release, release-translations: false included, is left alone.
 shopt -s nullglob
 workflow_files=(.github/workflows/*.yml .github/workflows/*.yaml)
 shopt -u nullglob
 calls_status=0
-calls_output=$(python3 -I "$SCRIPT_DIR/../python/weekly_release_branches.py" \
+calls_output=$(python3 -P "$SCRIPT_DIR/../python/weekly_release_branches.py" --translations \
     'plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@' "${workflow_files[@]}") || calls_status=$?
 if (( calls_status == 3 )); then
     nothing "This plugin does not call plugin-dev-release.yml, so its translations are not bumped."
@@ -62,7 +63,7 @@ elif (( calls_status != 0 )); then
 fi
 if ! grep -qxF -- "$BRANCH" <<< "$calls_output" \
     && ! { [[ "$BRANCH" =~ ^[0-9]+\.x-dev$ ]] && grep -qxF '*' <<< "$calls_output"; }; then
-    nothing "$BRANCH is not released by the weekly release, so its translations are not bumped."
+    nothing "The weekly release does not release translations on $BRANCH, so they are not bumped."
 fi
 
 # -P keeps the plugin checkout, the working directory, off the import path, so its json.py cannot stand in for the real module.
