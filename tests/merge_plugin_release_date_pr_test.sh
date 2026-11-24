@@ -121,6 +121,8 @@ case "$*" in
     # FAKE_CHECKS_SLEEP outlasts a timeout.
     'pr checks '*)
         sleep "${FAKE_CHECKS_SLEEP:-0}"
+        # A release tagged while the checks run, from the checkout gh runs in.
+        if [[ -n "${FAKE_TAG_ON_CHECKS:-}" ]]; then git push -q origin "$FAKE_TAG_ON_CHECKS"; fi
         printf '%b' "${FAKE_CHECKS_OUTPUT:-}"
         exit "${FAKE_CHECKS_STATUS:-0}"
         ;;
@@ -163,7 +165,7 @@ reset() {
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_COMMITS="$BOT_EMAIL:$BOT_EMAIL" FAKE_RUNS='' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
     unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR \
         FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR FAKE_LATE_HEAD FAKE_LATE_HEAD_ERROR \
-        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE FAKE_TAG_ON_CREATE
+        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE FAKE_TAG_ON_CREATE FAKE_TAG_ON_CHECKS
 }
 
 run() {
@@ -642,10 +644,24 @@ says '6.0.3 was released while' || fail "a translation version pull request for 
 reset translation-bump-released-late
 FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
 git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
-export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CREATE="$FAKE_HEAD:refs/tags/6.0.4"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CREATE="$FAKE_HEAD:refs/tags/6.0.4" \
+    RELEASE_APPROVER_TOKEN=approver-token
 bump_run "$FAKE_HEAD" || fail "a translation version pull request released while it opens is left alone, not failed"
-if merged; then fail "a translation version pull request whose version is tagged after it opens is never merged"; fi
+if grep -Eq 'event=APPROVE| pr review | pr merge ' "$FAKE_GH_LOG"; then fail "a translation version pull request whose version is tagged after it opens is never merged"; fi
 says '6.0.4 was released while' || fail "a translation version pull request released while it opens says why"
+git -C "$WORK/clone" push -q origin :refs/tags/6.0.4
+
+reset translation-bump-released-during-checks
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CHECKS="$FAKE_HEAD:refs/tags/6.0.4" \
+    RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED"
+bump_run "$FAKE_HEAD" || fail "a translation version pull request released while its checks run is left alone, not failed"
+grep -Fq ' pr checks 35 ' "$FAKE_GH_LOG" || fail "without auto-merge the bump waits on its checks"
+if grep -Eq " pr merge 35 --merge --match-head-commit $FAKE_HEAD$" "$FAKE_GH_LOG"; then
+    fail "a translation version pull request whose version is tagged while its checks run is never merged"
+fi
+says '6.0.4 was released while' || fail "a translation version pull request released while its checks run says why"
 git -C "$WORK/clone" push -q origin :refs/tags/6.0.4
 
 echo 'All release date merge tests passed.'

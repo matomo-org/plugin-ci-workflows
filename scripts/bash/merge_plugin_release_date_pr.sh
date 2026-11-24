@@ -141,7 +141,8 @@ else
 fi
 
 # The weekly release may have released this patch itself since the bump was pushed, so a bump checks
-# before it opens the pull request and again before it merges it.
+# before it opens the pull request, before it approves it, and before a merge that waited on checks.
+# Auto-merge, once enabled, merges without a further check.
 stop_if_released() {
     [[ -n "$BUMP_SHA" ]] || return 0
     local tag_status=0
@@ -232,6 +233,7 @@ if [[ "$current_head" != "$head_sha" ]]; then
     leave_open "its head moved on from $HEAD_NAME during the wait."
 fi
 
+stop_if_released
 if [[ -n "${RELEASE_APPROVER_TOKEN:-}" ]]; then
     # gh pr review approves whatever the head is by then; with commit_id, GitHub refuses (422) once the head
     # has moved on from the tagged commit.
@@ -248,7 +250,6 @@ fi
 
 # --auto merges straight away when nothing required is outstanding, and otherwise once it is, so the
 # release never waits on checks the branch protection does not require.
-stop_if_released
 merge=(gh pr merge "$pr" --merge --match-head-commit "$head_sha")
 if ! merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" --auto 2>&1); then
     # gh only asks for auto-merge when GitHub has not yet said the pull request can merge now, and
@@ -314,6 +315,7 @@ if ! merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" --auto 2>&1); then
                     *) leave_open "auto-merge is not allowed, and its required checks have passed but it is $(annotation "$merge_state")." ;;
                 esac
             done
+            stop_if_released
             merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" 2>&1) || leave_open "$merge_output"
             ;;
         *) leave_open "$merge_output" ;;
