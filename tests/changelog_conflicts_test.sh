@@ -74,7 +74,21 @@ prs() {
 case "$args" in
     'api user '*) [[ "$GH_TOKEN" == approver ]] && echo approver-user ;;
     'pr list '*) prs | jq -s . | filter "$@" ;;
-    'pr view '*) prs | jq -s ".[] | select(.number == $3)" | filter "$@" ;;
+    # FAKE_STALE_HEAD=n reports the head from before the resolved merge for the first n views after it.
+    'pr view '*)
+        # FAKE_TAG_ON_VIEW tags 6.x-dev with it on the first view, as a release made while the job runs.
+        if [[ -n "${FAKE_TAG_ON_VIEW:-}" ]] && ! git -C "$FAKE_ORIGIN" rev-parse -q --verify "refs/tags/$FAKE_TAG_ON_VIEW" >/dev/null; then
+            git -C "$FAKE_ORIGIN" tag "$FAKE_TAG_ON_VIEW" 6.x-dev
+        fi
+        view=$(prs | jq -s ".[] | select(.number == $3)")
+        sha=$(jq -r .headRefOid <<< "$view")
+        if [[ -n "${FAKE_STALE_HEAD:-}" ]] && git -C "$FAKE_ORIGIN" rev-parse -q --verify "$sha^2" >/dev/null \
+            && (( $(wc -l < <(cat "$FAKE_ORIGIN.views" 2>/dev/null)) < FAKE_STALE_HEAD )); then
+            echo >> "$FAKE_ORIGIN.views"
+            view=$(jq --arg old "$(git -C "$FAKE_ORIGIN" rev-parse "$sha^1")" '.headRefOid = $old' <<< "$view")
+        fi
+        filter "$@" <<< "$view"
+        ;;
     *'--method POST '*'/reviews '*) [[ "$GH_TOKEN" == approver ]] || exit 1 ;;
     *'/reviews?'*)
         [[ -z "${FAKE_REVIEWS_FAIL:-}" ]] || exit 1
@@ -85,13 +99,28 @@ case "$args" in
         if [[ "$cr" == after-push ]] && ! git -C "$FAKE_ORIGIN" rev-parse -q --verify "$sha^2" >/dev/null; then
             cr=''
         fi
-        jq -n --arg s "${FAKE_APPROVED_SHA:-$sha}" --arg h "$sha" --arg cr "$cr" \
-            '[{user: {login: "reviewer"}, state: "APPROVED", commit_id: $s}]
+        # FAKE_APP_APPROVER adds an approval on the head from an app, whose permission cannot be read.
+        jq -n --arg s "${FAKE_APPROVED_SHA:-$sha}" --arg h "$sha" --arg cr "$cr" --arg app "${FAKE_APP_APPROVER:-}" \
+            '(if $app == "" then [] else [{user: {login: "app[bot]"}, state: "APPROVED", commit_id: $h}] end)
+             + [{user: {login: "reviewer"}, state: "APPROVED", commit_id: $s}]
              + if $cr == "" then [] else [{user: {login: "other"}, state: "CHANGES_REQUESTED", commit_id: $h}] end' \
             | filter "$@"
         ;;
+    # FAKE_PERMISSION is the reviewer's permission on the repository.
+    # FAKE_PERMISSION_FAIL fails the reviewer's lookup too.
+    *'/collaborators/app[bot]/permission'*) echo "HTTP 404" >&2; exit 1 ;;
+    *'/collaborators/'*'/permission'*)
+        [[ -z "${FAKE_PERMISSION_FAIL:-}" ]] || { echo "HTTP 502" >&2; exit 1; }
+        jq -n --arg p "${FAKE_PERMISSION:-write}" '{permission: $p}' | filter "$@"
+        ;;
     # Run 7 is of a workflow the base branch has; run 8, with FAKE_UNKNOWN_RUN, of one it does not.
+    # FAKE_LIST_FAIL=once fails the first listing.
     *'/actions/runs?'*)
+        if [[ -n "${FAKE_LIST_FAIL:-}" && ! -e "$FAKE_ORIGIN.listed" ]]; then
+            touch "$FAKE_ORIGIN.listed"
+            echo "HTTP 502" >&2
+            exit 1
+        fi
         jq -n --arg u "${FAKE_UNKNOWN_RUN:-}" '{workflow_runs: ([{id: 7, conclusion: "action_required", path: ".github/workflows/ci.yml@refs/pull/1/merge"}]
             + if $u == "" then [] else [{id: 8, conclusion: "action_required", path: ".github/workflows/added.yml@refs/pull/1/merge"}] end)}' \
             | filter "$@" ;;
@@ -105,6 +134,16 @@ case "$args" in
 esac
 SH
 chmod +x "$FAKE_BIN/gh"
+# FAKE_RESOLVER_CRASH makes the resolver fail as a crash would, not as a conflict left for a person.
+cat > "$FAKE_BIN/python3" <<SH
+#!/bin/bash
+if [[ -n "\${FAKE_RESOLVER_CRASH:-}" && "\$*" == *resolve_changelog_conflict.py* ]]; then
+    echo 'Traceback (most recent call last):' >&2
+    exit 1
+fi
+exec $(command -v python3) "\$@"
+SH
+chmod +x "$FAKE_BIN/python3"
 export PATH="$FAKE_BIN:$PATH"
 
 CHANGELOG='## Changelog
@@ -173,6 +212,8 @@ git -C "$FAKE_ORIGIN" merge-base --is-ancestor 6.x-dev feature || fail "the push
 grep -q 'runs/7/approve' "$FAKE_GH_LOG" || fail "the held run should be approved"
 grep -q "commit_id=$(git -C "$FAKE_ORIGIN" rev-parse feature)" "$FAKE_GH_LOG" \
     || fail "the approval should be pinned to the pushed merge"
+(( $(grep -n 'POST .*/reviews' "$FAKE_GH_LOG" | cut -d: -f1) < $(grep -n '/actions/runs?' "$FAKE_GH_LOG" | head -1 | cut -d: -f1) )) \
+    || fail "the pull request should be approved again straight after the push, before the wait for held runs"
 
 # The same, when the pull request also changes code that merges cleanly.
 new_repo code code=Code base=Base
@@ -214,6 +255,51 @@ for case in 'unapproved:REVIEW_REQUIRED:false' 'fork:APPROVED:true' 'own:APPROVE
 done
 unset FAKE_APPROVED_SHA FAKE_CHANGES_REQUESTED
 
+# Approved on its head only by someone without write access: nothing is pushed or approved.
+new_repo readonly feature=Feature base=Base
+export FAKE_PRS='1:feature:APPROVED:false'
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+FAKE_PERMISSION='read' run readonly || fail "the readonly run failed: $(cat "$WORK/readonly/out")"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "an approval without write access should not be carried forward"
+grep -q 'from someone with write access' "$WORK/readonly/out" || fail "the notice should mention write access"
+
+# An app's approval whose permission cannot be read does not stop a write-access approval counting.
+new_repo app feature=Feature base=Base
+FAKE_APP_APPROVER=1 run app || fail "the app run failed: $(cat "$WORK/app/out")"
+git -C "$FAKE_ORIGIN" merge-base --is-ancestor 6.x-dev feature || fail "a write-access approval beside an app's should be carried forward"
+
+# No approver's permission can be read: nothing is pushed, and the job fails.
+new_repo nopermission feature=Feature base=Base
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+FAKE_PERMISSION_FAIL=1 run nopermission && fail "an unreadable permission should fail the job"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a pull request whose approver's permission cannot be read should be left alone"
+
+# GitHub showing the old head for a moment after the push: the approval waits for the new one.
+new_repo lag feature=Feature base=Base
+FAKE_STALE_HEAD=2 HEAD_POLL_SECONDS=1 HEAD_WAIT_SECONDS=5 run lag || fail "the lag run failed: $(cat "$WORK/lag/out")"
+grep -q 'POST .*/reviews' "$FAKE_GH_LOG" || fail "the approval should wait for GitHub to show the pushed head"
+
+# A pull request from a development branch is never merged into from its base.
+new_repo devbranch 5.x-dev=Feature base=Base
+export FAKE_PRS='1:5.x-dev:APPROVED:false'
+before=$(git -C "$FAKE_ORIGIN" rev-parse 5.x-dev)
+run devbranch || fail "the devbranch run failed: $(cat "$WORK/devbranch/out")"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse 5.x-dev)" == "$before" ]] || fail "a development branch should be left alone"
+grep -q 'is a development branch' "$WORK/devbranch/out" || fail "the notice should say it is a development branch"
+
+# The resolver crashing fails the job instead of passing as a conflict left for a person.
+new_repo crash feature=Feature base=Base
+export FAKE_PRS='1:feature:APPROVED:false'
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+FAKE_RESOLVER_CRASH=1 run crash && fail "a resolver crash should fail the job"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a pull request the resolver crashed on should be left alone"
+grep -q 'resolver failed on #1' "$WORK/crash/out" || fail "the warning should say the resolver failed"
+
+# A run listing that fails once and then succeeds does not fail the job.
+new_repo listing feature=Feature base=Base
+FAKE_LIST_FAIL=once RUNS_WAIT_SECONDS=1 run listing || fail "a run listing that recovers should not fail the job: $(cat "$WORK/listing/out")"
+grep -q 'runs/7/approve' "$FAKE_GH_LOG" || fail "the held run should be approved once the listing recovers"
+
 # A line both sides added elsewhere drops out of the pull request's diff, so it is not approved again.
 new_repo same feature=Feature base=Base
 seed="$WORK/same/seed"
@@ -226,6 +312,17 @@ before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
 run same || fail "the run with a shared line failed"
 [[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a changed diff should be left alone"
 grep -q 'would change what it adds or removes' "$WORK/same/out" || fail "the notice should say the diff would change"
+
+# The same for an added line that reads like a diff file header.
+new_repo header feature=Feature base=Base
+seed="$WORK/header/seed"
+for side in feature 6.x-dev; do
+    git -C "$seed" checkout -q "$side" && printf '<?php\n++ same\n' > "$seed/API.php" && git -C "$seed" commit -q -am same
+done
+git -C "$FAKE_ORIGIN" fetch -q "$seed" '+refs/heads/*:refs/heads/*'
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+run header || fail "the run with a header-like line failed"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a changed diff of header-like lines should be left alone"
 
 # A pull request that changes a workflow would have its own workflow code run, so it is left alone.
 new_repo workflow feature=Feature base=Base
@@ -283,6 +380,13 @@ before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
 run released || fail "the run against a released version failed"
 [[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a line landing in a released version should be left alone"
 grep -q 'which is released' "$WORK/released/out" || fail "the notice should say the version is released"
+
+# A version tagged after the job started is still treated as released.
+new_repo tagged feature=Feature base=Base
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+FAKE_TAG_ON_VIEW=6.0.3 run tagged || fail "the run with a version tagged meanwhile failed: $(cat "$WORK/tagged/out")"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "a line landing in a version tagged meanwhile should be left alone"
+grep -q 'which is released' "$WORK/tagged/out" || fail "the notice should say the version is released"
 
 # Without the approver token nothing is resolved.
 new_repo noapprover feature=Feature base=Base
