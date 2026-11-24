@@ -142,13 +142,21 @@ fi
 
 # The weekly release may have released this patch itself since the bump was pushed, so a bump checks
 # before it opens the pull request, before it approves it, and before a merge that waited on checks.
-# Auto-merge, once enabled, merges without a further check.
+# Auto-merge, once enabled, merges without a further check. A pull request already opened is closed, as it
+# may already carry the approval.
 stop_if_released() {
     [[ -n "$BUMP_SHA" ]] || return 0
     local tag_status=0
     git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null || tag_status=$?
     if (( tag_status == 0 )); then
-        echo "::warning::$VERSION was released while $BRANCH waited, so it is not merged; close any pull request from it and delete the branch."
+        if [[ -z "${pr:-}" ]]; then
+            echo "::warning::$VERSION was released while $BRANCH waited, so no pull request is opened for it; delete the branch."
+        elif gh pr close "$pr" --delete-branch \
+            --comment "$VERSION was released while this waited to merge, so it is closed." > /dev/null; then
+            echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed and the branch deleted."
+        else
+            echo "::warning::$VERSION was released while $BRANCH waited, and #$pr could not be closed; close it and delete the branch."
+        fi
         exit 0
     elif (( tag_status != 2 )); then
         echo "::error::Could not list the tags on origin." >&2

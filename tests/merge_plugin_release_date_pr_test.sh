@@ -658,6 +658,8 @@ export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CH
     RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED"
 bump_run "$FAKE_HEAD" || fail "a translation version pull request released while its checks run is left alone, not failed"
 grep -Fq ' pr checks 35 ' "$FAKE_GH_LOG" || fail "without auto-merge the bump waits on its checks"
+grep -Fq ' pr close 35 --delete-branch ' "$FAKE_GH_LOG" \
+    || fail "an approved translation version pull request whose version was released meanwhile is closed"
 if grep -Eq " pr merge 35 --merge --match-head-commit $FAKE_HEAD$" "$FAKE_GH_LOG"; then
     fail "a translation version pull request whose version is tagged while its checks run is never merged"
 fi
