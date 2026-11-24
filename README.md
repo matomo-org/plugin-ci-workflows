@@ -546,7 +546,8 @@ on:
 permissions:
   actions: write
   contents: write
-  pull-requests: read
+  # write, so a job added here that opens pull requests needs no caller change: a nested job gets no more than this.
+  pull-requests: write
 
 jobs:
   after-merge:
