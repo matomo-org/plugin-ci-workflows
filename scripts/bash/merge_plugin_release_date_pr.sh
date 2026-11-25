@@ -163,9 +163,27 @@ stop_if_released() {
         exit 1
     fi
 }
+# A push to the base after the bump was built queues a bump run that rebuilds it on the new tip or, if
+# the push is not a translation update, closes it, so a merge here would release that push as
+# translations. Auto-merge, once enabled, is left to that run.
+stop_if_base_moved() {
+    [[ -n "$BUMP_SHA" ]] || return 0
+    local base_tip
+    if ! base_tip=$(git ls-remote --exit-code --heads origin "refs/heads/$BASE_BRANCH"); then
+        echo "::error::Could not read $BASE_BRANCH on origin." >&2
+        exit 1
+    fi
+    if [[ "${base_tip%%[[:space:]]*}" != "$(git rev-parse "$release_sha^")" ]]; then
+        local left="the branch"
+        [[ -z "${pr:-}" ]] || left="#$pr"
+        echo "::notice::$BASE_BRANCH moved on after $BRANCH was built, so $left is left to the bump run for that push."
+        exit 0
+    fi
+}
 # Looked up first, so a pull request an earlier run opened is closed if the version is already tagged.
 pr=$(find_pr)
 stop_if_released
+stop_if_base_moved
 if [[ -z "$pr" ]]; then
     # Nothing to open when the base already had the date, or a person merged it before a resumed run.
     branch_status=0
@@ -242,6 +260,7 @@ if [[ "$current_head" != "$head_sha" ]]; then
 fi
 
 stop_if_released
+stop_if_base_moved
 if [[ -n "${RELEASE_APPROVER_TOKEN:-}" ]]; then
     # gh pr review approves whatever the head is by then; with commit_id, GitHub refuses (422) once the head
     # has moved on from the tagged commit.
@@ -324,6 +343,7 @@ if ! merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" --auto 2>&1); then
                 esac
             done
             stop_if_released
+            stop_if_base_moved
             merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" 2>&1) || leave_open "$merge_output"
             ;;
         *) leave_open "$merge_output" ;;
