@@ -409,7 +409,7 @@ export FAKE_PRS='1:feature:APPROVED:false'
 # An approver token whose user cannot write: nothing is pushed, and the job fails.
 new_repo readapprover feature=Feature base=Base
 before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
-FAKE_APPROVER_PERMISSION=read run readapprover && fail "an approver without write access should fail the job"
+FAKE_APPROVER_PERMISSION='read' run readapprover && fail "an approver without write access should fail the job"
 [[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "nothing should be pushed when the approver cannot write"
 grep -q 'needs write access' "$WORK/readapprover/out" || fail "the error should say the approver needs write access"
 
