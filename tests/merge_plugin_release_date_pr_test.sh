@@ -75,6 +75,12 @@ case "$*" in
         fi
         jq -n --arg b "${FAKE_COMMENT:-}" '[if $b == "" then empty else {id: 1, body: $b} end]' | filter
         ;;
+    'pr close '*)
+        if [[ -n "${FAKE_CLOSE_ERROR:-}" ]]; then
+            echo "$FAKE_CLOSE_ERROR" >&2
+            exit 1
+        fi
+        ;;
     'pr comment '*)
         if [[ -n "${FAKE_COMMENT_ERROR:-}" ]]; then
             echo "$FAKE_COMMENT_ERROR" >&2
@@ -165,7 +171,7 @@ reset() {
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_COMMITS="$BOT_EMAIL:$BOT_EMAIL" FAKE_RUNS='' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
     unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR \
         FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR FAKE_LATE_HEAD FAKE_LATE_HEAD_ERROR \
-        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE FAKE_TAG_ON_CREATE FAKE_TAG_ON_CHECKS
+        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE FAKE_TAG_ON_CREATE FAKE_TAG_ON_CHECKS FAKE_CLOSE_ERROR
 }
 
 run() {
@@ -174,6 +180,10 @@ run() {
 
 says() {
     grep -Fq "$1" "$OUT"
+}
+
+origin_branch() {
+    git -C "$WORK/origin.git" rev-parse --verify -q "refs/heads/$1" > /dev/null
 }
 
 merged() {
@@ -647,9 +657,27 @@ FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
 git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.3"
 export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=35
 bump_run "$FAKE_HEAD" 6.0.3 || fail "an open translation version pull request for a released version is left alone, not failed"
-grep -Fq ' pr close 35 --delete-branch ' "$FAKE_GH_LOG" \
-    || fail "an open translation version pull request for a version released before this run is closed"
+{ grep -Fq ' pr close 35 --comment ' "$FAKE_GH_LOG" && ! origin_branch automated/translation-version-6.0.3; } \
+    || fail "an open translation version pull request for a version released before this run is closed and its branch deleted"
 if merged; then fail "an open translation version pull request for a released version is never merged"; fi
+
+reset translation-bump-released-hand
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.3"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=35 FAKE_COMMITS="test@example.com:$BOT_EMAIL"
+bump_run "$FAKE_HEAD" 6.0.3 || fail "a released translation version pull request someone added to is closed, not failed"
+{ grep -Fq ' pr close 35 --comment ' "$FAKE_GH_LOG" && origin_branch automated/translation-version-6.0.3 && says 'so it was kept' \
+   ; } || fail "a released translation version pull request someone added to is closed and its branch kept"
+git -C "$WORK/clone" push -q origin :refs/heads/automated/translation-version-6.0.3
+
+reset translation-bump-released-unclosable
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.3"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=35 FAKE_CLOSE_ERROR='HTTP 502'
+if bump_run "$FAKE_HEAD" 6.0.3; then fail "a released translation version pull request that cannot be closed fails the run"; fi
+{ says '#35 could not be closed: HTTP 502' && origin_branch automated/translation-version-6.0.3; } \
+    || fail "a released translation version pull request that cannot be closed says why and keeps its branch"
+git -C "$WORK/clone" push -q origin :refs/heads/automated/translation-version-6.0.3
 
 reset translation-bump-released-late
 FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
@@ -668,8 +696,8 @@ export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CH
     RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED"
 bump_run "$FAKE_HEAD" || fail "a translation version pull request released while its checks run is left alone, not failed"
 grep -Fq ' pr checks 35 ' "$FAKE_GH_LOG" || fail "without auto-merge the bump waits on its checks"
-grep -Fq ' pr close 35 --delete-branch ' "$FAKE_GH_LOG" \
-    || fail "an approved translation version pull request whose version was released meanwhile is closed"
+{ grep -Fq ' pr close 35 --comment ' "$FAKE_GH_LOG" && ! origin_branch automated/translation-version-6.0.4; } \
+    || fail "an approved translation version pull request whose version was released meanwhile is closed and its branch deleted"
 if grep -Eq " pr merge 35 --merge --match-head-commit $FAKE_HEAD$" "$FAKE_GH_LOG"; then
     fail "a translation version pull request whose version is tagged while its checks run is never merged"
 fi

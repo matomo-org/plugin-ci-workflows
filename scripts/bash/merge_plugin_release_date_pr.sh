@@ -151,11 +151,29 @@ stop_if_released() {
     if (( tag_status == 0 )); then
         if [[ -z "${pr:-}" ]]; then
             echo "::warning::$VERSION was released while $BRANCH waited, so no pull request is opened for it; delete the branch."
-        elif gh pr close "$pr" --delete-branch \
-            --comment "$VERSION was released while this waited to merge, so it is closed." > /dev/null; then
+            exit 0
+        fi
+        # A failed close would leave its auto-merge on.
+        if ! close_output=$(gh pr close "$pr" --comment "$VERSION was released while this waited to merge, so it is closed." 2>&1); then
+            echo "::error::$VERSION was released while $BRANCH waited, and #$pr could not be closed: $close_output" >&2
+            exit 1
+        fi
+        local tip identities=""
+        tip=$(git ls-remote --heads origin "refs/heads/$BRANCH")
+        tip="${tip%%[[:space:]]*}"
+        if [[ -n "$tip" ]]; then
+            identities=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$tip" \
+                --jq '.commits[] | .commit.author.email, .commit.committer.email' | sort -u)
+        fi
+        if [[ -z "$tip" ]]; then
+            echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed."
+        elif [[ -n "$identities" ]] && grep -qvxF "$BOT_EMAIL" <<< "$identities"; then
+            echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed; the branch has commits from someone other than this workflow, so it was kept."
+        # The lease keeps the branch if anyone pushed to it since it was read.
+        elif git push --quiet --force-with-lease="refs/heads/$BRANCH:$tip" origin ":refs/heads/$BRANCH"; then
             echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed and the branch deleted."
         else
-            echo "::warning::$VERSION was released while $BRANCH waited, and #$pr could not be closed; close it and delete the branch."
+            echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed; the branch changed meanwhile, so it was kept."
         fi
         exit 0
     elif (( tag_status != 2 )); then
