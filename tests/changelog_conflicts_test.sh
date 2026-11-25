@@ -109,6 +109,10 @@ case "$args" in
     # FAKE_PERMISSION is the reviewer's permission on the repository.
     # FAKE_PERMISSION_FAIL fails the reviewer's lookup too.
     *'/collaborators/app[bot]/permission'*) echo "HTTP 404" >&2; exit 1 ;;
+    # FAKE_APPROVER_PERMISSION is the approver token's user's permission.
+    *'/collaborators/approver-user/permission'*)
+        jq -n --arg p "${FAKE_APPROVER_PERMISSION:-write}" '{permission: $p}' | filter "$@"
+        ;;
     *'/collaborators/'*'/permission'*)
         [[ -z "${FAKE_PERMISSION_FAIL:-}" ]] || { echo "HTTP 502" >&2; exit 1; }
         jq -n --arg p "${FAKE_PERMISSION:-write}" '{permission: $p}' | filter "$@"
@@ -393,6 +397,13 @@ new_repo noapprover feature=Feature base=Base
 export FAKE_PRS='1:feature:APPROVED:false'
 (cd "$WORK/noapprover/clone" && GH_TOKEN=workflow bash "$SCRIPT" 6.x-dev) >/dev/null 2>&1 \
     && fail "a run without the approver token should fail"
+
+# An approver token whose user cannot write: nothing is pushed, and the job fails.
+new_repo readapprover feature=Feature base=Base
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+FAKE_APPROVER_PERMISSION=read run readapprover && fail "an approver without write access should fail the job"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] || fail "nothing should be pushed when the approver cannot write"
+grep -q 'needs write access' "$WORK/readapprover/out" || fail "the error should say the approver needs write access"
 
 # The workflow files: a nested call gets no more permissions than its caller job grants, and a
 # failed push run would hold the weekly release.
