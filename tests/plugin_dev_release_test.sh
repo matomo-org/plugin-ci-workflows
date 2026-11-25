@@ -745,6 +745,30 @@ new_translated bump-code 'Translations update from Weblate:lang/de.json' 'Fix a 
 run bump-code bump_plugin_translations.sh 6.x-dev || fail "translations behind a code change are skipped, not failed"
 [[ -z "$(bump_tip bump-code)" ]] || fail "translations behind a code change are not bumped"
 
+# A code change merged after the bump was pushed closes its pull request, so auto-merge cannot release the code as translations.
+new_translated bump-blocked 'Translations update from Weblate:lang/de.json'
+run bump-blocked bump_plugin_translations.sh 6.x-dev || fail "the bump to be blocked is pushed"
+[[ -n "$(bump_tip bump-blocked)" ]] || fail "the bump to be blocked is pushed"
+git -C "$WORK/bump-blocked/clone" checkout -q 6.x-dev
+printf '<?php\n' > "$WORK/bump-blocked/clone/Controller.php"
+git -C "$WORK/bump-blocked/clone" add Controller.php
+git -C "$WORK/bump-blocked/clone" commit -q -m 'Fix a bug'
+git -C "$WORK/bump-blocked/clone" push -q origin 6.x-dev
+FAKE_GH_OPEN_PR=7 run bump-blocked bump_plugin_translations.sh 6.x-dev || fail "a bump behind a code change is closed, not failed: $(cat "$WORK/bump-blocked/out")"
+{ [[ -z "$(bump_tip bump-blocked)" ]] && grep -qx 'pr close 7' "$FAKE_GH_LOG" && grep -q '^pr comment 7 ' "$FAKE_GH_LOG" && says bump-blocked 'sha=' \
+   ; } || fail "a bump behind a code change has its pull request closed and branch deleted"
+
+# The same on a bump branch someone added to leaves it to them.
+git -C "$WORK/bump-hand/clone" checkout -q 6.x-dev
+printf '<?php\n' > "$WORK/bump-hand/clone/Controller.php"
+git -C "$WORK/bump-hand/clone" add Controller.php
+git -C "$WORK/bump-hand/clone" commit -q -m 'Fix a bug'
+git -C "$WORK/bump-hand/clone" push -q origin 6.x-dev
+FAKE_GH_LOG="$WORK/bump-hand/gh.log" FAKE_GH_OPEN_PR=8 run bump-hand bump_plugin_translations.sh 6.x-dev \
+    || fail "a hand-edited bump behind a code change is skipped, not failed"
+{ [[ "$(bump_tip bump-hand)" == "$hand_tip" ]] && ! grep -q '^pr close' "$WORK/bump-hand/gh.log" \
+    && says bump-hand 'so it was left open' ; } || fail "a bump branch with someone else's commit is not closed"
+
 new_translated bump-unreleased 'Translations update from Weblate:lang/de.json'
 set_version bump-unreleased 6.0.4
 git -C "$WORK/bump-unreleased/clone" commit -q -am 'Start 6.0.4'

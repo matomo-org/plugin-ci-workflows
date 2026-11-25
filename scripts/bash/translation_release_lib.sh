@@ -62,8 +62,11 @@ vendored_deps_version() {
 translation_release() {
     local tag="$1" next commit files blocker="" translations=0 vendored
     translation_version=""
+    translation_next=""
     [[ "$tag" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || return 1
     next="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((10#${BASH_REMATCH[3]} + 1))"
+    # shellcheck disable=SC2034 # read by bump_plugin_translations.sh, also when this returns 1
+    translation_next="$next"
     # Only until the release of $next is merged into the branch, which then moves plugin.json on.
     if tagged "$next" || tagged "v$next"; then
         return 1

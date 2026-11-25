@@ -83,7 +83,42 @@ if grep -qxF "refs/heads/automated/release-date-$VERSION" <<< "$(cut -f2 <<< "$r
         --read-date --plugin-name "${metadata_lines[1]}" CHANGELOG.md "$VERSION" > /dev/null 2>&1; then
     nothing "The $VERSION release date pull request is not merged yet, so translations wait for it."
 fi
-translation_release "$VERSION" || nothing "Nothing on $BRANCH since $VERSION calls for a translation release."
+
+# Closes the bump pull request a run before this one opened for <version>, which the branch no longer calls
+# for, so auto-merge cannot release code under an "Updated translations" entry.
+withdraw_bump() {
+    local target="$TRANSLATION_BUMP_PREFIX$1" tip identities pr
+    grep -qxF "refs/heads/$target" <<< "$(cut -f2 <<< "$remote_refs")" || return 0
+    git fetch --quiet --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
+    tip=$(git rev-parse "refs/remotes/origin/$target")
+    identities=$(git log --format='%ae%n%ce' "$base_sha..$tip")
+    if [[ -n "$identities" ]] && grep -qvxF "$BOT_EMAIL" <<< "$identities"; then
+        echo "::warning::$BRANCH no longer calls for a translation release of $1, but $target has commits from someone other than this workflow, so it was left open."
+        return 0
+    fi
+    if ! pr=$(gh pr list --head "$target" --base "$BRANCH" --state open --json number,isCrossRepository \
+        --jq '[.[] | select(.isCrossRepository | not)][0].number // empty' 2>&1); then
+        echo "::error::Could not look up the pull request for $target: $pr" >&2
+        exit 1
+    fi
+    # Deleted before the pull request is closed, so a push the lease refuses leaves both as they are.
+    if ! git push --quiet --force-with-lease="refs/heads/$target:$tip" origin ":refs/heads/$target"; then
+        echo "::warning::$BRANCH no longer calls for a translation release of $1, but $target changed while it was being deleted, so it was left open."
+        return 0
+    fi
+    # Deleting the head branch may already have closed it, and gh pr close then skips the comment.
+    if [[ -n "$pr" ]] && ! { gh pr comment "$pr" --body "Closed because $BRANCH no longer calls for a translation release of $1: the translations wait for the next release." \
+        && gh pr close "$pr"; }; then
+        echo "::error::Deleted $target, but could not close its pull request #$pr." >&2
+        exit 1
+    fi
+    echo "::notice::Closed $target, as $BRANCH no longer calls for a translation release of $1."
+}
+
+if ! translation_release "$VERSION"; then
+    [[ -z "$translation_next" ]] || withdraw_bump "$translation_next"
+    nothing "Nothing on $BRANCH since $VERSION calls for a translation release."
+fi
 
 bump_status=0
 bump_note=$(python3 -I "$SCRIPT_DIR/../python/bump_plugin_version.py" . released "$TRANSLATION_ENTRY") || bump_status=$?
