@@ -44,6 +44,16 @@ if ! approver=$(GH_TOKEN="$APPROVER_TOKEN" gh api user --jq .login 2>&1); then
     echo "::error::Could not look up the approver token's user: $approver" >&2
     exit 1
 fi
+# GitHub accepts an approval from a user without write access but does not count it, so the push
+# would dismiss the real approval for nothing.
+if ! approver_permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$approver/permission" --jq .permission 2>&1); then
+    echo "::error::Could not look up $approver's permission on $GITHUB_REPOSITORY: $approver_permission" >&2
+    exit 1
+fi
+if [[ "$approver_permission" != admin && "$approver_permission" != write ]]; then
+    echo "::error::The approver token's user $approver has $approver_permission access to $GITHUB_REPOSITORY, so its approval would not count, and no conflict was resolved. It needs write access." >&2
+    exit 1
+fi
 
 git config user.name "$BOT_NAME"
 git config user.email "$BOT_EMAIL"
