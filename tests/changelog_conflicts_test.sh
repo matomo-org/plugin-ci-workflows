@@ -291,6 +291,14 @@ run devbranch || fail "the devbranch run failed: $(cat "$WORK/devbranch/out")"
 [[ "$(git -C "$FAKE_ORIGIN" rev-parse 5.x-dev)" == "$before" ]] || fail "a development branch should be left alone"
 grep -q 'is a development branch' "$WORK/devbranch/out" || fail "the notice should say it is a development branch"
 
+# A branch an automation pushed, such as a translation bump, is that workflow's to rebuild.
+new_repo automated automated/translation-version-6.0.4=Feature base=Base
+export FAKE_PRS='1:automated/translation-version-6.0.4:APPROVED:false'
+before=$(git -C "$FAKE_ORIGIN" rev-parse automated/translation-version-6.0.4)
+run automated || fail "the automated run failed: $(cat "$WORK/automated/out")"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse automated/translation-version-6.0.4)" == "$before" ]] || fail "an automated branch should be left alone"
+grep -q 'belongs to the workflow that pushed it' "$WORK/automated/out" || fail "the notice should say the branch is the workflow's"
+
 # The resolver crashing fails the job instead of passing as a conflict left for a person.
 new_repo crash feature=Feature base=Base
 export FAKE_PRS='1:feature:APPROVED:false'

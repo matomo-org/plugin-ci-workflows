@@ -180,6 +180,11 @@ while read -r pr head_sha author head_ref; do
         skip "its branch $head_ref is a development branch, which $BASE_BRANCH is not merged into."
         continue
     fi
+    # Their workflows rebuild them on the base's tip, and a commit from this would read to them as a person's.
+    if [[ "$head_ref" == automated/* ]]; then
+        skip "its branch $head_ref belongs to the workflow that pushed it."
+        continue
+    fi
     if ! git fetch --quiet --no-tags origin "+refs/heads/$head_ref:refs/remotes/origin/$head_ref" 2>/dev/null \
         || [[ "$(git rev-parse "refs/remotes/origin/$head_ref")" != "$head_sha" ]]; then
         skip "its branch moved on or went away while this ran."
