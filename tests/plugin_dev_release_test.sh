@@ -86,6 +86,12 @@ new_repo() {
     if [[ "$calls_release" == yes ]]; then
         printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n' \
             > "$seed/.github/workflows/release.yml"
+    elif [[ "$calls_release" == other-branch ]]; then
+        printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    with:\n      release-branch: 5.x-dev\n' \
+            > "$seed/.github/workflows/release.yml"
+    elif [[ "$calls_release" == no-translations ]]; then
+        printf 'jobs:\n  release:\n    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    with:\n      release-translations: false\n' \
+            > "$seed/.github/workflows/release.yml"
     elif [[ "$calls_release" == commented ]]; then
         printf 'jobs:\n  release:\n    # uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-dev-release.yml@main\n    runs-on: ubuntu-24.04\n' \
             > "$seed/.github/workflows/release.yml"
@@ -676,6 +682,164 @@ run translate-unbumpable prepare_plugin_dev_release.sh refs/heads/6.x-dev || fai
 says translate-unbumpable 'release_needed=false' || fail "translations whose version cannot be bumped are not released"
 says translate-unbumpable '::warning::Translations were merged into 6.x-dev after 6.0.3, but they are not released' \
     || fail "translations that cannot be released warn"
+
+# --- bump_plugin_translations.sh ---
+
+bump_tip() {
+    git -C "$WORK/$1/origin.git" rev-parse --verify -q automated/translation-version-6.0.4 || true
+}
+
+new_translated bump 'Translations update from Weblate:lang/de.json'
+run bump bump_plugin_translations.sh 6.x-dev || { cat "$WORK/bump/out" >&2; fail "translations are bumped"; }
+bumped=$(bump_tip bump)
+{ says bump "sha=$bumped" && [[ -n "$bumped" ]] && says bump 'version=6.0.4'; } || fail "the bump's version and pushed commit are written out"
+[[ "$(git -C "$WORK/bump/origin.git" show "$bumped:plugin.json")" == '{"name":"TestPlugin","version":"6.0.4"}' ]] \
+    || fail "the bump moves plugin.json to the next patch"
+[[ "$(git -C "$WORK/bump/origin.git" show "$bumped:CHANGELOG.md" | sed -n 3,4p)" == $'### 6.0.4\n* Updated translations' ]] \
+    || fail "the bump adds an undated Updated translations entry"
+[[ "$(git -C "$WORK/bump/origin.git" rev-parse "$bumped^")" == "$(git -C "$WORK/bump/origin.git" rev-parse 6.x-dev)" ]] \
+    || fail "the bump sits on the branch's tip"
+[[ "$(git -C "$WORK/bump/origin.git" log -1 --format='%ae %ce' "$bumped")" \
+    == 'github-actions[bot]@users.noreply.github.com github-actions[bot]@users.noreply.github.com' ]] \
+    || fail "the bump is the workflow's commit"
+
+# Another date, so a commit made again would not be the same one.
+GIT_AUTHOR_DATE=2026-10-13T00:00:00Z GIT_COMMITTER_DATE=2026-10-13T00:00:00Z run bump bump_plugin_translations.sh 6.x-dev \
+    || fail "a rerun succeeds"
+{ [[ "$(bump_tip bump)" == "$bumped" ]] && says bump "sha=$bumped"; } || fail "a rerun on the same tip keeps the pushed commit"
+
+git -C "$WORK/bump/clone" checkout -q 6.x-dev
+run bump prepare_plugin_dev_release.sh refs/heads/6.x-dev || fail "translations with a bump pending are skipped, not failed"
+{ says bump 'release_needed=false' && says bump 'already moves plugin.json to 6.0.4' \
+   ; } || fail "the weekly release leaves translations to a pending bump"
+
+# A translation merged after the bump was pushed moves the bump onto the new tip.
+printf '{"x":"y"}\n' > "$WORK/bump/clone/lang/fr.json"
+git -C "$WORK/bump/clone" checkout -q 6.x-dev
+git -C "$WORK/bump/clone" reset -q --hard origin/6.x-dev
+git -C "$WORK/bump/clone" add lang/fr.json
+git -C "$WORK/bump/clone" commit -q -m 'Translations update from Weblate'
+git -C "$WORK/bump/clone" push -q origin 6.x-dev
+git -C "$WORK/bump/clone" checkout -q --detach HEAD~1
+run bump bump_plugin_translations.sh 6.x-dev || fail "translations merged after a pushed bump are bumped"
+[[ "$(git -C "$WORK/bump/origin.git" rev-parse "$(bump_tip bump)^")" == "$(git -C "$WORK/bump/origin.git" rev-parse 6.x-dev)" ]] \
+    || fail "the bump is rebuilt on origin's tip, not the checkout's"
+
+new_translated bump-hand 'Translations update from Weblate:lang/de.json'
+run bump-hand bump_plugin_translations.sh 6.x-dev || fail "a bump to be amended by hand is pushed"
+git -C "$WORK/bump-hand/clone" fetch -q origin automated/translation-version-6.0.4
+git -C "$WORK/bump-hand/clone" checkout -q FETCH_HEAD
+git -C "$WORK/bump-hand/clone" commit -q --allow-empty -m 'Note'
+git -C "$WORK/bump-hand/clone" push -q origin HEAD:automated/translation-version-6.0.4
+hand_tip=$(bump_tip bump-hand)
+printf '{"x":"y"}\n' > "$WORK/bump-hand/clone/lang/fr.json"
+git -C "$WORK/bump-hand/clone" checkout -q 6.x-dev
+git -C "$WORK/bump-hand/clone" add lang/fr.json
+git -C "$WORK/bump-hand/clone" commit -q -m 'Translations update from Weblate'
+git -C "$WORK/bump-hand/clone" push -q origin 6.x-dev
+run bump-hand bump_plugin_translations.sh 6.x-dev || fail "a bump branch someone added to is skipped, not failed"
+{ [[ "$(bump_tip bump-hand)" == "$hand_tip" ]] && says bump-hand 'sha=' && ! says bump-hand "sha=$hand_tip" \
+   ; } || fail "a bump branch with someone else's commit is left alone"
+
+new_translated bump-code 'Translations update from Weblate:lang/de.json' 'Fix a bug:Controller.php'
+run bump-code bump_plugin_translations.sh 6.x-dev || fail "translations behind a code change are skipped, not failed"
+[[ -z "$(bump_tip bump-code)" ]] || fail "translations behind a code change are not bumped"
+
+# A code change merged after the bump was pushed closes its pull request, so auto-merge cannot release the code as translations.
+new_translated bump-blocked 'Translations update from Weblate:lang/de.json'
+run bump-blocked bump_plugin_translations.sh 6.x-dev || fail "the bump to be blocked is pushed"
+[[ -n "$(bump_tip bump-blocked)" ]] || fail "the bump to be blocked is pushed"
+git -C "$WORK/bump-blocked/clone" checkout -q 6.x-dev
+printf '<?php\n' > "$WORK/bump-blocked/clone/Controller.php"
+git -C "$WORK/bump-blocked/clone" add Controller.php
+git -C "$WORK/bump-blocked/clone" commit -q -m 'Fix a bug'
+git -C "$WORK/bump-blocked/clone" push -q origin 6.x-dev
+FAKE_GH_OPEN_PR=7 run bump-blocked bump_plugin_translations.sh 6.x-dev || fail "a bump behind a code change is closed, not failed: $(cat "$WORK/bump-blocked/out")"
+{ [[ -z "$(bump_tip bump-blocked)" ]] && grep -qx 'pr close 7' "$FAKE_GH_LOG" && grep -q '^pr comment 7 ' "$FAKE_GH_LOG" && says bump-blocked 'sha=' \
+   ; } || fail "a bump behind a code change has its pull request closed and branch deleted"
+
+# The same on a bump branch someone added to leaves it to them.
+git -C "$WORK/bump-hand/clone" checkout -q 6.x-dev
+printf '<?php\n' > "$WORK/bump-hand/clone/Controller.php"
+git -C "$WORK/bump-hand/clone" add Controller.php
+git -C "$WORK/bump-hand/clone" commit -q -m 'Fix a bug'
+git -C "$WORK/bump-hand/clone" push -q origin 6.x-dev
+FAKE_GH_LOG="$WORK/bump-hand/gh.log" FAKE_GH_OPEN_PR=8 run bump-hand bump_plugin_translations.sh 6.x-dev \
+    || fail "a hand-edited bump behind a code change is skipped, not failed"
+{ [[ "$(bump_tip bump-hand)" == "$hand_tip" ]] && ! grep -q '^pr close' "$WORK/bump-hand/gh.log" \
+    && says bump-hand 'so it was left open' ; } || fail "a bump branch with someone else's commit is not closed"
+
+new_translated bump-unreleased 'Translations update from Weblate:lang/de.json'
+set_version bump-unreleased 6.0.4
+git -C "$WORK/bump-unreleased/clone" commit -q -am 'Start 6.0.4'
+git -C "$WORK/bump-unreleased/clone" push -q origin 6.x-dev
+git -C "$WORK/bump-unreleased/clone" checkout -q --detach HEAD~1
+run bump-unreleased bump_plugin_translations.sh 6.x-dev || fail "translations under an unreleased version are skipped, not failed"
+{ [[ -z "$(bump_tip bump-unreleased)" ]] && says bump-unreleased 'not released yet' \
+   ; } || fail "translations under an unreleased version on origin's tip are not bumped"
+
+new_vendored_pending bump-vendored 6.0.4
+run bump-vendored bump_plugin_translations.sh 6.x-dev || fail "translations behind a vendored update are skipped, not failed"
+[[ -z "$(bump_tip bump-vendored)" ]] || fail "translations do not take the patch an open vendored update bumps to"
+
+new_translated bump-dated 'Translations update from Weblate:lang/de.json'
+git -C "$WORK/bump-dated/clone" push -q origin 6.0.3:refs/heads/automated/release-date-6.0.3
+run bump-dated bump_plugin_translations.sh 6.x-dev || fail "translations after a merged release date are bumped, not failed"
+[[ -n "$(bump_tip bump-dated)" ]] || fail "a release date branch left after its pull request merged does not hold translations"
+
+# Tags <name>'s clone at 6.0.3 and pushes a translation update after it.
+translate_after_tag() {
+    local clone="$WORK/$1/clone"
+    git -C "$clone" tag 6.0.3
+    mkdir -p "$clone/lang"
+    printf '{"de":"x"}\n' > "$clone/lang/de.json"
+    git -C "$clone" add lang/de.json
+    git -C "$clone" commit -q -m 'Translations update from Weblate'
+    git -C "$clone" push -q origin 6.x-dev refs/tags/6.0.3
+}
+
+new_repo bump-date-pending '* 6.0.3 - Three'
+translate_after_tag bump-date-pending
+git -C "$WORK/bump-date-pending/clone" push -q origin 6.0.3:refs/heads/automated/release-date-6.0.3
+run bump-date-pending bump_plugin_translations.sh 6.x-dev || fail "translations before a release date merges are skipped, not failed"
+{ [[ -z "$(bump_tip bump-date-pending)" ]] && says bump-date-pending 'release date pull request is not merged yet'; } \
+    || fail "translations wait for the release date pull request they would conflict with"
+
+new_repo bump-no-release '* 6.0.3 - 2026-10-05 - Three' no
+translate_after_tag bump-no-release
+run bump-no-release bump_plugin_translations.sh 6.x-dev || fail "a plugin without the weekly release is skipped, not failed"
+{ [[ -z "$(bump_tip bump-no-release)" ]] && says bump-no-release 'does not call plugin-dev-release.yml'; } \
+    || fail "a plugin the weekly release does not release gets no translation bump"
+
+new_repo bump-other-branch '* 6.0.3 - 2026-10-05 - Three' other-branch
+translate_after_tag bump-other-branch
+run bump-other-branch bump_plugin_translations.sh 6.x-dev || fail "a branch the weekly release skips is skipped, not failed"
+{ [[ -z "$(bump_tip bump-other-branch)" ]] && says bump-other-branch 'does not release translations on 6.x-dev'; } \
+    || fail "translations on a branch the weekly release skips are not bumped"
+
+new_repo bump-opted-out '* 6.0.3 - 2026-10-05 - Three' no-translations
+translate_after_tag bump-opted-out
+run bump-opted-out bump_plugin_translations.sh 6.x-dev || fail "a plugin that releases its translations by hand is skipped, not failed"
+{ [[ -z "$(bump_tip bump-opted-out)" ]] && says bump-opted-out 'does not release translations on 6.x-dev'; } \
+    || fail "release-translations: false also turns off the translation bump"
+
+new_repo bump-no-changelog '* 6.0.3 - 2026-10-05 - Three'
+git -C "$WORK/bump-no-changelog/clone" rm -q CHANGELOG.md
+git -C "$WORK/bump-no-changelog/clone" commit -q -m 'Drop the changelog'
+translate_after_tag bump-no-changelog
+run bump-no-changelog bump_plugin_translations.sh 6.x-dev \
+    || { cat "$WORK/bump-no-changelog/out" >&2; fail "a plugin without a changelog is warned about, not failed"; }
+{ [[ -z "$(bump_tip bump-no-changelog)" ]] && says bump-no-changelog 'could not be bumped'; } \
+    || fail "a plugin without a changelog gets a warning and no bump"
+
+new_translated translate-claimed 'Translations update from Weblate:lang/de.json'
+git -C "$WORK/translate-claimed/clone" push -q origin 6.x-dev:refs/heads/automated/translation-version-6.0.4
+if RELEASE_BUMP_ENTRY='Updated translations' run translate-claimed push_plugin_release_date.sh 6.x-dev; then
+    fail "a translation release the after-merge bump claimed meanwhile is not dated"
+fi
+{ says translate-claimed 'was pushed during this run' \
+    && ! git -C "$WORK/translate-claimed/origin.git" rev-parse -q --verify automated/release-date-6.0.4 > /dev/null; } \
+    || fail "a translation release stops when the after-merge bump claims its patch"
 
 # --- check_plugin_release_date.sh ---
 

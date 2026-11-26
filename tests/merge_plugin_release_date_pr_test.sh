@@ -33,7 +33,11 @@ case "$*" in
         if [[ -n "$number" ]]; then prs=$(jq -c --argjson n "$number" '. + [{number: $n, isCrossRepository: false}]' <<< "$prs"); fi
         filter <<< "$prs"
         ;;
-    'pr create '*) echo 35 > "$FAKE_GH_LOG.pr" ;;
+    'pr create '*)
+        echo 35 > "$FAKE_GH_LOG.pr"
+        # A release tagged while the pull request is opened, from the checkout gh runs in.
+        if [[ -n "${FAKE_TAG_ON_CREATE:-}" ]]; then git push -q origin "$FAKE_TAG_ON_CREATE"; fi
+        ;;
     # FAKE_LATE_HEAD is the head from the second look on.
     'pr view '*'--json headRefOid'*)
         head="$FAKE_HEAD"
@@ -70,6 +74,12 @@ case "$*" in
             exit 1
         fi
         jq -n --arg b "${FAKE_COMMENT:-}" '[if $b == "" then empty else {id: 1, body: $b} end]' | filter
+        ;;
+    'pr close '*)
+        if [[ -n "${FAKE_CLOSE_ERROR:-}" ]]; then
+            echo "$FAKE_CLOSE_ERROR" >&2
+            exit 1
+        fi
         ;;
     'pr comment '*)
         if [[ -n "${FAKE_COMMENT_ERROR:-}" ]]; then
@@ -117,6 +127,8 @@ case "$*" in
     # FAKE_CHECKS_SLEEP outlasts a timeout.
     'pr checks '*)
         sleep "${FAKE_CHECKS_SLEEP:-0}"
+        # A release tagged while the checks run, from the checkout gh runs in.
+        if [[ -n "${FAKE_TAG_ON_CHECKS:-}" ]]; then git push -q origin "$FAKE_TAG_ON_CHECKS"; fi
         printf '%b' "${FAKE_CHECKS_OUTPUT:-}"
         exit "${FAKE_CHECKS_STATUS:-0}"
         ;;
@@ -159,7 +171,7 @@ reset() {
     export FAKE_PR=35 FAKE_FILES=CHANGELOG.md FAKE_COMMITS="$BOT_EMAIL:$BOT_EMAIL" FAKE_RUNS='' FAKE_AHEAD=1 FAKE_HEAD="$TAGGED"
     unset FAKE_REVIEW_STATUS FAKE_AUTO_MERGE_ERROR FAKE_MERGE_ERROR RELEASE_APPROVER_TOKEN FAKE_FORK_PR \
         FAKE_REVIEW_DECISION FAKE_REQUESTED FAKE_REVIEWS FAKE_REQUEST_ERROR RELEASE_REVIEWER_TEAM FAKE_DECISION_ERROR FAKE_LATE_HEAD FAKE_LATE_HEAD_ERROR \
-        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE
+        FAKE_COMMENT FAKE_COMMENT_ERROR FAKE_COMMENTS_ERROR FAKE_CHECKS_STATUS FAKE_CHECKS_OUTPUT FAKE_CHECKS_SLEEP CHECKS_WAIT_SECONDS FAKE_MERGE_STATE FAKE_EARLY_MERGE_STATE FAKE_TAG_ON_CREATE FAKE_TAG_ON_CHECKS FAKE_CLOSE_ERROR
 }
 
 run() {
@@ -168,6 +180,10 @@ run() {
 
 says() {
     grep -Fq "$1" "$OUT"
+}
+
+origin_branch() {
+    git -C "$WORK/origin.git" rev-parse --verify -q "refs/heads/$1" > /dev/null
 }
 
 merged() {
@@ -559,6 +575,7 @@ plugin_commit() {
 }
 released_from=$(plugin_commit TestPlugin 6.0.2)
 git -C "$WORK/clone" update-ref refs/remotes/origin/6.x-dev "$released_from"
+git -C "$WORK/clone" push -q origin "$released_from:refs/heads/6.x-dev"
 
 reset version-bump
 FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
@@ -591,5 +608,124 @@ TAGGED="$FAKE_HEAD"
 export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json'
 run || fail "a version bump made off the base branch is left open, not failed"
 if merged; then fail "a version bump whose parent is not on the base branch is never merged"; fi
+
+# The translation version pull request: its head is the given commit, not a tag.
+bump_run() {
+    (cd "$WORK/clone" && bash "$SCRIPT" 6.x-dev "${2:-6.0.4}" "$1") > "$OUT" 2>&1
+}
+
+reset translation-bump
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+TAGGED="$FAKE_HEAD"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' RELEASE_APPROVER_TOKEN=approver-token
+bump_run "$FAKE_HEAD" || { cat "$OUT" >&2; fail "a translation version pull request is merged"; }
+merged || fail "a translation version pull request at the given commit is merged"
+grep -Fq 'pr list --head automated/translation-version-6.0.4 --base 6.x-dev' "$FAKE_GH_LOG" || fail "the translation version branch is looked up"
+grep -Fq 'body=Bumps the version to 6.0.4 for translations; approved by the after-merge workflow.' "$FAKE_GH_LOG" \
+    || fail "the approver approves the translation version pull request as such"
+
+reset translation-bump-moved
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+TAGGED="$FAKE_HEAD"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json'
+bump_run "$(plugin_commit TestPlugin 6.0.5 "$released_from")" || fail "a translation version pull request at another commit is left open, not failed"
+if merged; then fail "a translation version pull request whose head is not the given commit is never merged"; fi
+says 'its head is not the translation bump commit' || fail "a moved translation version pull request says why"
+
+reset translation-bump-open
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+TAGGED="$FAKE_HEAD"
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=''
+bump_run "$FAKE_HEAD" || { cat "$OUT" >&2; fail "a translation version pull request is opened"; }
+grep -Fq 'pr create --base 6.x-dev --head automated/translation-version-6.0.4 --title Bump version to 6.0.4 for updated translations' "$FAKE_GH_LOG" \
+    || fail "the translation version pull request is opened from its branch"
+grep -Fq '[NA] I have understood, reviewed, and tested all AI outputs before use' "$FAKE_GH_LOG" \
+    || fail "the translation version pull request answers the AI checklist"
+merged || fail "an opened translation version pull request is merged"
+
+reset translation-bump-released
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" push -q origin "$FAKE_HEAD:refs/heads/automated/translation-version-6.0.3"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=''
+bump_run "$FAKE_HEAD" 6.0.3 || fail "a translation version pull request for a released version is left alone, not failed"
+if grep -Fq 'pr create' "$FAKE_GH_LOG" || merged; then fail "a translation version pull request for a version released meanwhile is never merged"; fi
+says '6.0.3 was released while' || fail "a translation version pull request for a released version says why"
+
+reset translation-bump-released-open
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.3"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=35
+bump_run "$FAKE_HEAD" 6.0.3 || fail "an open translation version pull request for a released version is left alone, not failed"
+{ grep -Fq ' pr close 35 --comment ' "$FAKE_GH_LOG" && ! origin_branch automated/translation-version-6.0.3; } \
+    || fail "an open translation version pull request for a version released before this run is closed and its branch deleted"
+if merged; then fail "an open translation version pull request for a released version is never merged"; fi
+
+reset translation-bump-released-hand
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.3"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=35 FAKE_COMMITS="test@example.com:$BOT_EMAIL"
+bump_run "$FAKE_HEAD" 6.0.3 || fail "a released translation version pull request someone added to is closed, not failed"
+{ grep -Fq ' pr close 35 --comment ' "$FAKE_GH_LOG" && origin_branch automated/translation-version-6.0.3 && says 'so it was kept' \
+   ; } || fail "a released translation version pull request someone added to is closed and its branch kept"
+git -C "$WORK/clone" push -q origin :refs/heads/automated/translation-version-6.0.3
+
+reset translation-bump-released-unclosable
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.3"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR=35 FAKE_CLOSE_ERROR='HTTP 502'
+if bump_run "$FAKE_HEAD" 6.0.3; then fail "a released translation version pull request that cannot be closed fails the run"; fi
+{ says '#35 could not be closed: HTTP 502' && origin_branch automated/translation-version-6.0.3; } \
+    || fail "a released translation version pull request that cannot be closed says why and keeps its branch"
+git -C "$WORK/clone" push -q origin :refs/heads/automated/translation-version-6.0.3
+
+reset translation-bump-released-late
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CREATE="$FAKE_HEAD:refs/tags/6.0.4" \
+    RELEASE_APPROVER_TOKEN=approver-token
+bump_run "$FAKE_HEAD" || fail "a translation version pull request released while it opens is left alone, not failed"
+if grep -Eq 'event=APPROVE| pr review | pr merge ' "$FAKE_GH_LOG"; then fail "a translation version pull request whose version is tagged after it opens is never merged"; fi
+says '6.0.4 was released while' || fail "a translation version pull request released while it opens says why"
+git -C "$WORK/clone" push -q origin :refs/tags/6.0.4
+
+reset translation-bump-released-during-checks
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CHECKS="$FAKE_HEAD:refs/tags/6.0.4" \
+    RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED"
+bump_run "$FAKE_HEAD" || fail "a translation version pull request released while its checks run is left alone, not failed"
+grep -Fq ' pr checks 35 ' "$FAKE_GH_LOG" || fail "without auto-merge the bump waits on its checks"
+{ grep -Fq ' pr close 35 --comment ' "$FAKE_GH_LOG" && ! origin_branch automated/translation-version-6.0.4; } \
+    || fail "an approved translation version pull request whose version was released meanwhile is closed and its branch deleted"
+if grep -Eq " pr merge 35 --merge --match-head-commit $FAKE_HEAD$" "$FAKE_GH_LOG"; then
+    fail "a translation version pull request whose version is tagged while its checks run is never merged"
+fi
+says '6.0.4 was released while' || fail "a translation version pull request released while its checks run says why"
+git -C "$WORK/clone" push -q origin :refs/tags/6.0.4
+
+# A push to the base after the bump was built is left to the bump run it queues.
+base_moved=$(plugin_commit TestPlugin 6.0.3 "$released_from")
+reset translation-bump-base-moved
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4" "+$base_moved:refs/heads/6.x-dev"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' RELEASE_APPROVER_TOKEN=approver-token
+bump_run "$FAKE_HEAD" || fail "a translation version pull request behind a moved base is left alone, not failed"
+if grep -Eq 'pr create|event=APPROVE| pr merge ' "$FAKE_GH_LOG"; then fail "a translation version pull request behind a moved base is never opened or merged"; fi
+says '6.x-dev moved on after automated/translation-version-6.0.4 was built' || fail "a translation version pull request behind a moved base says why"
+git -C "$WORK/clone" push -q origin "+$released_from:refs/heads/6.x-dev"
+
+reset translation-bump-base-moved-during-checks
+FAKE_HEAD=$(plugin_commit TestPlugin 6.0.4 "$released_from")
+git -C "$WORK/clone" push -q origin "+$FAKE_HEAD:refs/heads/automated/translation-version-6.0.4"
+export FAKE_HEAD FAKE_FILES='CHANGELOG.md plugin.json' FAKE_PR='' FAKE_TAG_ON_CHECKS="+$base_moved:refs/heads/6.x-dev" \
+    RELEASE_APPROVER_TOKEN=approver-token FAKE_AUTO_MERGE_ERROR="$AUTO_DISABLED"
+bump_run "$FAKE_HEAD" || fail "a translation version pull request whose base moves while its checks run is left alone, not failed"
+grep -Fq ' pr checks 35 ' "$FAKE_GH_LOG" || fail "without auto-merge the bump waits on its checks"
+if grep -Eq " pr merge 35 --merge --match-head-commit $FAKE_HEAD$" "$FAKE_GH_LOG"; then
+    fail "a translation version pull request whose base moves while its checks run is never merged"
+fi
+says '6.x-dev moved on after automated/translation-version-6.0.4 was built, so #35 is left' || fail "a translation version pull request whose base moved says why"
+git -C "$WORK/clone" push -q origin "+$released_from:refs/heads/6.x-dev"
 
 echo 'All release date merge tests passed.'

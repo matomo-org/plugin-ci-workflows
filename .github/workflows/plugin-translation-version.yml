@@ -1,0 +1,103 @@
+# Bumps plugin.json to the next patch, with an "Updated translations" changelog entry, as soon as
+# translation updates are merged after a release, through a pull request that it approves and merges
+# like the weekly release's date pull request. The weekly release then releases that version as any
+# other. plugin-after-merge.yml calls it on a push to each N.x-dev branch. What counts as a translation
+# update is in scripts/bash/translation_release_lib.sh.
+
+name: Plugin translation version
+
+on:
+  workflow_call:
+    inputs:
+      workflows-ref:
+        description: "Ref of this repository for the scripts. This is this repository, so the workflow SHA is the right value when pinning."
+        required: false
+        type: string
+        default: 'main'
+      reviewer-team:
+        description: "Slug of the team in the repository's organisation that a pull request left waiting on a person requests review from, or mentions without approver-token. Empty picks plugin-reviewers in matomo-org and premium-plugins-reviewers in innocraft."
+        required: false
+        type: string
+        default: ''
+    secrets:
+      approver-token:
+        description: "Token for a user other than github-actions with write access, which approves and merges the pull request. Without it the workflow's token sets it to merge, which the branch protection usually refuses without a review."
+        required: false
+
+permissions: {}
+
+# A running job is never cancelled, so a push is not interrupted halfway, and GitHub keeps only the
+# newest waiting run, which reads the branch's tip anyway.
+concurrency:
+  group: plugin-translation-version-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Bump the version for translations
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write # approve the pull_request runs held on the pull request
+      contents: write # push the bump branch
+      pull-requests: write # open and merge the pull request
+    timeout-minutes: 45
+    # The weekly release holds a version while a push run on the branch's head has failed, and
+    # nothing that fails here is the release's concern. The job still shows as failed in the run.
+    continue-on-error: ${{ github.event_name == 'push' }}
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ github.token }}
+      WORKFLOWS_DIR: .plugin-ci-workflows-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out plugin-ci-workflows repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: matomo-org/plugin-ci-workflows
+          ref: ${{ inputs.workflows-ref }}
+          path: ${{ env.WORKFLOWS_DIR }}
+          persist-credentials: false
+
+      - name: Stage scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/translation-scripts"
+          cp -r "$WORKFLOWS_DIR/scripts/bash" "$WORKFLOWS_DIR/scripts/python" "$RUNNER_TEMP/translation-scripts/"
+          echo "TRANSLATION_SCRIPTS=$RUNNER_TEMP/translation-scripts" >> "$GITHUB_ENV"
+          # Keep the shared checkout out of the commit.
+          rm -rf "$WORKFLOWS_DIR"
+
+      - name: Configure git credentials
+        shell: bash
+        run: |
+          # git asks the helper, which reads the runner-masked token itself.
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=credential.https://github.com.helper"
+            echo "GIT_CONFIG_VALUE_0=!f() { echo username=x-access-token; echo \"password=\$GITHUB_TOKEN\"; }; f"
+          } >> "$GITHUB_ENV"
+
+      # The weekly release check fails closed without PyYAML; see plugin-ci.yml for why the install is conditional.
+      - name: Install the YAML parser the bump needs
+        shell: bash
+        run: python3 -P -c 'import yaml' || { sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-yaml; }
+
+      - name: Bump the version
+        id: bump
+        shell: bash
+        run: bash "$TRANSLATION_SCRIPTS/bash/bump_plugin_translations.sh" "$GITHUB_REF_NAME"
+
+      - name: Open and merge the pull request
+        if: steps.bump.outputs.sha != ''
+        env:
+          RELEASE_APPROVER_TOKEN: ${{ secrets.approver-token }}
+          RELEASE_REVIEWER_TEAM: ${{ inputs.reviewer-team }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          BUMP_SHA: ${{ steps.bump.outputs.sha }}
+        shell: bash
+        run: bash "$TRANSLATION_SCRIPTS/bash/merge_plugin_release_date_pr.sh" "$GITHUB_REF_NAME" "$VERSION" "$BUMP_SHA"

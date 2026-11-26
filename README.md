@@ -44,6 +44,7 @@ The `plugin-` prefix is what marks a reusable workflow as part of the public sur
 | [`plugin-release-date-check.yml`](#weekly-release) | Reusable workflow | Fails a changelog date written by hand in a plugin that uses the weekly release, and a pull request that changes a released version's changelog entry |
 | [`plugin-after-merge.yml`](#after-merge) | Reusable workflow | Everything that runs after a merge into a development branch, behind one caller |
 | [`plugin-changelog-conflicts.yml`](#changelog-conflicts) | Reusable workflow | Resolves an approved pull request's conflict on its changelog line after a merge, and approves it again |
+| [`plugin-translation-version.yml`](#translation-version) | Reusable workflow | Bumps the version for translation updates as soon as they are merged after a release |
 | [`plugin-min-php-lint.yml`](#minimum-php-lint) | Reusable workflow | Parses a plugin's scoped dependencies against the oldest PHP that plugin supports |
 | [`plugin-vendored-deps-update.yml`](#vendored-dependencies-update) | Reusable workflow | Updates a plugin's scoped dependencies, rebuilds `vendor/prefixed` and opens a pull request |
 | [`actions/scope-dependencies`](#scope-dependencies) | Composite action | Scopes a plugin's dependencies with matomo-scoper, downgrades them with Rector, and checks the result |
@@ -525,17 +526,29 @@ jobs:
       approver-token: ${{ secrets.APPROVER_TOKEN }}
 ```
 
+### Translation version
+
+When `plugin.json`'s version is already tagged and everything merged since is a translation update, by the [weekly release](#weekly-release)'s rule, this workflow pushes a commit bumping `plugin.json` to the next patch with an "Updated translations" changelog entry to `automated/translation-version-<version>`, then opens and merges a pull request for it the way the weekly release merges its date pull request, with `approver-token` approving it. The weekly release then releases that version as any other, so translations get their version as soon as they are merged rather than on release day.
+
+It only bumps branches whose translations the weekly release releases, so `release-translations: false` turns it off too, and waits while that version's release date pull request is unmerged, since both edit the top of the changelog. A bump pull request is not opened, approved or merged by the workflow once its version has been tagged, and one already open is closed if its version is tagged while the workflow is still working on it. One is also closed and its branch deleted when a later push means the translations no longer go out on their own, such as a code change merged after them, unless the branch holds someone else's commit. Nor is one opened, approved or merged by the workflow once another push has reached the branch since it was built; the bump run for that push rebuilds or closes it. If that version is released another way later, such as by a developer's own version bump, the release date check the weekly release re-runs on open pull requests fails on the bump pull request, which then needs closing by hand. A weekly release that would release the translations itself but finds a bump branch for that version leaves them to it with a notice, and fails only when the branch is pushed during its own run.
+
+It works from the branch's current tip, not the commit that triggered the run. A later translation merge rebuilds the branch on the new tip, a rerun with nothing new pushes nothing, and a branch holding a commit from anyone else is left for a person. When no bump branch could be pushed, the weekly release still releases the translations itself; one whose pull request is left open holds them until it is merged or the branch is deleted. Closing the pull request or deleting the branch does not stop the bump: the next translation merge pushes the branch again and opens a new pull request. `bump-translations: false` is what turns it off.
+
+Plugins run it after each merge through [After merge](#after-merge), where `bump-translations: false` turns it off; its job can fail there without failing the run, as for changelog conflicts.
+
 ### After merge
 
-`plugin-after-merge.yml` runs everything that should happen after a merge into a plugin's development branch, so a plugin needs one caller for all of it and a job added here reaches every plugin. Today that is [changelog conflicts](#changelog-conflicts). The calls inside it are fixed at `@main`, as in [Plugins CI](#plugins-ci).
+`plugin-after-merge.yml` runs everything that should happen after a merge into a plugin's development branch, so a plugin needs one caller for all of it and a job added here reaches every plugin. Today that is [changelog conflicts](#changelog-conflicts) and the [translation version](#translation-version) bump. The calls inside it are fixed at `@main`, as in [Plugins CI](#plugins-ci).
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `workflows-ref` | no | `main` | Ref of this repository for the scripts the called workflows run |
+| `bump-translations` | no | `true` | Bump the version as soon as translation updates are merged after a release. `false` leaves them to the weekly release |
+| `reviewer-team` | no | `plugin-reviewers` in matomo-org, `premium-plugins-reviewers` in innocraft | Slug of the team a translation version pull request left waiting on a person requests review from, as for the weekly release |
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `approver-token` | yes | Token for a user other than github-actions, with write access, that approves a pull request again after its changelog conflict is resolved |
+| `approver-token` | yes | Token for a user other than github-actions, with write access, that approves a pull request again after its changelog conflict is resolved, and approves and merges the translation version pull request |
 
 ```yaml
 # Save as .github/workflows/after-merge.yml
@@ -548,7 +561,6 @@ on:
 permissions:
   actions: write
   contents: write
-  # write, so a job added here that opens pull requests needs no caller change: a nested job gets no more than this.
   pull-requests: write
 
 jobs:
@@ -634,7 +646,7 @@ Nothing is released while a push-triggered workflow run on the branch's head has
 
 A version the workflow tagged is finished by later runs until its release is published and its date is on the branch, even after `plugin.json` has moved on: each run publishes the release and opens or merges the pull request from the tagged commit.
 
-When `plugin.json`'s version is already tagged and everything merged since that tag is a translation update, such as Weblate's, the run releases them as the next patch: the date commit also bumps `plugin.json` and adds a `CHANGELOG.md` entry saying "Updated translations", above the newest one and in the same style. A translation update is a commit, or a merged pull request, that changes only `lang/*.json` files other than `lang/en.json`. Commits marked `[ignore_release]` or `[no_release]` in their subject, or in the pull request title of a merge, and ones that only change `CHANGELOG.md` or `plugin.json`'s version, are passed over; any other change leaves the translations for a person to release with the next version bump. So does a vendored dependencies update branch (`automated/vendored-dependencies-<branch>`) that already moves `plugin.json` to that patch, which then releases them. `release-translations: false` turns translation releases off. A changelog of one-line entries (`* 6.0.3 - 2026-11-09 - Fixed ...`) gets a new line of its own. A changelog the bump cannot edit, such as one whose sections have headings of their own, gets a warning and no release. A translation release is held, and the run fails, when push CI on the branch has not passed, as for any other release. That release's date pull request has to merge before the next version bump: Plugins CI fails a pull request that moves `plugin.json` onto a tagged version, and if the branch changes `plugin.json` or the top changelog entry first, the date pull request conflicts and needs a person to resolve it.
+When `plugin.json`'s version is already tagged and everything merged since that tag is a translation update, such as Weblate's, the run releases them as the next patch: the date commit also bumps `plugin.json` and adds a `CHANGELOG.md` entry saying "Updated translations", above the newest one and in the same style. A translation update is a commit, or a merged pull request, that changes only `lang/*.json` files other than `lang/en.json`. Commits marked `[ignore_release]` or `[no_release]` in their subject, or in the pull request title of a merge, and ones that only change `CHANGELOG.md` or `plugin.json`'s version, are passed over; any other change leaves the translations for a person to release with the next version bump. So does a vendored dependencies update branch (`automated/vendored-dependencies-<branch>`) that already moves `plugin.json` to that patch, which then releases them, and so does an `automated/translation-version-<version>` branch from the [translation version](#translation-version) bump, which then releases them once merged; delete that branch to release them here instead. `release-translations: false` turns translation releases off. A changelog of one-line entries (`* 6.0.3 - 2026-11-09 - Fixed ...`) gets a new line of its own. A changelog the bump cannot edit, such as one whose sections have headings of their own, gets a warning and no release. A translation release is held, and the run fails, when push CI on the branch has not passed, as for any other release. That release's date pull request has to merge before the next version bump: Plugins CI fails a pull request that moves `plugin.json` onto a tagged version, and if the branch changes `plugin.json` or the top changelog entry first, the date pull request conflicts and needs a person to resolve it.
 
 The pull request merges through auto-merge where the repository setting "Allow auto-merge" is on. Without it, and with `approver-token`, the job waits on the pull request's required checks, up to 30 minutes in all for the versions it releases, and merges it once they pass; a check that fails or is still running leaves it open. Without either, a pull request waiting on required checks is left open. When the branch protection does not let it merge, the pull request is left open for a person with a warning, labelled `Needs Review`, and, with `approver-token`, sent for review to `reviewer-team`; a rerun does not request it again while someone is requested or anyone other than the approver has reviewed. Without `approver-token`, nothing can request the review, so a comment mentions `reviewer-team` instead, once. A user mention from `github-actions[bot]` notifies; whether a team mention does is not yet confirmed, so the run still warns. A pull request that merges by itself is neither labelled nor sent for review. The release is out either way. It only merges the commit it tagged, with a merge commit so that commit stays on the branch, and never a pull request that changes more than `CHANGELOG.md`, apart from the version in `plugin.json` that a translation release sets.
 

@@ -40,44 +40,7 @@ fi
 # unreadable workflow cannot pass as a plugin that does not. That holds on every branch, as the
 # branch to check comes from the workflows. Prints each call's release-branch, or the error.
 calls_status=0
-calls_output=$(python3 -P - "$RELEASE_WORKFLOW" "${workflow_files[@]}" <<'PY'
-import sys, yaml
-target = sys.argv[1]
-found = False
-release_branches = []
-
-def fail(message):
-    # On stdout, the only stream the caller captures for its error.
-    print(message)
-    sys.exit(1)
-
-for path in sys.argv[2:]:
-    try:
-        with open(path, encoding='utf-8') as handle:
-            doc = yaml.safe_load(handle)
-    except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as error:
-        fail(f'{path}: {error}')
-    jobs = doc.get('jobs') if isinstance(doc, dict) else None
-    if not isinstance(jobs, dict):
-        continue
-    for job in jobs.values():
-        uses = job.get('uses') if isinstance(job, dict) else None
-        if isinstance(uses, str) and '@' in uses and (uses.split('@', 1)[0] + '@').endswith(target):
-            found = True
-            inputs = job.get('with')
-            branch = inputs.get('release-branch') if isinstance(inputs, dict) else None
-            if isinstance(branch, str) and '${{' in branch:
-                fail(f'{path}: release-branch must be a literal branch name for the date check, not {branch}')
-            if branch is not None and not isinstance(branch, str):
-                # YAML reads 1.10 as the number 1.1, so the branch name is already lost.
-                fail(f'{path}: quote release-branch, it is read as {branch!r}')
-            # '*' cannot be a branch name, so it marks a call that releases from N.x-dev.
-            release_branches.append(branch if isinstance(branch, str) and branch else '*')
-if not found:
-    sys.exit(3)
-print('\n'.join(release_branches))
-PY
-) || calls_status=$?
+calls_output=$(python3 -P "$SCRIPT_DIR/../python/weekly_release_branches.py" "$RELEASE_WORKFLOW" "${workflow_files[@]}") || calls_status=$?
 if (( calls_status == 3 )); then
     echo "This plugin does not call plugin-dev-release.yml, so its changelog dates are its own."
     exit 0

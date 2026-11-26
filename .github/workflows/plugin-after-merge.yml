@@ -15,9 +15,19 @@ on:
         required: false
         type: string
         default: 'main'
+      bump-translations:
+        description: "Bump plugin.json to the next patch as soon as translation updates are merged after a release. False leaves them to the weekly release."
+        required: false
+        type: boolean
+        default: true
+      reviewer-team:
+        description: "Slug of the team in the repository's organisation that a translation version pull request left waiting on a person requests review from. Empty picks plugin-reviewers in matomo-org and premium-plugins-reviewers in innocraft."
+        required: false
+        type: string
+        default: ''
     secrets:
       approver-token:
-        description: "Token for a user other than github-actions with write access, which approves a pull request again after its changelog conflict is resolved"
+        description: "Token for a user other than github-actions with write access, which approves a pull request again after its changelog conflict is resolved, and approves and merges the translation version pull request"
         required: true
 
 permissions: {}
@@ -31,5 +41,18 @@ jobs:
       pull-requests: read
     with:
       workflows-ref: ${{ inputs.workflows-ref }}
+    secrets:
+      approver-token: ${{ secrets.approver-token }}
+
+  translation-version:
+    if: inputs.bump-translations
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-translation-version.yml@main
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+    with:
+      workflows-ref: ${{ inputs.workflows-ref }}
+      reviewer-team: ${{ inputs.reviewer-team }}
     secrets:
       approver-token: ${{ secrets.approver-token }}

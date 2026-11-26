@@ -12,34 +12,54 @@
 # A pull request left waiting on a person is labelled Needs Review and, with the approver token,
 # sent for review to RELEASE_REVIEWER_TEAM or the organisation's plugin reviewers. Without it, a
 # comment mentions that team instead.
-# Usage: merge_plugin_release_date_pr.sh <base-branch> <version>
+# Given a commit, it does the same for the automated/translation-version-<version> pull request
+# instead, whose head must be that commit: bump_plugin_translations.sh's version bump for translations.
+# Usage: merge_plugin_release_date_pr.sh <base-branch> <version> [<translation-bump-commit>]
 
 set -euo pipefail
 
 BASE_BRANCH="${1:-}"
 VERSION="${2:-}"
-BRANCH="automated/release-date-$VERSION"
+BUMP_SHA="${3:-}"
 BOT_EMAIL="github-actions[bot]@users.noreply.github.com"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNS_WAIT_SECONDS="${RUNS_WAIT_SECONDS:-120}"
 RUNS_POLL_SECONDS="${RUNS_POLL_SECONDS:-10}"
 (( RUNS_POLL_SECONDS > 0 )) || RUNS_POLL_SECONDS=1
 CHECKS_WAIT_SECONDS="${CHECKS_WAIT_SECONDS:-1800}"
-APPROVAL_BODY="Dates the $VERSION release; approved by the release workflow."
+if [[ -n "$BUMP_SHA" ]]; then
+    BRANCH="automated/translation-version-$VERSION"
+    KIND="Translation version"
+    TITLE="Bump version to $VERSION for updated translations"
+    # The AI checklist gate fails a body without its two items, and no AI made this change.
+    BODY="Records the translation updates merged since the last release as $VERSION, which the weekly release then releases.
+
+- [NA] I have understood, reviewed, and tested all AI outputs before use
+- [NA] All AI instructions respect security, IP, and privacy rules"
+    APPROVAL_BODY="Bumps the version to $VERSION for translations; approved by the after-merge workflow."
+    HEAD_NAME="the translation bump commit"
+else
+    BRANCH="automated/release-date-$VERSION"
+    KIND="Release date"
+    TITLE="Add release date for $VERSION"
+    BODY="Dates the $VERSION changelog entry with the day it was released."
+    APPROVAL_BODY="Dates the $VERSION release; approved by the release workflow."
+    HEAD_NAME="the commit tagged $VERSION"
+fi
 
 if [[ -z "$BASE_BRANCH" || -z "$VERSION" ]]; then
-    echo "Usage: $0 <base-branch> <version>" >&2
+    echo "Usage: $0 <base-branch> <version> [<translation-bump-commit>]" >&2
     exit 1
 fi
 
-# Whether the tagged commit sits on $BASE_BRANCH and changes plugin.json only to set the version to
+# Whether the release commit sits on $BASE_BRANCH and changes plugin.json only to set the version to
 # $VERSION.
 version_only_release() {
     local old new status=0
-    git merge-base --is-ancestor "$tagged_sha^" "refs/remotes/origin/$BASE_BRANCH" 2> /dev/null || return 1
+    git merge-base --is-ancestor "$release_sha^" "refs/remotes/origin/$BASE_BRANCH" 2> /dev/null || return 1
     old=$(mktemp)
     new=$(mktemp)
-    if git show "$tagged_sha^:plugin.json" > "$old" 2> /dev/null && git show "$tagged_sha:plugin.json" > "$new" 2> /dev/null; then
+    if git show "$release_sha^:plugin.json" > "$old" 2> /dev/null && git show "$release_sha:plugin.json" > "$new" 2> /dev/null; then
         python3 -I "$SCRIPT_DIR/../python/version_only_change.py" "$old" "$new" "$VERSION" || status=$?
     else
         status=1
@@ -101,7 +121,7 @@ ask_for_review() {
 }
 
 leave_open() {
-    echo "::warning::Release date pull request #$pr was left open for a person to merge: $*"
+    echo "::warning::$KIND pull request #$pr was left open for a person to merge: $*"
     ask_for_review
     exit 0
 }
@@ -112,10 +132,76 @@ find_pr() {
         --jq '[.[] | select(.isCrossRepository | not)][0].number // empty'
 }
 
-# The commit's email can be set by anyone who can push the branch; the tag can't be moved by a push to it.
-tagged_sha=$(git rev-parse "refs/tags/$VERSION^{commit}")
+# The commit's email can be set by anyone who can push the branch; the tag can't be moved by a push to
+# it, and the bump commit is the one this run pushed.
+if [[ -n "$BUMP_SHA" ]]; then
+    release_sha=$(git rev-parse --verify "$BUMP_SHA^{commit}")
+else
+    release_sha=$(git rev-parse "refs/tags/$VERSION^{commit}")
+fi
 
+# The weekly release may have released this patch itself since the bump was pushed, so a bump checks
+# before it opens the pull request, before it approves it, and before a merge that waited on checks.
+# Auto-merge, once enabled, merges without a further check. A pull request already opened is closed, as it
+# may already carry the approval.
+stop_if_released() {
+    [[ -n "$BUMP_SHA" ]] || return 0
+    local tag_status=0
+    git ls-remote --exit-code --tags origin "refs/tags/$VERSION" > /dev/null || tag_status=$?
+    if (( tag_status == 0 )); then
+        if [[ -z "${pr:-}" ]]; then
+            echo "::warning::$VERSION was released while $BRANCH waited, so no pull request is opened for it; delete the branch."
+            exit 0
+        fi
+        # A failed close would leave its auto-merge on.
+        if ! close_output=$(gh pr close "$pr" --comment "$VERSION was released while this waited to merge, so it is closed." 2>&1); then
+            echo "::error::$VERSION was released while $BRANCH waited, and #$pr could not be closed: $close_output" >&2
+            exit 1
+        fi
+        local tip identities=""
+        tip=$(git ls-remote --heads origin "refs/heads/$BRANCH")
+        tip="${tip%%[[:space:]]*}"
+        if [[ -n "$tip" ]]; then
+            identities=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$tip" \
+                --jq '.commits[] | .commit.author.email, .commit.committer.email' | sort -u)
+        fi
+        if [[ -z "$tip" ]]; then
+            echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed."
+        elif [[ -n "$identities" ]] && grep -qvxF "$BOT_EMAIL" <<< "$identities"; then
+            echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed; the branch has commits from someone other than this workflow, so it was kept."
+        # The lease keeps the branch if anyone pushed to it since it was read.
+        elif git push --quiet --force-with-lease="refs/heads/$BRANCH:$tip" origin ":refs/heads/$BRANCH"; then
+            echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed and the branch deleted."
+        else
+            echo "::warning::$VERSION was released while $BRANCH waited, so #$pr was closed; the branch changed meanwhile, so it was kept."
+        fi
+        exit 0
+    elif (( tag_status != 2 )); then
+        echo "::error::Could not list the tags on origin." >&2
+        exit 1
+    fi
+}
+# A push to the base after the bump was built queues a bump run that rebuilds it on the new tip or, if
+# the push is not a translation update, closes it, so a merge here would release that push as
+# translations. Auto-merge, once enabled, is left to that run.
+stop_if_base_moved() {
+    [[ -n "$BUMP_SHA" ]] || return 0
+    local base_tip
+    if ! base_tip=$(git ls-remote --exit-code --heads origin "refs/heads/$BASE_BRANCH"); then
+        echo "::error::Could not read $BASE_BRANCH on origin." >&2
+        exit 1
+    fi
+    if [[ "${base_tip%%[[:space:]]*}" != "$(git rev-parse "$release_sha^")" ]]; then
+        local left="the branch"
+        [[ -z "${pr:-}" ]] || left="#$pr"
+        echo "::notice::$BASE_BRANCH moved on after $BRANCH was built, so $left is left to the bump run for that push."
+        exit 0
+    fi
+}
+# Looked up first, so a pull request an earlier run opened is closed if the version is already tagged.
 pr=$(find_pr)
+stop_if_released
+stop_if_base_moved
 if [[ -z "$pr" ]]; then
     # Nothing to open when the base already had the date, or a person merged it before a resumed run.
     branch_status=0
@@ -128,8 +214,8 @@ if [[ -z "$pr" ]]; then
         exit 1
     fi
     # The check below would refuse it, and a pull request opened only to be refused needs closing by hand.
-    if [[ "${branch_sha%%[[:space:]]*}" != "$tagged_sha" ]]; then
-        echo "::warning::$BRANCH has moved on from the commit tagged $VERSION, so no pull request was opened from it."
+    if [[ "${branch_sha%%[[:space:]]*}" != "$release_sha" ]]; then
+        echo "::warning::$BRANCH has moved on from $HEAD_NAME, so no pull request was opened from it."
         exit 0
     fi
     ahead=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_BRANCH...$BRANCH" --jq .ahead_by)
@@ -137,17 +223,16 @@ if [[ -z "$pr" ]]; then
         echo "$BRANCH has nothing to bring into $BASE_BRANCH."
         exit 0
     fi
-    gh pr create --base "$BASE_BRANCH" --head "$BRANCH" --title "Add release date for $VERSION" \
-        --body "Dates the $VERSION changelog entry with the day it was released."
+    gh pr create --base "$BASE_BRANCH" --head "$BRANCH" --title "$TITLE" --body "$BODY"
     pr=$(find_pr)
     if [[ -z "$pr" ]]; then
-        echo "::error::The release date pull request from $BRANCH was not found after opening it." >&2
+        echo "::error::The pull request from $BRANCH was not found after opening it." >&2
         exit 1
     fi
 fi
 head_sha=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
-if [[ "$head_sha" != "$tagged_sha" ]]; then
-    leave_open "its head is not the commit tagged $VERSION."
+if [[ "$head_sha" != "$release_sha" ]]; then
+    leave_open "its head is not $HEAD_NAME."
 fi
 
 files=$(gh pr view "$pr" --json files --jq '.files[].path' | sort)
@@ -189,9 +274,11 @@ done
 # Assigned on its own line so a failed lookup stops the run rather than reading as a moved head.
 current_head=$(gh pr view "$pr" --json headRefOid --jq .headRefOid)
 if [[ "$current_head" != "$head_sha" ]]; then
-    leave_open "its head moved on from the commit tagged $VERSION during the wait."
+    leave_open "its head moved on from $HEAD_NAME during the wait."
 fi
 
+stop_if_released
+stop_if_base_moved
 if [[ -n "${RELEASE_APPROVER_TOKEN:-}" ]]; then
     # gh pr review approves whatever the head is by then; with commit_id, GitHub refuses (422) once the head
     # has moved on from the tagged commit.
@@ -273,6 +360,8 @@ if ! merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" --auto 2>&1); then
                     *) leave_open "auto-merge is not allowed, and its required checks have passed but it is $(annotation "$merge_state")." ;;
                 esac
             done
+            stop_if_released
+            stop_if_base_moved
             merge_output=$(GH_TOKEN="$merge_token" "${merge[@]}" 2>&1) || leave_open "$merge_output"
             ;;
         *) leave_open "$merge_output" ;;
@@ -284,7 +373,7 @@ decision=$(gh pr view "$pr" --json state,reviewDecision --jq '.state + " " + .re
     || echo "::warning::Could not read whether #$pr waits on an approving review: $(annotation "$decision")"
 case "$decision" in
     "OPEN REVIEW_REQUIRED" | "OPEN CHANGES_REQUESTED")
-        echo "::warning::Release date pull request #$pr is set to merge, but waits on a review (${decision#OPEN })."
+        echo "::warning::$KIND pull request #$pr is set to merge, but waits on a review (${decision#OPEN })."
         ask_for_review
         exit 0
         ;;
