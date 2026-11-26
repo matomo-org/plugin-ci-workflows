@@ -8,8 +8,10 @@
 # is on its current head and nobody has requested changes: that approval is what gets carried forward,
 # so it is checked again just before the push and before approving. It is approved again only when,
 # file by file, the lines it adds and removes are the same before and after the merge, apart from a
-# version or blank line the base branch now has too. The merge is pushed with the workflow's token, so
-# the approver is not the last pusher, and the pull_request runs that push leaves held are approved;
+# version or blank line the base branch now has too and plugin.json changes the base branch made alike,
+# with a one-line changelog entry both sides appended to compared as it was before the base branch's
+# addition. The merge is pushed with the workflow's token, so the approver is not the last pusher, and
+# the pull_request runs that push leaves held are approved;
 # a pull request that changes a workflow is left alone, so those runs only run the base branch's
 # workflows. Anything else is left as it was, with a notice saying why.
 # Usage: resolve_changelog_conflicts.sh <base-branch> [pull request number]
@@ -212,7 +214,8 @@ while read -r pr head_sha author head_ref; do
     fi
     mapfile -t released < <(git tag -l | sed 's/^v//')
     resolver_status=0
-    reason=$(python3 -I "$RESOLVER" CHANGELOG.md "${released[@]}" 2>&1 >"$RUNNER_TEMP/CHANGELOG.md") || resolver_status=$?
+    reason=$(python3 -I "$RESOLVER" --extended "$RUNNER_TEMP/extended.json" CHANGELOG.md "${released[@]}" \
+        2>&1 >"$RUNNER_TEMP/CHANGELOG.md") || resolver_status=$?
     if (( resolver_status == 2 )); then
         git merge --abort
         skip "${reason#CHANGELOG.md was left for a person, because }"
@@ -228,13 +231,29 @@ while read -r pr head_sha author head_ref; do
     git commit --quiet --no-edit -m "Merge $BASE_BRANCH into $head_ref, resolving the CHANGELOG.md conflict"
     merge_sha=$(git rev-parse HEAD)
 
-    # Lines the pull request no longer adds may only be version or blank lines the base branch now has too.
+    # Lines the pull request no longer adds may only be version or blank lines the base branch now has too,
+    # including the version in a plugin.json both sides bumped alike, so the merge leaves it as the pull
+    # request had it. A one-line entry both sides appended to is compared as it was before the base
+    # branch's addition.
     before=$(changed_lines "$base_sha...$head_sha")
-    after=$(changed_lines "$base_sha" "$merge_sha")
+    if ! after=$(changed_lines "$base_sha" "$merge_sha" | python3 -I "$RESOLVER" --restore "$RUNNER_TEMP/extended.json"); then
+        echo "::warning::Comparing #$pr's changes after the merge failed, so it was left as it is."
+        status=1
+        git reset --quiet --hard "$head_sha"
+        continue
+    fi
     gained=$(LC_ALL=C comm -13 <(echo "$before") <(echo "$after"))
     lost=$(LC_ALL=C comm -23 <(echo "$before") <(echo "$after") \
         | grep -vxF -f <(git show "$base_sha:CHANGELOG.md" | grep -E '^(#*[[:blank:]]*v?[0-9]+\.[0-9]+\.[0-9]+|[[:space:]]*$)' \
             | sed 's/^/CHANGELOG.md\t+/') || true)
+    if [[ -n "$lost" ]] && git diff --quiet "$head_sha" "$merge_sha" -- plugin.json; then
+        if git diff --quiet "$head_sha" "$base_sha" -- plugin.json; then
+            # The base branch made every change the pull request made to it, however it is formatted.
+            lost=$(grep -v $'^plugin\\.json\t' <<< "$lost" || true)
+        else
+            lost=$(grep -vE $'^plugin\\.json\t[+-][[:blank:]]*"version"[[:blank:]]*:' <<< "$lost" || true)
+        fi
+    fi
     if [[ -n "$gained" || -n "$lost" ]]; then
         skip "resolving the conflict would change what it adds or removes."
         git reset --quiet --hard "$head_sha"

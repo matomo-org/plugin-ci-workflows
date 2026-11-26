@@ -43,6 +43,41 @@ resolve '6.0.3\n- Two\n' >/dev/null 2>&1 && fail "a file with no conflict should
 reason=$(resolve "${conflict/- PR/PR prose}" 2>&1 >/dev/null) && fail "a line that is not a list item should be left"
 [[ "$reason" == *'not a list item'* ]] || fail "the reason should be printed, got: $reason"
 
+# Both sides appending to one one-line entry: the base branch's addition first, then the pull request's.
+one_line='<<<<<<< HEAD\n* 6.0.4 - Fixed A. Fixed PR\n||||||| 1\n* 6.0.4 - Fixed A\n=======\n* 6.0.4 - Fixed A, and base\n>>>>>>> base\n* 6.0.3 - 2026-11-23 - Two\n'
+[[ "$(resolve "$one_line" --extended "$WORK/extended.json" 6.0.3 2>&1)" == '* 6.0.4 - Fixed A, and base. Fixed PR'$'\n''* 6.0.3 - 2026-11-23 - Two' ]] \
+    || fail "a one-line entry should hold the base branch's addition then the pull request's"
+[[ "$(resolve "${one_line//\\n/\\r\\n}" | od -c)" == *'P   R  \r  \n'* ]] || fail "a one-line entry with CRLF line ends should be resolved"
+resolve "$one_line" 6.0.4 >/dev/null 2>&1 && fail "a tagged one-line entry should be left for a person"
+for dated in '6.0.4 - 2026-11-30' '6.0.4 (30/11/2026)' '6.0.4 - Nov 30, 2026' '6.0.4 - Mon 30/11/2026' \
+    '6.0.4 - Tues, Nov 30, 2026'; do
+    resolve "${one_line//6.0.4/$dated}" >/dev/null 2>&1 && fail "a one-line entry dated as $dated should be left for a person"
+done
+resolve "${one_line/Fixed A. Fixed PR/Fixed B}" >/dev/null 2>&1 && fail "a rewritten one-line entry should be left for a person"
+resolve "${one_line/Fixed A. Fixed PR/Fixed API}" >/dev/null 2>&1 && fail "a word extended in place should be left for a person"
+resolve "${one_line/Fixed A, and base/Fixed A. Fixed PR. And base}" >/dev/null 2>&1 \
+    && fail "a base branch line already holding the pull request's addition should be left for a person"
+for monitored in '* 6.0.4 - Monitoring fix' '* 6.0.4 - Fixed 3 bugs'; do
+    resolve "${one_line//\* 6.0.4 - Fixed A/$monitored}" >/dev/null 2>&1 || fail "'$monitored' is not a date, so it should be resolved"
+done
+reason=$(resolve "${one_line/\* 6.0.4 - Fixed A, and base/* 6.0.4 - Fixed A}" 2>&1 >/dev/null) \
+    && fail "an entry only one side appended to merges cleanly, so its conflict is not this case"
+[[ "$reason" == *'both sides changed lines that were already there'* ]] || fail "unexpected reason: $reason"
+resolve "${one_line//\* 6.0.4 - /- }" >/dev/null 2>&1 && fail "a list line with no version should be left for a person"
+
+# The extended file maps a diff's lines from the base branch's text back to the text before it.
+resolve "$one_line" --extended "$WORK/extended.json" >/dev/null
+[[ "$(printf 'CHANGELOG.md\t-* 6.0.4 - Fixed A, and base\nCHANGELOG.md\t+* 6.0.4 - Fixed A, and base. Fixed PR\nplugin.json\t+x\n' \
+    | python3 -I "$RESOLVER" --restore "$WORK/extended.json")" \
+    == "$(printf 'CHANGELOG.md\t+* 6.0.4 - Fixed A. Fixed PR\nCHANGELOG.md\t-* 6.0.4 - Fixed A\nplugin.json\t+x')" ]] \
+    || fail "restore should map extended lines back and keep the listing sorted"
+# Other lines pass through byte for byte: one that only starts with the entry's text, text that is not
+# UTF-8, and characters Python would otherwise split lines on.
+other=$'CHANGELOG.md\t+* 6.0.4 - Fixed A, and base too\nCHANGELOG.md\t+caf\xe9\nREADME.md\t+a\fb\x85c\n'
+[[ "$(printf '%s' "$other" | python3 -I "$RESOLVER" --restore "$WORK/extended.json" | od -c)" \
+    == "$(printf '%s' "$other" | od -c)" ]] || fail "restore should leave every other line as it was"
+resolve "${one_line//\* 6.0.4/+ 6.0.4}" >/dev/null 2>&1 && fail "a + list line should be left for a person, as documented"
+
 # --- The script, against a bare origin ---
 
 FAKE_BIN="$WORK/bin"
@@ -241,6 +276,76 @@ run bump || fail "the run with a shared new version failed: $(cat "$WORK/bump/ou
 [[ "$(git -C "$FAKE_ORIGIN" show feature:CHANGELOG.md | sed -n '3,5p')" == "$(printf -- '6.0.4\n- 6.x-dev\n- feature')" ]] \
     || fail "a shared new version should hold both lines"
 grep -q 'POST .*/reviews' "$FAKE_GH_LOG" || fail "a shared new version should be approved again"
+
+# Both sides bumping plugin.json to the same version: the pull request no longer changes it, which is
+# not a change to what was approved either.
+# Builds the pull request on a pretty-printed plugin.json, as plugins have, with each side adding a
+# changelog line and bumping to 6.0.4, and naming the plugin as given for the pull request, then the base.
+bump_both() {
+    local seed="$WORK/$1/seed" side name
+    git -C "$seed" checkout -q 6.x-dev
+    printf '{\n  "name": "Test",\n  "license": "GPL",\n  "version": "6.0.3"\n}\n' > "$seed/plugin.json"
+    git -C "$seed" commit -q -am "pretty plugin.json"
+    git -C "$seed" checkout -q -B feature
+    for side in feature 6.x-dev; do
+        git -C "$seed" checkout -q "$side"
+        name=$2
+        [[ "$side" == 6.x-dev ]] && name=$3
+        sed -i "s/^- Three\$/- Three\n- $side/" "$seed/CHANGELOG.md"
+        printf '{\n  "name": "%s",\n  "license": "GPL",\n  "version": "6.0.4"\n}\n' "$name" > "$seed/plugin.json"
+        git -C "$seed" commit -q -am "bump $side"
+    done
+    git -C "$FAKE_ORIGIN" fetch -q "$seed" '+refs/heads/*:refs/heads/*'
+}
+for case in 'samebump Test Test' 'renamebump Renamed Test'; do
+    read -r name pr_name base_name <<< "$case"
+    new_repo "$name"
+    bump_both "$name" "$pr_name" "$base_name"
+    export FAKE_PRS='1:feature:APPROVED:false'
+    run "$name" || fail "the $name run failed: $(cat "$WORK/$name/out")"
+    grep -q 'POST .*/reviews' "$FAKE_GH_LOG" \
+        || fail "$name: the same version bump on both sides should be approved again, with the pull request's other changes"
+done
+
+# A compact plugin.json both sides bumped alike.
+new_repo compactbump feature=Feature base=Base
+seed="$WORK/compactbump/seed"
+for side in feature 6.x-dev; do
+    git -C "$seed" checkout -q "$side"
+    printf '{"version":"6.0.4"}\n' > "$seed/plugin.json"
+    git -C "$seed" commit -q -am "bump $side"
+done
+git -C "$FAKE_ORIGIN" fetch -q "$seed" '+refs/heads/*:refs/heads/*'
+export FAKE_PRS='1:feature:APPROVED:false'
+run compactbump || fail "the compactbump run failed: $(cat "$WORK/compactbump/out")"
+grep -q 'POST .*/reviews' "$FAKE_GH_LOG" || fail "a compact plugin.json bumped alike should be approved again"
+
+# The merge changing plugin.json from what the pull request had is a change to what was approved.
+new_repo otherbump
+bump_both otherbump Test Renamed
+before=$(git -C "$FAKE_ORIGIN" rev-parse feature)
+run otherbump || fail "the otherbump run failed: $(cat "$WORK/otherbump/out")"
+[[ "$(git -C "$FAKE_ORIGIN" rev-parse feature)" == "$before" ]] \
+    || fail "a pull request whose plugin.json the merge changes should be left alone"
+grep -q 'would change what it adds or removes' "$WORK/otherbump/out" \
+    || fail "otherbump should be left alone for its changed lines, got: $(cat "$WORK/otherbump/out")"
+
+# Both sides appending to one unreleased one-line entry.
+new_repo oneline
+seed="$WORK/oneline/seed"
+printf '## Changelog\n\n* 6.0.3 - Fixed A\n* 6.0.2 - 2026-10-05 - Two\n' > "$seed/CHANGELOG.md"
+git -C "$seed" commit -q -am "one-line changelog"
+git -C "$seed" checkout -q -b feature
+sed -i 's/^\* 6.0.3 - Fixed A$/&. Fixed feature/' "$seed/CHANGELOG.md"
+git -C "$seed" commit -q -am feature
+git -C "$seed" checkout -q 6.x-dev
+sed -i 's/^\* 6.0.3 - Fixed A$/&, and base/' "$seed/CHANGELOG.md"
+git -C "$seed" commit -q -am base
+git -C "$FAKE_ORIGIN" fetch -q "$seed" '+refs/heads/*:refs/heads/*'
+run oneline || fail "the one-line run failed: $(cat "$WORK/oneline/out")"
+[[ "$(git -C "$FAKE_ORIGIN" show feature:CHANGELOG.md | sed -n 3p)" == '* 6.0.3 - Fixed A, and base. Fixed feature' ]] \
+    || fail "a one-line entry should hold the base branch's addition then the pull request's"
+grep -q 'POST .*/reviews' "$FAKE_GH_LOG" || fail "a resolved one-line entry should be approved again"
 
 # Not approved, from a fork, opened by the approver, approved on an older commit, or with changes
 # requested: nothing is pushed or approved.
