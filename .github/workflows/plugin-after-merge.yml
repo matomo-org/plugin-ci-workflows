@@ -1,0 +1,35 @@
+name: Plugin after merge
+
+# Everything that runs after a merge into a plugin's development branch, behind one caller that
+# triggers on push to its N.x-dev branches, so a job added here reaches every plugin without a pull
+# request against any of them.
+#
+# GitHub does not accept an expression in a `uses:` reference, so the calls below are fixed at
+# `@main`, as in plugin-ci.yml: pinning this workflow does not pin what it calls.
+
+on:
+  workflow_call:
+    inputs:
+      workflows-ref:
+        description: "Ref of this repository for the scripts the called workflows run"
+        required: false
+        type: string
+        default: 'main'
+    secrets:
+      approver-token:
+        description: "Token for a user other than github-actions with write access, which approves a pull request again after its changelog conflict is resolved"
+        required: true
+
+permissions: {}
+
+jobs:
+  changelog-conflicts:
+    uses: matomo-org/plugin-ci-workflows/.github/workflows/plugin-changelog-conflicts.yml@main
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: read
+    with:
+      workflows-ref: ${{ inputs.workflows-ref }}
+    secrets:
+      approver-token: ${{ secrets.approver-token }}
